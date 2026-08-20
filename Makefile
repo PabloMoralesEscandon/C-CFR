@@ -14,13 +14,16 @@ DEBUG_DIR := $(BUILD_DIR)/debug
 
 LIB_SOURCES := \
 	src/game.c \
-	src/info_node.c
+	src/info_node.c \
+	src/info_store.c
 
 TEST_SOURCES := \
 	tests/test_main.c \
 	tests/test_public_headers.c \
 	tests/test_game_contract.c \
 	tests/test_info_node.c \
+	tests/test_info_store.c \
+	tests/support/test_allocator.c \
 	tests/support/fake_game.c
 
 RELEASE_OBJECTS := $(patsubst %.c,$(RELEASE_DIR)/%.o,$(LIB_SOURCES))
@@ -36,12 +39,23 @@ DEPENDENCY_FILES := \
 	$(DEBUG_OBJECTS:.o=.d) \
 	$(TEST_OBJECTS:.o=.d)
 
-.PHONY: all test debug clean
+.PHONY: all test test-alloc test-sanitize debug clean
 
 all: $(RELEASE_LIBRARY)
 
 test: $(TEST_BINARY)
-	./$(TEST_BINARY)
+	$(TEST_ENV) ./$(TEST_BINARY)
+
+test-alloc:
+	$(MAKE) BUILD_DIR=$(BUILD_DIR)/test-alloc \
+		CFLAGS='$(CFLAGS) -DCFR_TEST_WRAP_ALLOCATOR' \
+		LDFLAGS='$(LDFLAGS) -Wl,--wrap=malloc -Wl,--wrap=free' test
+
+test-sanitize:
+	$(MAKE) BUILD_DIR=$(BUILD_DIR)/test-sanitize \
+		CFLAGS='$(CFLAGS) -fsanitize=address,undefined -fno-omit-frame-pointer' \
+		LDFLAGS='$(LDFLAGS) -fsanitize=address,undefined' \
+		TEST_ENV='ASAN_OPTIONS=detect_leaks=0' test
 
 debug: $(DEBUG_LIBRARY) $(TEST_BINARY)
 

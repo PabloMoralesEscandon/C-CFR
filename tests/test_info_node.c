@@ -7,43 +7,10 @@
 #include <string.h>
 
 #include "cfr/info_node.h"
+#include "support/test_allocator.h"
 #include "test_suite.h"
 
 static int failures;
-
-#ifdef CFR_TEST_WRAP_ALLOCATOR
-static int allocations_before_failure = -1;
-static size_t live_allocations;
-
-void *__real_malloc(size_t size);
-void __real_free(void *pointer);
-void *__wrap_malloc(size_t size);
-void __wrap_free(void *pointer);
-
-void *__wrap_malloc(size_t size) {
-    void *result;
-
-    if (allocations_before_failure == 0) {
-        return NULL;
-    }
-    if (allocations_before_failure > 0) {
-        allocations_before_failure -= 1;
-    }
-
-    result = __real_malloc(size);
-    if (result != NULL) {
-        live_allocations += 1;
-    }
-    return result;
-}
-
-void __wrap_free(void *pointer) {
-    if (pointer != NULL) {
-        live_allocations -= 1;
-    }
-    __real_free(pointer);
-}
-#endif
 
 #define CHECK(condition)                                                       \
     do {                                                                       \
@@ -136,32 +103,32 @@ static void test_initialization_and_destruction(void) {
 static void test_allocation_failures(void) {
     InfoNode node = {0};
 
-    allocations_before_failure = 0;
+    test_allocator_fail_after(0);
     CHECK(cfr_info_node_init(&node, 21, 2) == CFR_STATUS_OUT_OF_MEMORY);
     CHECK(node.key == 0);
     CHECK(node.action_count == 0);
     CHECK(node.regret_sums == NULL);
     CHECK(node.strategy_sums == NULL);
-    CHECK(live_allocations == 0);
+    CHECK(test_allocator_live_allocations() == 0);
 
-    allocations_before_failure = 1;
+    test_allocator_fail_after(1);
     CHECK(cfr_info_node_init(&node, 21, 2) == CFR_STATUS_OUT_OF_MEMORY);
     CHECK(node.key == 0);
     CHECK(node.action_count == 0);
     CHECK(node.regret_sums == NULL);
     CHECK(node.strategy_sums == NULL);
-    CHECK(live_allocations == 0);
+    CHECK(test_allocator_live_allocations() == 0);
 
-    allocations_before_failure = -1;
+    test_allocator_disable_failures();
     CHECK(cfr_info_node_init(&node, 21, 2) == CFR_STATUS_SUCCESS);
-    CHECK(live_allocations == 2);
+    CHECK(test_allocator_live_allocations() == 2);
     destroy(&node);
-    CHECK(live_allocations == 0);
+    CHECK(test_allocator_live_allocations() == 0);
 
     CHECK(cfr_info_node_init(&node, 22, 3) == CFR_STATUS_SUCCESS);
-    CHECK(live_allocations == 2);
+    CHECK(test_allocator_live_allocations() == 2);
     destroy(&node);
-    CHECK(live_allocations == 0);
+    CHECK(test_allocator_live_allocations() == 0);
 }
 #endif
 
@@ -606,7 +573,7 @@ int test_info_node(void) {
     test_average_strategy_errors_and_limits();
 
 #ifdef CFR_TEST_WRAP_ALLOCATOR
-    CHECK(live_allocations == 0);
+    CHECK(test_allocator_live_allocations() == 0);
 #endif
 
     return failures;

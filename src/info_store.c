@@ -1,0 +1,226 @@
+
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdlib.h>
+
+#include "cfr/info_store.h"
+
+static const size_t INITIAL_STORE_CAPACITY = 8;
+
+static const uint64_t HASH_MULTIPLIER = UINT64_C(11400714819323198485);
+
+typedef enum {
+    LOCATE_INVALID_ARGUMENT,
+    LOCATE_ENTRY_FOUND,
+    LOCATE_EMPTY_SLOT_FOUND,
+    LOCATE_STORE_FULL
+} LocateResult;
+
+struct CfrInfoStoreEntry {
+    InfoNode *node;
+};
+
+static uint64_t disperse(InfoSetKey key) {
+    uint64_t value = (uint64_t)key;
+    return value * HASH_MULTIPLIER;
+}
+
+static size_t bits_needed(size_t capacity) {
+    size_t bits = 0;
+    for (; capacity > 1; capacity = capacity >> 1)
+        bits++;
+    return bits;
+}
+
+static size_t initial_index(InfoSetKey key, size_t capacity) {
+    uint64_t product = disperse(key);
+    size_t bits = bits_needed(capacity);
+    return product >> (64 - bits);
+}
+
+static LocateResult locate(InfoStore *info_store, InfoSetKey key,
+                           bool count_collisions, size_t *index_out) {
+    if (info_store == NULL || info_store->entries == NULL ||
+        info_store->capacity == 0 || index_out == NULL)
+        return LOCATE_INVALID_ARGUMENT;
+    size_t index = initial_index(key, info_store->capacity);
+    for (size_t i = 0; i < info_store->capacity; i++) {
+        size_t current_index = (index + i) & (info_store->capacity - 1);
+        InfoStoreEntry slot = info_store->entries[current_index];
+        if (slot.node == NULL) {
+            *index_out = current_index;
+            return LOCATE_EMPTY_SLOT_FOUND;
+        }
+        if (slot.node->key == key) {
+            *index_out = current_index;
+            return LOCATE_ENTRY_FOUND;
+        }
+        if (count_collisions) {
+            if (info_store->collision_count < SIZE_MAX)
+                info_store->collision_count++;
+        }
+    }
+    return LOCATE_STORE_FULL;
+}
+
+static Status resize(InfoStore *info_store) {
+    if (info_store == NULL)
+        return CFR_STATUS_INVALID_ARGUMENT;
+    if (info_store->capacity > (SIZE_MAX / 2))
+        return CFR_STATUS_OUT_OF_MEMORY;
+    size_t new_capacity = 2 * info_store->capacity;
+    if (new_capacity > (SIZE_MAX / sizeof(InfoStoreEntry)))
+        return CFR_STATUS_OUT_OF_MEMORY;
+    InfoStoreEntry *temp_entries =
+        malloc(new_capacity * sizeof(InfoStoreEntry));
+    if (temp_entries == NULL)
+        return CFR_STATUS_OUT_OF_MEMORY;
+    for (size_t i = 0; i < new_capacity; i++)
+        temp_entries[i].node = NULL;
+    InfoStore temp_store = {0};
+    temp_store.capacity = new_capacity;
+    temp_store.entries = temp_entries;
+
+    for (size_t i = 0; i < info_store->capacity; i++) {
+        if (info_store->entries[i].node != NULL) {
+            size_t index;
+            LocateResult result = locate(
+                &temp_store, info_store->entries[i].node->key, false, &index);
+            if (result != LOCATE_EMPTY_SLOT_FOUND) {
+                free(temp_entries);
+                return CFR_STATUS_INVALID_ARGUMENT;
+            }
+
+            temp_entries[index].node = info_store->entries[i].node;
+            ++temp_store.size;
+        }
+    }
+    if (info_store->size != temp_store.size) {
+        free(temp_entries);
+        return CFR_STATUS_INVALID_ARGUMENT;
+    }
+    free(info_store->entries);
+    info_store->entries = temp_entries;
+    info_store->capacity = new_capacity;
+    ++info_store->growth_count;
+    return CFR_STATUS_SUCCESS;
+}
+
+Status cfr_info_store_init(InfoStore *info_store) {
+    if (info_store == NULL)
+        return CFR_STATUS_INVALID_ARGUMENT;
+    if (INITIAL_STORE_CAPACITY > (SIZE_MAX / sizeof(InfoStoreEntry)))
+        return CFR_STATUS_INVALID_ARGUMENT;
+    InfoStoreEntry *temp =
+        malloc(sizeof(InfoStoreEntry) * INITIAL_STORE_CAPACITY);
+    if (temp == NULL)
+        return CFR_STATUS_OUT_OF_MEMORY;
+    for (size_t i = 0; i < INITIAL_STORE_CAPACITY; i++)
+        temp[i].node = NULL;
+    info_store->capacity = INITIAL_STORE_CAPACITY;
+    info_store->growth_count = 0;
+    info_store->collision_count = 0;
+    info_store->size = 0;
+    info_store->entries = temp;
+    return CFR_STATUS_SUCCESS;
+}
+
+Status cfr_info_store_destroy(InfoStore *info_store) {
+    if (info_store == NULL)
+        return CFR_STATUS_INVALID_ARGUMENT;
+    for (size_t i = 0; i < info_store->capacity; i++) {
+        if (info_store->entries[i].node != NULL) {
+            cfr_info_node_destroy(info_store->entries[i].node);
+            free(info_store->entries[i].node);
+            info_store->entries[i].node = NULL;
+        }
+    }
+    free(info_store->entries);
+    info_store->entries = NULL;
+    info_store->capacity = 0;
+    info_store->collision_count = 0;
+    info_store->growth_count = 0;
+    info_store->size = 0;
+    return CFR_STATUS_SUCCESS;
+}
+
+Status cfr_info_store_find(InfoStore *info_store, InfoSetKey key,
+                           InfoNode **node_out) {
+    if (info_store == NULL || node_out == NULL)
+        return CFR_STATUS_INVALID_ARGUMENT;
+    size_t index;
+    LocateResult result = locate(info_store, key, true, &index);
+    switch (result) {
+
+    case LOCATE_ENTRY_FOUND:
+        *node_out = info_store->entries[index].node;
+        return CFR_STATUS_SUCCESS;
+
+    case LOCATE_EMPTY_SLOT_FOUND:
+    case LOCATE_STORE_FULL:
+        *node_out = NULL;
+        return CFR_STATUS_NOT_FOUND;
+
+    default:
+        return CFR_STATUS_INVALID_ARGUMENT;
+    }
+}
+
+Status cfr_info_store_get_or_create(InfoStore *info_store, InfoSetKey key,
+                                    size_t action_count, InfoNode **node_out) {
+    if (info_store == NULL || node_out == NULL || action_count == 0)
+        return CFR_STATUS_INVALID_ARGUMENT;
+    size_t index;
+    LocateResult result = locate(info_store, key, true, &index);
+    if (result == LOCATE_INVALID_ARGUMENT)
+        return CFR_STATUS_INVALID_ARGUMENT;
+    if (result == LOCATE_ENTRY_FOUND) {
+        if (info_store->entries[index].node->action_count != action_count)
+            return CFR_STATUS_INVALID_ARGUMENT;
+        *node_out = info_store->entries[index].node;
+        return CFR_STATUS_SUCCESS;
+    }
+    InfoNode *temp = malloc(sizeof(InfoNode));
+    if (temp == NULL)
+        return CFR_STATUS_OUT_OF_MEMORY;
+    *temp = (InfoNode){0};
+    Status init = cfr_info_node_init(temp, key, action_count);
+    if (init != CFR_STATUS_SUCCESS) {
+        cfr_info_node_destroy(temp);
+        free(temp);
+        temp = NULL;
+        return init;
+    }
+    if (result == LOCATE_STORE_FULL ||
+        (info_store->size >= info_store->capacity - info_store->capacity / 4)) {
+        Status resize_status = resize(info_store);
+        if (resize_status != CFR_STATUS_SUCCESS) {
+            cfr_info_node_destroy(temp);
+            free(temp);
+            temp = NULL;
+            return resize_status;
+        }
+        result = locate(info_store, key, true, &index);
+        if (result != LOCATE_EMPTY_SLOT_FOUND) {
+            cfr_info_node_destroy(temp);
+            free(temp);
+            temp = NULL;
+            return CFR_STATUS_INVALID_ARGUMENT;
+        }
+    }
+    info_store->entries[index].node = temp;
+    ++info_store->size;
+    *node_out = info_store->entries[index].node;
+    return CFR_STATUS_SUCCESS;
+}
+
+Status cfr_info_store_get_stats(const InfoStore *info_store,
+                                InfoStoreStats *stats_out) {
+    if (info_store == NULL || stats_out == NULL)
+        return CFR_STATUS_INVALID_ARGUMENT;
+    stats_out->capacity = info_store->capacity;
+    stats_out->collision_count = info_store->collision_count;
+    stats_out->growth_count = info_store->growth_count;
+    stats_out->size = info_store->size;
+    return CFR_STATUS_SUCCESS;
+}

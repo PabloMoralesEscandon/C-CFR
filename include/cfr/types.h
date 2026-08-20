@@ -1,6 +1,8 @@
 #ifndef CFR_TYPES_H
 #define CFR_TYPES_H
 
+#include <stdint.h>
+
 /* Identifica uno de los dos jugadores del juego de suma cero. */
 typedef enum { CFR_PLAYER_0, CFR_PLAYER_1 } Player;
 
@@ -18,7 +20,7 @@ typedef struct {
 typedef int Action;
 
 /* Identifica de forma estable un conjunto de información. */
-typedef int InfoSetKey;
+typedef int64_t InfoSetKey;
 
 /* Indica el resultado de una operación del contrato. */
 typedef enum {
@@ -33,7 +35,9 @@ typedef enum {
     /* Un acumulado o un resultado aritmético no es finito. */
     CFR_STATUS_NUMERIC_ERROR,
     /* El módulo no pudo completar una reserva interna. */
-    CFR_STATUS_OUT_OF_MEMORY
+    CFR_STATUS_OUT_OF_MEMORY,
+    /* Una búsqueda válida no encontró la clave solicitada. */
+    CFR_STATUS_NOT_FOUND
 } Status;
 
 /* Representa la utilidad de un estado terminal para un jugador. */
