@@ -29,7 +29,11 @@ typedef enum {
     /* La acción no es legal en el estado actual. */
     CFR_STATUS_ILLEGAL_ACTION,
     /* El almacenamiento del llamador no tiene capacidad suficiente. */
-    CFR_STATUS_BUFFER_TOO_SMALL
+    CFR_STATUS_BUFFER_TOO_SMALL,
+    /* Un acumulado o un resultado aritmético no es finito. */
+    CFR_STATUS_NUMERIC_ERROR,
+    /* El módulo no pudo completar una reserva interna. */
+    CFR_STATUS_OUT_OF_MEMORY
 } Status;
 
 /* Representa la utilidad de un estado terminal para un jugador. */

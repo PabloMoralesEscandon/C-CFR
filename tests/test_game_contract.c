@@ -4,6 +4,7 @@
 
 #include "cfr/game.h"
 #include "support/fake_game.h"
+#include "test_suite.h"
 
 static int failures;
 

@@ -13,12 +13,14 @@ RELEASE_DIR := $(BUILD_DIR)/release
 DEBUG_DIR := $(BUILD_DIR)/debug
 
 LIB_SOURCES := \
-	src/game.c
+	src/game.c \
+	src/info_node.c
 
 TEST_SOURCES := \
 	tests/test_main.c \
 	tests/test_public_headers.c \
 	tests/test_game_contract.c \
+	tests/test_info_node.c \
 	tests/support/fake_game.c
 
 RELEASE_OBJECTS := $(patsubst %.c,$(RELEASE_DIR)/%.o,$(LIB_SOURCES))

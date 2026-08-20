@@ -1,13 +1,13 @@
 #include <stdio.h>
 
-int test_public_headers(void);
-int test_game_contract(void);
+#include "test_suite.h"
 
 int main(void) {
     int failures = 0;
 
     failures += test_public_headers();
     failures += test_game_contract();
+    failures += test_info_node();
 
     if (failures != 0) {
         fprintf(stderr, "Fallaron %d comprobaciones.\n", failures);
