@@ -76,6 +76,38 @@ Status cfr_info_node_current_strategy(const InfoNode *node,
                                       size_t strategy_capacity);
 
 /*
+ * Comprueba deltas de aprendizaje sin modificar node.
+ *
+ * node debe estar inicializado. delta_regret y delta_strategy_sum deben
+ * contener action_count elementos. action_count debe ser igual a
+ * node->action_count. Cada delta debe ser finito. Cada delta de suma de
+ * estrategia debe ser mayor o igual que cero.
+ *
+ * La función comprueba también los acumulados resultantes. Un resultado no
+ * finito o una suma de estrategia negativa produce
+ * CFR_STATUS_NUMERIC_ERROR. Un argumento inválido produce
+ * CFR_STATUS_INVALID_ARGUMENT. Un error conserva node y los arrays de entrada.
+ */
+Status cfr_info_node_check_deltas(const InfoNode *node,
+                                  const Utility *delta_regret,
+                                  const double *delta_strategy_sum,
+                                  size_t action_count);
+
+/*
+ * Valida y aplica deltas de aprendizaje a node.
+ *
+ * Los parámetros tienen los mismos requisitos que
+ * cfr_info_node_check_deltas. La función suma cada delta al acumulado del mismo
+ * índice. La función no modifica los arrays de entrada.
+ *
+ * Un error conserva todos los acumulados de node. La función no reserva
+ * memoria.
+ */
+Status cfr_info_node_apply_deltas(InfoNode *node, const Utility *delta_regret,
+                                  const double *delta_strategy_sum,
+                                  size_t action_count);
+
+/*
  * Suma regret_change al arrepentimiento de action_index.
  *
  * node debe estar inicializado. action_index debe ser menor que

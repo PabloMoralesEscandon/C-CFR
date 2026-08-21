@@ -1,0 +1,429 @@
+#include <math.h>
+#include <stdint.h>
+#include <stdlib.h>
+
+#include "cfr/traversal.h"
+
+#define CFR_CELL_EMPTY SIZE_MAX
+#define INITIAL_FRAME_CAPACITY 32
+#define INITIAL_TABLE_CAPACITY 64
+#define INITIAL_ENTRY_CAPACITY 16
+
+typedef struct {
+    Action actions[CFR_TRAVERSAL_MAX_ACTIONS];
+    Probability strategy[CFR_TRAVERSAL_MAX_ACTIONS];
+    Utility utilities[CFR_TRAVERSAL_MAX_ACTIONS];
+} Frame;
+
+typedef struct {
+    InfoNode *node;
+    size_t action_count;
+    size_t offset;
+} Entry;
+
+typedef struct {
+    Frame *frames;
+    size_t frame_capacity;
+    size_t *table;
+    size_t table_capacity;
+    size_t used_table;
+    Entry *entries;
+    size_t used_entries;
+    size_t entry_capacity;
+    double *arena;
+    size_t used_arena;
+    size_t reserved_arena;
+} WorkSpace;
+
+static void workspace_destroy(WorkSpace *workspace) {
+    if (workspace == NULL)
+        return;
+
+    free(workspace->frames);
+    free(workspace->table);
+    free(workspace->entries);
+    free(workspace->arena);
+
+    *workspace = (WorkSpace){0};
+}
+
+static Status workspace_init(WorkSpace *workspace, size_t max_legal_actions) {
+    if (workspace == NULL || max_legal_actions == 0 ||
+        max_legal_actions > CFR_TRAVERSAL_MAX_ACTIONS)
+        return CFR_STATUS_INVALID_ARGUMENT;
+
+    WorkSpace temporary = {0};
+
+    temporary.frames =
+        malloc(INITIAL_FRAME_CAPACITY * sizeof(*temporary.frames));
+    if (temporary.frames == NULL) {
+        workspace_destroy(&temporary);
+        return CFR_STATUS_OUT_OF_MEMORY;
+    }
+
+    temporary.table = malloc(INITIAL_TABLE_CAPACITY * sizeof(*temporary.table));
+    if (temporary.table == NULL) {
+        workspace_destroy(&temporary);
+        return CFR_STATUS_OUT_OF_MEMORY;
+    }
+
+    temporary.entries =
+        malloc(INITIAL_ENTRY_CAPACITY * sizeof(*temporary.entries));
+    if (temporary.entries == NULL) {
+        workspace_destroy(&temporary);
+        return CFR_STATUS_OUT_OF_MEMORY;
+    }
+
+    /*
+     * Cada entrada necesita action_count deltas de arrepentimiento
+     * y action_count deltas de estrategia.
+     */
+    temporary.reserved_arena = INITIAL_ENTRY_CAPACITY * 2 * max_legal_actions;
+
+    temporary.arena =
+        malloc(temporary.reserved_arena * sizeof(*temporary.arena));
+    if (temporary.arena == NULL) {
+        workspace_destroy(&temporary);
+        return CFR_STATUS_OUT_OF_MEMORY;
+    }
+
+    temporary.frame_capacity = INITIAL_FRAME_CAPACITY;
+    temporary.table_capacity = INITIAL_TABLE_CAPACITY;
+    temporary.entry_capacity = INITIAL_ENTRY_CAPACITY;
+
+    temporary.used_table = 0;
+    temporary.used_entries = 0;
+    temporary.used_arena = 0;
+
+    for (size_t i = 0; i < temporary.table_capacity; i++)
+        temporary.table[i] = CFR_CELL_EMPTY;
+
+    *workspace = temporary;
+    return CFR_STATUS_SUCCESS;
+}
+
+static Status workspace_check_deltas(const WorkSpace *workspace) {
+    if (workspace == NULL)
+        return CFR_STATUS_INVALID_ARGUMENT;
+
+    for (size_t i = 0; i < workspace->used_entries; i++) {
+        const Entry *entry = &workspace->entries[i];
+
+        if (entry->offset > workspace->used_arena ||
+            entry->action_count > (workspace->used_arena - entry->offset) / 2)
+            return CFR_STATUS_INVALID_ARGUMENT;
+
+        const Utility *delta_regret = workspace->arena + entry->offset;
+
+        const double *delta_strategy = delta_regret + entry->action_count;
+
+        Status status = cfr_info_node_check_deltas(
+            entry->node, delta_regret, delta_strategy, entry->action_count);
+
+        if (status != CFR_STATUS_SUCCESS)
+            return status;
+    }
+
+    return CFR_STATUS_SUCCESS;
+}
+
+static Status workspace_apply_deltas(WorkSpace *workspace) {
+    if (workspace == NULL)
+        return CFR_STATUS_INVALID_ARGUMENT;
+
+    for (size_t i = 0; i < workspace->used_entries; i++) {
+        Entry *entry = &workspace->entries[i];
+
+        Utility *delta_regret = workspace->arena + entry->offset;
+
+        double *delta_strategy = delta_regret + entry->action_count;
+
+        /*
+         * Todas las entradas ya han sido validadas por
+         * workspace_check_deltas.
+         */
+        Status status = cfr_info_node_apply_deltas(
+            entry->node, delta_regret, delta_strategy, entry->action_count);
+
+        if (status != CFR_STATUS_SUCCESS)
+            return status;
+    }
+
+    return CFR_STATUS_SUCCESS;
+}
+
+static size_t hash_node(const InfoNode *node) {
+    /* Multiplicativo de Fibonacci. Los 4 bits bajos del puntero se
+       descartan porque la alineación de malloc los deja casi constantes. */
+    uintptr_t value = (uintptr_t)node >> 4;
+    return (size_t)(value * 11400714819323198485ULL);
+}
+
+static Status grow_table(WorkSpace *ws) {
+    size_t new_capacity = ws->table_capacity * 2;
+    size_t *new_table = malloc(new_capacity * sizeof(size_t));
+    if (new_table == NULL)
+        return CFR_STATUS_OUT_OF_MEMORY;
+    for (size_t i = 0; i < new_capacity; i++)
+        new_table[i] = CFR_CELL_EMPTY;
+    /* Reinsertar todas las entradas con la máscara nueva. */
+    size_t mask = new_capacity - 1;
+    for (size_t e = 0; e < ws->used_entries; e++) {
+        size_t cell = hash_node(ws->entries[e].node) & mask;
+        while (new_table[cell] != CFR_CELL_EMPTY)
+            cell = (cell + 1) & mask;
+        new_table[cell] = e;
+    }
+    free(ws->table);
+    ws->table = new_table;
+    ws->table_capacity = new_capacity;
+    return CFR_STATUS_SUCCESS;
+}
+
+static Status find_or_create_entry(WorkSpace *ws, InfoNode *node,
+                                   size_t action_count, size_t *index_out) {
+    /* Fase 1: si insertar superara 3/4 de ocupación, crecer ANTES de buscar. */
+    if ((ws->used_table + 1) * 4 > ws->table_capacity * 3) {
+        Status status = grow_table(ws);
+        if (status != CFR_STATUS_SUCCESS)
+            return status;
+    }
+    /* Fase 2: sondeo lineal desde la celda que indica el hash. */
+    size_t mask = ws->table_capacity - 1; /* capacidad potencia de dos */
+    size_t cell = hash_node(node) & mask;
+    while (ws->table[cell] != CFR_CELL_EMPTY) {
+        size_t candidate = ws->table[cell];
+        if (ws->entries[candidate].node == node) {
+            *index_out = candidate; /* ya existía: la reutilizamos */
+            return CFR_STATUS_SUCCESS;
+        }
+        cell = (cell + 1) & mask; /* colisión: celda siguiente */
+    }
+    /* cell es ahora una celda vacía donde anotaremos la entrada nueva. */
+    /* Fase 3a: hueco en el array de entradas. */
+    if (ws->used_entries == ws->entry_capacity) {
+        size_t new_capacity = ws->entry_capacity * 2;
+        Entry *grown = realloc(ws->entries, new_capacity * sizeof(Entry));
+        if (grown == NULL)
+            return CFR_STATUS_OUT_OF_MEMORY;
+        ws->entries = grown;
+        ws->entry_capacity = new_capacity;
+    }
+    /* Fase 3b: hueco en la arena para 2 * action_count doubles. */
+    if (ws->used_arena + 2 * action_count > ws->reserved_arena) {
+        size_t new_reserved = ws->reserved_arena * 2;
+        while (ws->used_arena + 2 * action_count > new_reserved)
+            new_reserved *= 2;
+        double *grown = realloc(ws->arena, new_reserved * sizeof(double));
+        if (grown == NULL)
+            return CFR_STATUS_OUT_OF_MEMORY;
+        ws->arena = grown;
+        ws->reserved_arena = new_reserved;
+    }
+    /* Fase 3c: estrenar la entrada, con sus deltas a cero. */
+    size_t index = ws->used_entries;
+    ws->entries[index].node = node;
+    ws->entries[index].action_count = action_count;
+    ws->entries[index].offset = ws->used_arena;
+    for (size_t i = 0; i < 2 * action_count; i++)
+        ws->arena[ws->used_arena + i] = 0.0;
+    ws->used_arena += 2 * action_count;
+    ws->used_entries += 1;
+    ws->table[cell] = index;
+    ws->used_table += 1;
+    *index_out = index;
+    return CFR_STATUS_SUCCESS;
+}
+
+static Status cfr_traverse_branch(const Game *game, GameState *state,
+                                  InfoStore *store, Player target_player,
+                                  size_t depth, Probability reach_0,
+                                  Probability reach_1, WorkSpace *workspace,
+                                  Utility *utility_out) {
+    if (game == NULL || state == NULL || store == NULL || utility_out == NULL ||
+        workspace == NULL)
+        return CFR_STATUS_INVALID_ARGUMENT;
+
+    Status status;
+
+    /* Comprueba si el estado es terminal. */
+    bool is_terminal;
+    status = cfr_game_is_terminal(game, state, &is_terminal);
+    if (status != CFR_STATUS_SUCCESS)
+        return status;
+    if (is_terminal) {
+        Utility terminal_utility;
+        status = cfr_game_terminal_utility(game, state, target_player,
+                                           &terminal_utility);
+        if (status != CFR_STATUS_SUCCESS)
+            return status;
+        if (!isfinite(terminal_utility))
+            return CFR_STATUS_NUMERIC_ERROR;
+        *utility_out = terminal_utility;
+        return CFR_STATUS_SUCCESS;
+    }
+
+    /* Obtiene el actor actual. */
+    Actor current_actor;
+    status = cfr_game_current_actor(game, state, &current_actor);
+    if (status != CFR_STATUS_SUCCESS)
+        return status;
+    if (current_actor.kind != CFR_ACTOR_PLAYER ||
+        (current_actor.player != CFR_PLAYER_0 &&
+         current_actor.player != CFR_PLAYER_1))
+        return CFR_STATUS_INVALID_ARGUMENT;
+
+    /* Aumenta el array de marcos cuando falta capacidad. */
+    if (depth == workspace->frame_capacity) {
+        size_t new_capacity = workspace->frame_capacity * 2;
+        Frame *new_frames =
+            realloc(workspace->frames, new_capacity * sizeof(Frame));
+        if (new_frames == NULL)
+            return CFR_STATUS_OUT_OF_MEMORY;
+        workspace->frames = new_frames;
+        workspace->frame_capacity = new_capacity;
+    }
+
+    /* Obtiene las acciones legales. */
+    Frame *frame = &(workspace->frames[depth]);
+    size_t required_amount;
+    status =
+        cfr_game_legal_actions(game, state, frame->actions,
+                               CFR_TRAVERSAL_MAX_ACTIONS, &required_amount);
+    if (status != CFR_STATUS_SUCCESS)
+        return status;
+    if (required_amount == 0 || required_amount > game->max_legal_actions)
+        return CFR_STATUS_INVALID_ARGUMENT;
+
+    /* Obtiene la clave del conjunto de información. */
+    InfoSetKey key;
+    status = cfr_game_information_set_key(game, state, &key);
+    if (status != CFR_STATUS_SUCCESS)
+        return status;
+
+    /* Obtiene o crea el nodo de información. */
+    InfoNode *node;
+    status = cfr_info_store_get_or_create(store, key, required_amount, &node);
+    if (status != CFR_STATUS_SUCCESS)
+        return status;
+
+    /* Calcula la estrategia actual. */
+    status =
+        cfr_info_node_current_strategy(node, frame->strategy, required_amount);
+    if (status != CFR_STATUS_SUCCESS)
+        return status;
+
+    /* Inicializa la utilidad del nodo. */
+    Utility node_utility = 0.0;
+
+    for (size_t i = 0; i < required_amount; i++) {
+        /* Actualiza el alcance del actor actual. */
+        Probability reach_copy_0 = reach_0;
+        Probability reach_copy_1 = reach_1;
+        switch (current_actor.player) {
+        case CFR_PLAYER_0:
+            reach_copy_0 *= frame->strategy[i];
+            if (!isfinite(reach_copy_0))
+                return CFR_STATUS_NUMERIC_ERROR;
+            break;
+        case CFR_PLAYER_1:
+            reach_copy_1 *= frame->strategy[i];
+
+            if (!isfinite(reach_copy_1))
+                return CFR_STATUS_NUMERIC_ERROR;
+            break;
+        default:
+            return CFR_STATUS_INVALID_ARGUMENT;
+        }
+
+        /* Aplica la acción. */
+        status = cfr_game_apply_action(game, state, frame->actions[i]);
+        if (status != CFR_STATUS_SUCCESS)
+            return status;
+        Utility branch_utility;
+
+        /* Recorre la rama hija. */
+        Status status_new_branch = cfr_traverse_branch(
+            game, state, store, target_player, depth + 1, reach_copy_0,
+            reach_copy_1, workspace, &branch_utility);
+
+        /* Deshace la acción aplicada. */
+        status = cfr_game_undo_action(game, state);
+        if (status != CFR_STATUS_SUCCESS)
+            return status;
+        frame = &workspace->frames[depth];
+        if (status_new_branch != CFR_STATUS_SUCCESS)
+            return status_new_branch;
+
+        /* Conserva la utilidad de la rama hija. */
+        frame->utilities[i] = branch_utility;
+        Utility candidate = node_utility + branch_utility * frame->strategy[i];
+        if (!isfinite(candidate))
+            return CFR_STATUS_NUMERIC_ERROR;
+        node_utility = candidate;
+    }
+
+    if (current_actor.player == target_player) {
+        /* Obtiene los deltas pendientes del nodo. */
+        size_t index;
+        status = find_or_create_entry(workspace, node, required_amount, &index);
+        if (status != CFR_STATUS_SUCCESS)
+            return status;
+        double *delta_regret =
+            workspace->arena + workspace->entries[index].offset;
+        double *delta_strategy = delta_regret + required_amount;
+
+        /* Selecciona los alcances propio y rival. */
+        Probability own_reach;
+        Probability rival_reach;
+        switch (current_actor.player) {
+        case CFR_PLAYER_0:
+            own_reach = reach_0;
+            rival_reach = reach_1;
+            break;
+        case CFR_PLAYER_1:
+            own_reach = reach_1;
+            rival_reach = reach_0;
+            break;
+        default:
+            return CFR_STATUS_INVALID_ARGUMENT;
+        }
+
+        /* Acumula los deltas pendientes. */
+        for (size_t i = 0; i < required_amount; i++) {
+            Utility change = rival_reach * (frame->utilities[i] - node_utility);
+            if (!isfinite(change))
+                return CFR_STATUS_NUMERIC_ERROR;
+            delta_regret[i] += change;
+            delta_strategy[i] += own_reach * frame->strategy[i];
+        }
+    }
+    *utility_out = node_utility;
+    return CFR_STATUS_SUCCESS;
+}
+
+Status cfr_traverse(const Game *game, GameState *state, InfoStore *store,
+                    Player target_player, Utility *utility_out) {
+    if (game == NULL || state == NULL || store == NULL || utility_out == NULL)
+        return CFR_STATUS_INVALID_ARGUMENT;
+    if (game->max_legal_actions == 0 ||
+        (game->max_legal_actions > CFR_TRAVERSAL_MAX_ACTIONS))
+        return CFR_STATUS_INVALID_ARGUMENT;
+    if (target_player != CFR_PLAYER_0 && target_player != CFR_PLAYER_1)
+        return CFR_STATUS_INVALID_ARGUMENT;
+    WorkSpace ws = {0};
+    Status status = workspace_init(&ws, game->max_legal_actions);
+    if (status != CFR_STATUS_SUCCESS)
+        return status;
+    Utility temp_utility = 0.0;
+    status = cfr_traverse_branch(game, state, store, target_player, 0, 1.0, 1.0,
+                                 &ws, &temp_utility);
+    if (status == CFR_STATUS_SUCCESS)
+        status = workspace_check_deltas(&ws);
+    if (status == CFR_STATUS_SUCCESS)
+        status = workspace_apply_deltas(&ws);
+    workspace_destroy(&ws);
+    if (status == CFR_STATUS_SUCCESS)
+        *utility_out = temp_utility;
+    return status;
+}

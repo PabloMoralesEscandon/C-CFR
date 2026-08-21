@@ -2,6 +2,7 @@
 #include "cfr/game.h"
 #include "cfr/info_node.h"
 #include "cfr/info_store.h"
+#include "cfr/traversal.h"
 #include "test_suite.h"
 
 int test_public_headers(void) {

@@ -97,6 +97,44 @@ Status cfr_info_node_current_strategy(const InfoNode *node,
     return CFR_STATUS_SUCCESS;
 }
 
+Status cfr_info_node_check_deltas(const InfoNode *node,
+                                  const Utility *delta_regret,
+                                  const double *delta_strategy_sum,
+                                  size_t action_count) {
+    if (node == NULL || node->regret_sums == NULL ||
+        node->strategy_sums == NULL || action_count == 0 ||
+        delta_regret == NULL || delta_strategy_sum == NULL ||
+        action_count != node->action_count)
+        return CFR_STATUS_INVALID_ARGUMENT;
+    for (size_t i = 0; i < action_count; i++) {
+        if (!isfinite(delta_regret[i]) || !isfinite(delta_strategy_sum[i]) ||
+            (delta_strategy_sum[i] < 0))
+            return CFR_STATUS_NUMERIC_ERROR;
+        Utility regret_candidate = node->regret_sums[i] + delta_regret[i];
+        if (!isfinite(regret_candidate))
+            return CFR_STATUS_NUMERIC_ERROR;
+        double strategy_candidate =
+            node->strategy_sums[i] + delta_strategy_sum[i];
+        if (!isfinite(strategy_candidate) || (strategy_candidate < 0))
+            return CFR_STATUS_NUMERIC_ERROR;
+    }
+    return CFR_STATUS_SUCCESS;
+}
+
+Status cfr_info_node_apply_deltas(InfoNode *node, const Utility *delta_regret,
+                                  const double *delta_strategy_sum,
+                                  size_t action_count) {
+    Status status = cfr_info_node_check_deltas(
+        node, delta_regret, delta_strategy_sum, action_count);
+    if (status != CFR_STATUS_SUCCESS)
+        return status;
+    for (size_t i = 0; i < action_count; i++) {
+        node->regret_sums[i] += delta_regret[i];
+        node->strategy_sums[i] += delta_strategy_sum[i];
+    }
+    return CFR_STATUS_SUCCESS;
+}
+
 Status cfr_info_node_add_regret(InfoNode *node, size_t action_index,
                                 Utility regret_change) {
     if (node == NULL || node->regret_sums == NULL || node->action_count == 0 ||

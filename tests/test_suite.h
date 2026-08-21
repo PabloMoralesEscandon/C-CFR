@@ -5,5 +5,6 @@ int test_public_headers(void);
 int test_game_contract(void);
 int test_info_node(void);
 int test_info_store(void);
+int test_traversal(void);
 
 #endif

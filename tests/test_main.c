@@ -9,6 +9,7 @@ int main(void) {
     failures += test_game_contract();
     failures += test_info_node();
     failures += test_info_store();
+    failures += test_traversal();
 
     if (failures != 0) {
         fprintf(stderr, "Fallaron %d comprobaciones.\n", failures);

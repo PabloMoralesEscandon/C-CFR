@@ -3,10 +3,11 @@ AR ?= ar
 
 CPPFLAGS += -Iinclude
 C_STANDARD := -std=c17
-WARNINGS := -Wall -Wextra -Wpedantic -Werror
+WARNINGS := -Wall -Wextra -Wpedantic -Wvla -Werror
 RELEASE_FLAGS := -O2
 DEBUG_FLAGS := -O0 -g3
 DEPENDENCY_FLAGS := -MMD -MP
+SANITIZER_TEST_ENV ?= ASAN_OPTIONS=detect_leaks=0
 
 BUILD_DIR := build
 RELEASE_DIR := $(BUILD_DIR)/release
@@ -15,7 +16,8 @@ DEBUG_DIR := $(BUILD_DIR)/debug
 LIB_SOURCES := \
 	src/game.c \
 	src/info_node.c \
-	src/info_store.c
+	src/info_store.c \
+	src/traversal.c
 
 TEST_SOURCES := \
 	tests/test_main.c \
@@ -23,8 +25,10 @@ TEST_SOURCES := \
 	tests/test_game_contract.c \
 	tests/test_info_node.c \
 	tests/test_info_store.c \
+	tests/test_traversal.c \
 	tests/support/test_allocator.c \
-	tests/support/fake_game.c
+	tests/support/fake_game.c \
+	tests/support/traversal_game.c
 
 RELEASE_OBJECTS := $(patsubst %.c,$(RELEASE_DIR)/%.o,$(LIB_SOURCES))
 DEBUG_OBJECTS := $(patsubst %.c,$(DEBUG_DIR)/%.o,$(LIB_SOURCES))
@@ -55,7 +59,7 @@ test-sanitize:
 	$(MAKE) BUILD_DIR=$(BUILD_DIR)/test-sanitize \
 		CFLAGS='$(CFLAGS) -fsanitize=address,undefined -fno-omit-frame-pointer' \
 		LDFLAGS='$(LDFLAGS) -fsanitize=address,undefined' \
-		TEST_ENV='ASAN_OPTIONS=detect_leaks=0' test
+		TEST_ENV='$(SANITIZER_TEST_ENV)' test
 
 debug: $(DEBUG_LIBRARY) $(TEST_BINARY)
 
