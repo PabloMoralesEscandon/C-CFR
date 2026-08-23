@@ -10,6 +10,7 @@ int main(void) {
     failures += test_info_node();
     failures += test_info_store();
     failures += test_traversal();
+    failures += test_chance_trainer();
 
     if (failures != 0) {
         fprintf(stderr, "Fallaron %d comprobaciones.\n", failures);

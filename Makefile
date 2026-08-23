@@ -17,7 +17,8 @@ LIB_SOURCES := \
 	src/game.c \
 	src/info_node.c \
 	src/info_store.c \
-	src/traversal.c
+	src/traversal.c \
+	src/trainer.c
 
 TEST_SOURCES := \
 	tests/test_main.c \
@@ -26,9 +27,11 @@ TEST_SOURCES := \
 	tests/test_info_node.c \
 	tests/test_info_store.c \
 	tests/test_traversal.c \
+	tests/test_chance_trainer.c \
 	tests/support/test_allocator.c \
 	tests/support/fake_game.c \
-	tests/support/traversal_game.c
+	tests/support/traversal_game.c \
+	tests/support/chance_game.c
 
 RELEASE_OBJECTS := $(patsubst %.c,$(RELEASE_DIR)/%.o,$(LIB_SOURCES))
 DEBUG_OBJECTS := $(patsubst %.c,$(DEBUG_DIR)/%.o,$(LIB_SOURCES))
@@ -53,7 +56,7 @@ test: $(TEST_BINARY)
 test-alloc:
 	$(MAKE) BUILD_DIR=$(BUILD_DIR)/test-alloc \
 		CFLAGS='$(CFLAGS) -DCFR_TEST_WRAP_ALLOCATOR' \
-		LDFLAGS='$(LDFLAGS) -Wl,--wrap=malloc -Wl,--wrap=free' test
+		LDFLAGS='$(LDFLAGS) -Wl,--wrap=malloc -Wl,--wrap=realloc -Wl,--wrap=free' test
 
 test-sanitize:
 	$(MAKE) BUILD_DIR=$(BUILD_DIR)/test-sanitize \
