@@ -1,10 +1,10 @@
 # Ejemplos
 
-Este directorio contendrá programas pequeños que usen la API pública de CFR.
+El repositorio incluye un adaptador completo de Kuhn Poker. La aplicación de
+`app/cfr_cli.c` conecta el adaptador con el entrenador y el evaluador.
 
-Cada ejemplo mostrará cómo un adaptador conecta un juego con el motor. Los
-ejemplos futuros usarán estados propiedad del llamador y las envolturas
-`cfr_game_*`.
+La aplicación consume la API pública mediante las funciones `cfr_game_*`. La
+aplicación también conserva la propiedad del estado del juego.
 
-Este bloque no incluye un juego completo. Los bloques posteriores añadirán los
-ejemplos cuando existan el motor y los adaptadores necesarios.
+La aplicación no forma parte de la biblioteca pública. Consulte el
+[`README.md`](../README.md) principal para construir y usar el ejecutable.
