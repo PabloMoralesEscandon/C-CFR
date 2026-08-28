@@ -14,12 +14,13 @@ RELEASE_DIR := $(BUILD_DIR)/release
 DEBUG_DIR := $(BUILD_DIR)/debug
 
 LIB_SOURCES := \
+	src/evaluation.c \
 	src/game.c \
 	src/info_node.c \
 	src/info_store.c \
-	src/traversal.c \
+	src/kuhn_poker.c \
 	src/trainer.c \
-	src/kuhn_poker.c
+	src/traversal.c
 
 TEST_SOURCES := \
 	tests/test_main.c \
@@ -30,6 +31,7 @@ TEST_SOURCES := \
 	tests/test_traversal.c \
 	tests/test_chance_trainer.c \
 	tests/test_kuhn_poker.c \
+	tests/test_evaluation.c \
 	tests/support/test_allocator.c \
 	tests/support/fake_game.c \
 	tests/support/traversal_game.c \

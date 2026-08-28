@@ -38,8 +38,8 @@ static size_t initial_index(InfoSetKey key, size_t capacity) {
     return product >> (64 - bits);
 }
 
-static LocateResult locate(InfoStore *info_store, InfoSetKey key,
-                           bool count_collisions, size_t *index_out) {
+static LocateResult locate(const InfoStore *info_store, size_t *collision_count,
+                           InfoSetKey key, size_t *index_out) {
     if (info_store == NULL || info_store->entries == NULL ||
         info_store->capacity == 0 || index_out == NULL)
         return LOCATE_INVALID_ARGUMENT;
@@ -55,9 +55,9 @@ static LocateResult locate(InfoStore *info_store, InfoSetKey key,
             *index_out = current_index;
             return LOCATE_ENTRY_FOUND;
         }
-        if (count_collisions) {
-            if (info_store->collision_count < SIZE_MAX)
-                info_store->collision_count++;
+        if (collision_count != NULL) {
+            if (*collision_count < SIZE_MAX)
+                *collision_count += 1;
         }
     }
     return LOCATE_STORE_FULL;
@@ -85,7 +85,7 @@ static Status resize(InfoStore *info_store) {
         if (info_store->entries[i].node != NULL) {
             size_t index;
             LocateResult result = locate(
-                &temp_store, info_store->entries[i].node->key, false, &index);
+                &temp_store, NULL, info_store->entries[i].node->key, &index);
             if (result != LOCATE_EMPTY_SLOT_FOUND) {
                 free(temp_entries);
                 return CFR_STATUS_INVALID_ARGUMENT;
@@ -149,7 +149,8 @@ Status cfr_info_store_find(InfoStore *info_store, InfoSetKey key,
     if (info_store == NULL || node_out == NULL)
         return CFR_STATUS_INVALID_ARGUMENT;
     size_t index;
-    LocateResult result = locate(info_store, key, true, &index);
+    LocateResult result =
+        locate(info_store, &(info_store->collision_count), key, &index);
     switch (result) {
 
     case LOCATE_ENTRY_FOUND:
@@ -161,9 +162,11 @@ Status cfr_info_store_find(InfoStore *info_store, InfoSetKey key,
         *node_out = NULL;
         return CFR_STATUS_NOT_FOUND;
 
-    default:
+    case LOCATE_INVALID_ARGUMENT:
         return CFR_STATUS_INVALID_ARGUMENT;
     }
+
+    return CFR_STATUS_INVALID_ARGUMENT;
 }
 
 Status cfr_info_store_get_or_create(InfoStore *info_store, InfoSetKey key,
@@ -171,7 +174,8 @@ Status cfr_info_store_get_or_create(InfoStore *info_store, InfoSetKey key,
     if (info_store == NULL || node_out == NULL || action_count == 0)
         return CFR_STATUS_INVALID_ARGUMENT;
     size_t index;
-    LocateResult result = locate(info_store, key, true, &index);
+    LocateResult result =
+        locate(info_store, &(info_store->collision_count), key, &index);
     if (result == LOCATE_INVALID_ARGUMENT)
         return CFR_STATUS_INVALID_ARGUMENT;
     if (result == LOCATE_ENTRY_FOUND) {
@@ -200,7 +204,8 @@ Status cfr_info_store_get_or_create(InfoStore *info_store, InfoSetKey key,
             temp = NULL;
             return resize_status;
         }
-        result = locate(info_store, key, true, &index);
+        result =
+            locate(info_store, &(info_store->collision_count), key, &index);
         if (result != LOCATE_EMPTY_SLOT_FOUND) {
             cfr_info_node_destroy(temp);
             free(temp);
@@ -223,4 +228,23 @@ Status cfr_info_store_get_stats(const InfoStore *info_store,
     stats_out->growth_count = info_store->growth_count;
     stats_out->size = info_store->size;
     return CFR_STATUS_SUCCESS;
+}
+
+Status cfr_info_store_find_const(const InfoStore *info_store, InfoSetKey key,
+                                 const InfoNode **node_out) {
+    if (info_store == NULL || node_out == NULL)
+        return CFR_STATUS_INVALID_ARGUMENT;
+    size_t index;
+    LocateResult result = locate(info_store, NULL, key, &index);
+    if (result == LOCATE_INVALID_ARGUMENT)
+        return CFR_STATUS_INVALID_ARGUMENT;
+    if (result == LOCATE_ENTRY_FOUND) {
+        *node_out = info_store->entries[index].node;
+        return CFR_STATUS_SUCCESS;
+    } else if (result == LOCATE_EMPTY_SLOT_FOUND ||
+               result == LOCATE_STORE_FULL) {
+        *node_out = NULL;
+        return CFR_STATUS_NOT_FOUND;
+    } else
+        return CFR_STATUS_INVALID_ARGUMENT;
 }

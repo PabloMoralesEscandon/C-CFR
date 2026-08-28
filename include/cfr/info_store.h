@@ -122,4 +122,22 @@ Status cfr_info_store_get_or_create(InfoStore *info_store, InfoSetKey key,
 Status cfr_info_store_get_stats(const InfoStore *info_store,
                                 InfoStoreStats *stats_out);
 
+/*
+ * Busca key y publica un préstamo constante al nodo asociado.
+ *
+ * info_store debe estar inicializado. Si la clave existe, node_out recibe un
+ * préstamo constante. El llamador no debe destruir ni liberar el nodo. El
+ * préstamo conserva su dirección durante los crecimientos del almacén. El
+ * préstamo deja de ser válido cuando el llamador destruye el almacén.
+ *
+ * Si la clave no existe, la función publica un puntero nulo y devuelve
+ * CFR_STATUS_NOT_FOUND. Un argumento inválido produce
+ * CFR_STATUS_INVALID_ARGUMENT y conserva node_out.
+ *
+ * La función no modifica los nodos. La función tampoco modifica size,
+ * capacity, collision_count ni growth_count.
+ */
+Status cfr_info_store_find_const(const InfoStore *info_store, InfoSetKey key,
+                                 const InfoNode **node_out);
+
 #endif

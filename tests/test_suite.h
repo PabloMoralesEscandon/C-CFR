@@ -8,5 +8,6 @@ int test_info_store(void);
 int test_traversal(void);
 int test_chance_trainer(void);
 int test_kuhn_poker(void);
+int test_evaluation(void);
 
 #endif

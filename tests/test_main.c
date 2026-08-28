@@ -12,6 +12,7 @@ int main(void) {
     failures += test_traversal();
     failures += test_chance_trainer();
     failures += test_kuhn_poker();
+    failures += test_evaluation();
 
     if (failures != 0) {
         fprintf(stderr, "Fallaron %d comprobaciones.\n", failures);
