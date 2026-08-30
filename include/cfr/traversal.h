@@ -46,6 +46,11 @@ typedef struct {
  * each successfully applied action. If an undo operation fails, the function
  * returns that error and cannot guarantee that state was restored.
  *
+ * Before walking the tree, the traversal calls the public operations' optional
+ * validate_state callback once for the root. If game->trusted_operations is
+ * non-null, descendant queries and mutations use that table. Public cfr_game_*
+ * calls outside the traversal always use game->operations.
+ *
  * store retains ownership of its nodes. The function can add nodes and modify
  * their internal statistics. If an error occurs, accumulators that existed
  * before the call do not change. New nodes with zero accumulators can remain in

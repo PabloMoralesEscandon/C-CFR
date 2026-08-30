@@ -550,6 +550,7 @@ static void check_corrupt_states_are_rejected(void) {
     const Game *game = cfr_blackjack_descriptor();
     BlackjackState valid;
     BlackjackState corrupt;
+    bool terminal = true;
 
     initialize(&valid);
     CHECK(cfr_game_validate_state(game, as_const_state(&valid)) ==
@@ -567,6 +568,9 @@ static void check_corrupt_states_are_rejected(void) {
     corrupt.player_hand.is_soft = true;
     CHECK(cfr_game_validate_state(game, as_const_state(&corrupt)) ==
           CFR_STATUS_INVALID_ARGUMENT);
+    CHECK(cfr_game_is_terminal(game, as_const_state(&corrupt), &terminal) ==
+          CFR_STATUS_INVALID_ARGUMENT);
+    CHECK(terminal);
 
     corrupt = valid;
     corrupt.phase = CFR_BLACKJACK_PHASE_PLAYER_TURN;
@@ -578,6 +582,44 @@ static void check_corrupt_states_are_rejected(void) {
         CFR_BLACKJACK_ACTION_DEAL_ACE;
     CHECK(cfr_game_validate_state(game, as_const_state(&corrupt)) ==
           CFR_STATUS_INVALID_ARGUMENT);
+}
+
+static void check_trusted_operation_invariants(void) {
+    static const Action path[] = {
+        CFR_BLACKJACK_ACTION_DEAL_TEN, CFR_BLACKJACK_ACTION_DEAL_SIX,
+        CFR_BLACKJACK_ACTION_DEAL_EIGHT, CFR_BLACKJACK_ACTION_DEAL_TEN,
+        CFR_BLACKJACK_ACTION_STAND, CFR_BLACKJACK_ACTION_DEAL_TEN};
+    const Game *game = cfr_blackjack_descriptor();
+    Game trusted_game = *game;
+    BlackjackState state;
+    BlackjackState root;
+    size_t index;
+
+    CHECK(game->trusted_operations != NULL);
+    CHECK(game->trusted_operations != game->operations);
+    if (game->trusted_operations == NULL)
+        return;
+
+    trusted_game.operations = game->trusted_operations;
+    trusted_game.trusted_operations = NULL;
+    initialize(&state);
+    root = state;
+
+    for (index = 0; index < ARRAY_COUNT(path); index += 1) {
+        CHECK(cfr_game_apply_action(&trusted_game, as_state(&state),
+                                    path[index]) == CFR_STATUS_SUCCESS);
+        CHECK(cfr_game_validate_state(game, as_const_state(&state)) ==
+              CFR_STATUS_SUCCESS);
+    }
+    CHECK(state.phase == CFR_BLACKJACK_PHASE_TERMINAL);
+
+    for (index = ARRAY_COUNT(path); index > 0; index -= 1) {
+        CHECK(cfr_game_undo_action(&trusted_game, as_state(&state)) ==
+              CFR_STATUS_SUCCESS);
+        CHECK(cfr_game_validate_state(game, as_const_state(&state)) ==
+              CFR_STATUS_SUCCESS);
+    }
+    CHECK(same_state(&state, &root));
 }
 
 static void check_trainer_compatibility(void) {
@@ -694,6 +736,7 @@ int test_blackjack(void) {
     check_exhausted_rank();
     check_undo_and_terminal_contract();
     check_corrupt_states_are_rejected();
+    check_trusted_operation_invariants();
     check_trainer_compatibility();
     check_persistence();
 

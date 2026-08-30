@@ -170,6 +170,21 @@ struct CfrGame {
      * Game and traversal operations do not require this field.
      */
     const char *strategy_schema_id;
+    /*
+     * Optional operations for a state that validate_state has accepted.
+     *
+     * A traversal uses this table only after the public operations successfully
+     * validate its root. The trusted callbacks can omit redundant whole-state
+     * validation, but they must preserve every other GameOperations guarantee.
+     * In particular, successful apply and undo calls must keep the state valid,
+     * and errors must preserve the state and outputs as documented above.
+     *
+     * Public cfr_game_* wrappers never use this table. A null pointer makes a
+     * traversal use operations for every call, preserving existing adapters.
+     * This optional extension remains last so positional initializers written
+     * for older game descriptors continue to initialize the original fields.
+     */
+    const GameOperations *trusted_operations;
 };
 
 /*

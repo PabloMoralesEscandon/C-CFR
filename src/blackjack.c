@@ -24,6 +24,32 @@ static Status blackjack_chance_probability(const void *context,
 static Status blackjack_information_set_key(const void *context,
                                             const GameState *state,
                                             InfoSetKey *result);
+static Status blackjack_trusted_is_terminal(const void *context,
+                                            const GameState *state,
+                                            bool *result);
+static Status blackjack_trusted_terminal_utility(const void *context,
+                                                 const GameState *state,
+                                                 Player player,
+                                                 Utility *result);
+static Status blackjack_trusted_current_actor(const void *context,
+                                              const GameState *state,
+                                              Actor *result);
+static Status blackjack_trusted_legal_actions(const void *context,
+                                              const GameState *state,
+                                              Action *actions,
+                                              size_t capacity,
+                                              size_t *required_count);
+static Status blackjack_trusted_apply_action(const void *context,
+                                             GameState *state, Action action);
+static Status blackjack_trusted_undo_action(const void *context,
+                                            GameState *state);
+static Status blackjack_trusted_chance_probability(const void *context,
+                                                   const GameState *state,
+                                                   Action action,
+                                                   Probability *result);
+static Status blackjack_trusted_information_set_key(const void *context,
+                                                    const GameState *state,
+                                                    InfoSetKey *result);
 
 static const GameOperations BLACKJACK_GAME_OPERATIONS = {
     .validate_state = blackjack_validate_state,
@@ -36,12 +62,23 @@ static const GameOperations BLACKJACK_GAME_OPERATIONS = {
     .chance_probability = blackjack_chance_probability,
     .information_set_key = blackjack_information_set_key};
 
+static const GameOperations BLACKJACK_TRUSTED_GAME_OPERATIONS = {
+    .is_terminal = blackjack_trusted_is_terminal,
+    .terminal_utility = blackjack_trusted_terminal_utility,
+    .current_actor = blackjack_trusted_current_actor,
+    .legal_actions = blackjack_trusted_legal_actions,
+    .apply_action = blackjack_trusted_apply_action,
+    .undo_action = blackjack_trusted_undo_action,
+    .chance_probability = blackjack_trusted_chance_probability,
+    .information_set_key = blackjack_trusted_information_set_key};
+
 static const Game BLACKJACK_GAME = {
     .operations = &BLACKJACK_GAME_OPERATIONS,
     .context = NULL,
     .strategic_player_count = 1,
     .max_legal_actions = CFR_BLACKJACK_MAX_POSSIBLE_ACTIONS,
-    .strategy_schema_id = "cfr.blackjack/v2"};
+    .strategy_schema_id = "cfr.blackjack/v2",
+    .trusted_operations = &BLACKJACK_TRUSTED_GAME_OPERATIONS};
 
 static BlackjackState *as_blackjack(GameState *state) {
     return (BlackjackState *)state;
@@ -537,10 +574,18 @@ static Status blackjack_is_terminal(const void *context,
                                     const GameState *state, bool *result) {
     const BlackjackState *blackjack_state = as_blackjack_const(state);
 
-    (void)context;
     if (!state_has_valid_shape(blackjack_state))
         return CFR_STATUS_INVALID_ARGUMENT;
 
+    return blackjack_trusted_is_terminal(context, state, result);
+}
+
+static Status blackjack_trusted_is_terminal(const void *context,
+                                            const GameState *state,
+                                            bool *result) {
+    const BlackjackState *blackjack_state = as_blackjack_const(state);
+
+    (void)context;
     *result = blackjack_state->phase == CFR_BLACKJACK_PHASE_TERMINAL;
     return CFR_STATUS_SUCCESS;
 }
@@ -572,11 +617,22 @@ static Status blackjack_terminal_utility(const void *context,
                                          const GameState *state, Player player,
                                          Utility *result) {
     const BlackjackState *blackjack_state = as_blackjack_const(state);
+
+    if (!state_has_valid_shape(blackjack_state))
+        return CFR_STATUS_INVALID_ARGUMENT;
+
+    return blackjack_trusted_terminal_utility(context, state, player, result);
+}
+
+static Status blackjack_trusted_terminal_utility(const void *context,
+                                                 const GameState *state,
+                                                 Player player,
+                                                 Utility *result) {
+    const BlackjackState *blackjack_state = as_blackjack_const(state);
     Utility utility;
 
     (void)context;
-    if (!state_has_valid_shape(blackjack_state) ||
-        blackjack_state->phase != CFR_BLACKJACK_PHASE_TERMINAL ||
+    if (blackjack_state->phase != CFR_BLACKJACK_PHASE_TERMINAL ||
         (player != CFR_PLAYER_0 && player != CFR_PLAYER_1)) {
         return CFR_STATUS_INVALID_ARGUMENT;
     }
@@ -590,10 +646,18 @@ static Status blackjack_current_actor(const void *context,
                                       const GameState *state, Actor *result) {
     const BlackjackState *blackjack_state = as_blackjack_const(state);
 
-    (void)context;
     if (!state_has_valid_shape(blackjack_state))
         return CFR_STATUS_INVALID_ARGUMENT;
 
+    return blackjack_trusted_current_actor(context, state, result);
+}
+
+static Status blackjack_trusted_current_actor(const void *context,
+                                              const GameState *state,
+                                              Actor *result) {
+    const BlackjackState *blackjack_state = as_blackjack_const(state);
+
+    (void)context;
     if (phase_is_chance(blackjack_state->phase)) {
         result->kind = CFR_ACTOR_CHANCE;
         return CFR_STATUS_SUCCESS;
@@ -611,13 +675,24 @@ static Status blackjack_legal_actions(const void *context,
                                       size_t capacity,
                                       size_t *required_count) {
     const BlackjackState *blackjack_state = as_blackjack_const(state);
+
+    if (!state_has_valid_shape(blackjack_state))
+        return CFR_STATUS_INVALID_ARGUMENT;
+
+    return blackjack_trusted_legal_actions(context, state, actions, capacity,
+                                           required_count);
+}
+
+static Status blackjack_trusted_legal_actions(const void *context,
+                                              const GameState *state,
+                                              Action *actions,
+                                              size_t capacity,
+                                              size_t *required_count) {
+    const BlackjackState *blackjack_state = as_blackjack_const(state);
     size_t count = 0;
     size_t index;
 
     (void)context;
-    if (!state_has_valid_shape(blackjack_state))
-        return CFR_STATUS_INVALID_ARGUMENT;
-
     if (blackjack_state->phase == CFR_BLACKJACK_PHASE_PLAYER_TURN) {
         count = 2;
         if (count > capacity) {
@@ -660,12 +735,20 @@ static Status blackjack_legal_actions(const void *context,
 static Status blackjack_apply_action(const void *context, GameState *state,
                                      Action action) {
     BlackjackState *blackjack_state = as_blackjack(state);
+
+    if (!state_has_valid_shape(blackjack_state))
+        return CFR_STATUS_INVALID_ARGUMENT;
+
+    return blackjack_trusted_apply_action(context, state, action);
+}
+
+static Status blackjack_trusted_apply_action(const void *context,
+                                             GameState *state, Action action) {
+    BlackjackState *blackjack_state = as_blackjack(state);
     BlackjackPhase previous_phase;
     Status status;
 
     (void)context;
-    if (!state_has_valid_shape(blackjack_state))
-        return CFR_STATUS_INVALID_ARGUMENT;
     if (blackjack_state->undo_count >=
         CFR_BLACKJACK_UNDO_HISTORY_CAPACITY) {
         return CFR_STATUS_BUFFER_TOO_SMALL;
@@ -686,6 +769,16 @@ static Status blackjack_apply_action(const void *context, GameState *state,
 
 static Status blackjack_undo_action(const void *context, GameState *state) {
     BlackjackState *blackjack_state = as_blackjack(state);
+
+    if (!state_has_valid_shape(blackjack_state))
+        return CFR_STATUS_INVALID_ARGUMENT;
+
+    return blackjack_trusted_undo_action(context, state);
+}
+
+static Status blackjack_trusted_undo_action(const void *context,
+                                            GameState *state) {
+    BlackjackState *blackjack_state = as_blackjack(state);
     const BlackjackUndoEntry *entry;
     BlackjackCard card = CFR_BLACKJACK_CARD_NOT_DEALT;
     BlackjackHand *hand = NULL;
@@ -693,8 +786,6 @@ static Status blackjack_undo_action(const void *context, GameState *state) {
     Status status;
 
     (void)context;
-    if (!state_has_valid_shape(blackjack_state))
-        return CFR_STATUS_INVALID_ARGUMENT;
     if (blackjack_state->undo_count == 0)
         return CFR_STATUS_INVALID_ARGUMENT;
 
@@ -742,13 +833,24 @@ static Status blackjack_chance_probability(const void *context,
                                            Action action,
                                            Probability *result) {
     const BlackjackState *blackjack_state = as_blackjack_const(state);
+
+    if (!state_has_valid_shape(blackjack_state))
+        return CFR_STATUS_INVALID_ARGUMENT;
+
+    return blackjack_trusted_chance_probability(context, state, action,
+                                                result);
+}
+
+static Status blackjack_trusted_chance_probability(const void *context,
+                                                   const GameState *state,
+                                                   Action action,
+                                                   Probability *result) {
+    const BlackjackState *blackjack_state = as_blackjack_const(state);
     BlackjackCard card;
     size_t rank_index;
     Status status;
 
     (void)context;
-    if (!state_has_valid_shape(blackjack_state))
-        return CFR_STATUS_INVALID_ARGUMENT;
     if (!phase_is_chance(blackjack_state->phase))
         return CFR_STATUS_INVALID_ARGUMENT;
 
@@ -771,12 +873,22 @@ static Status blackjack_information_set_key(const void *context,
                                             const GameState *state,
                                             InfoSetKey *result) {
     const BlackjackState *blackjack_state = as_blackjack_const(state);
+
+    if (!state_has_valid_shape(blackjack_state))
+        return CFR_STATUS_INVALID_ARGUMENT;
+
+    return blackjack_trusted_information_set_key(context, state, result);
+}
+
+static Status blackjack_trusted_information_set_key(const void *context,
+                                                    const GameState *state,
+                                                    InfoSetKey *result) {
+    const BlackjackState *blackjack_state = as_blackjack_const(state);
     bool player_is_soft;
     int player_total;
 
     (void)context;
-    if (!state_has_valid_shape(blackjack_state) ||
-        blackjack_state->phase != CFR_BLACKJACK_PHASE_PLAYER_TURN ||
+    if (blackjack_state->phase != CFR_BLACKJACK_PHASE_PLAYER_TURN ||
         blackjack_state->dealer_hand.card_count < 1 ||
         blackjack_state->player_hand.card_count < 2 ||
         !card_is_real(blackjack_state->dealer_up_card)) {

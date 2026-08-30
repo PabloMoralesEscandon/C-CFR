@@ -556,6 +556,9 @@ static Status traverse_with_stats(const Game *game, GameState *state,
                                   bool regret_matching_plus,
                                   Utility *utility_out,
                                   TraversalStats *stats_out) {
+    Game trusted_game;
+    const Game *traversal_game = game;
+
     if (game == NULL || state == NULL || store == NULL || utility_out == NULL ||
         stats_out == NULL)
         return CFR_STATUS_INVALID_ARGUMENT;
@@ -568,14 +571,21 @@ static Status traverse_with_stats(const Game *game, GameState *state,
     Status status = cfr_game_validate_state(game, state);
     if (status != CFR_STATUS_SUCCESS)
         return status;
+    if (game->trusted_operations != NULL) {
+        trusted_game = *game;
+        trusted_game.operations = game->trusted_operations;
+        trusted_game.trusted_operations = NULL;
+        traversal_game = &trusted_game;
+    }
     WorkSpace ws = {0};
-    status = workspace_init(&ws, game->max_legal_actions, strategy_weight,
+    status = workspace_init(&ws, traversal_game->max_legal_actions,
+                            strategy_weight,
                             regret_matching_plus);
     if (status != CFR_STATUS_SUCCESS)
         return status;
     Utility temp_utility = 0.0;
-    status = cfr_traverse_branch(game, state, store, target_player, 0, 1.0, 1.0,
-                                 1.0, &ws, &temp_utility);
+    status = cfr_traverse_branch(traversal_game, state, store, target_player, 0,
+                                 1.0, 1.0, 1.0, &ws, &temp_utility);
     if (status == CFR_STATUS_SUCCESS)
         status = workspace_check_deltas(&ws);
     if (status == CFR_STATUS_SUCCESS)

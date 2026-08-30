@@ -88,12 +88,28 @@ static void check_zero_learning(const InfoNode *node) {
 }
 
 static size_t validation_calls;
+static size_t trusted_terminal_queries;
+static const GameOperations *trusted_delegate;
+
+static Status accept_root_state(const void *context, const GameState *state) {
+    (void)context;
+    (void)state;
+    validation_calls += 1;
+    return CFR_STATUS_SUCCESS;
+}
 
 static Status reject_root_state(const void *context, const GameState *state) {
     (void)context;
     (void)state;
     validation_calls += 1;
     return CFR_STATUS_NUMERIC_ERROR;
+}
+
+static Status count_trusted_terminal_query(const void *context,
+                                           const GameState *state,
+                                           bool *result) {
+    trusted_terminal_queries += 1;
+    return trusted_delegate->is_terminal(context, state, result);
 }
 
 static void test_terminal_utility_and_signs(void) {
@@ -344,6 +360,46 @@ static void test_root_validation_precedes_traversal(void) {
     destroy_store(&store);
 }
 
+static void test_trusted_operations_follow_root_validation(void) {
+    const Game *descriptor = traversal_game_descriptor();
+    Game game = *descriptor;
+    GameOperations public_operations = *descriptor->operations;
+    GameOperations trusted_operations = *descriptor->operations;
+    TraversalGameState state;
+    TraversalGameState snapshot;
+    InfoStore store;
+    Utility utility = 94.95;
+    bool terminal = true;
+
+    initialize_store(&store);
+    CHECK(traversal_game_state_init(&state) == CFR_STATUS_SUCCESS);
+    snapshot = state;
+    public_operations.validate_state = accept_root_state;
+    trusted_operations.is_terminal = count_trusted_terminal_query;
+    game.operations = &public_operations;
+    game.trusted_operations = &trusted_operations;
+    trusted_delegate = descriptor->operations;
+    validation_calls = 0;
+    trusted_terminal_queries = 0;
+
+    CHECK(cfr_game_is_terminal(&game,
+                               traversal_game_state_as_public_const(&state),
+                               &terminal) == CFR_STATUS_SUCCESS);
+    CHECK(!terminal);
+    CHECK(validation_calls == 0);
+    CHECK(trusted_terminal_queries == 0);
+
+    CHECK(cfr_traverse(&game, traversal_game_state_as_public(&state), &store,
+                       CFR_PLAYER_0, &utility) == CFR_STATUS_SUCCESS);
+    CHECK(validation_calls == 1);
+    CHECK(trusted_terminal_queries > 0);
+    CHECK(near(utility, 1.0));
+    CHECK(same_state(&state, &snapshot));
+
+    trusted_delegate = NULL;
+    destroy_store(&store);
+}
+
 static void test_error_after_apply_restores_state(void) {
     const Game *game = traversal_game_descriptor();
     TraversalGameState state;
@@ -591,6 +647,7 @@ int test_traversal(void) {
     test_strategy_validation_precedes_regret_publish();
     test_excessive_action_limit_is_rejected();
     test_root_validation_precedes_traversal();
+    test_trusted_operations_follow_root_validation();
     test_error_after_apply_restores_state();
     test_error_after_completed_branch_restores_state();
     test_undo_error_is_propagated();
