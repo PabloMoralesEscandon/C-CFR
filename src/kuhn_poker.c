@@ -171,8 +171,7 @@ static Status validate_state(const KuhnPokerState *state) {
         return CFR_STATUS_INVALID_ARGUMENT;
 
     /*
-     * Primero se comprueban los límites. Así los bucles posteriores no
-     * pueden acceder fuera de los arrays.
+     * Check the bounds first so later loops cannot access outside the arrays.
      */
     if (state->public_action_count > CFR_KUHN_POKER_PUBLIC_HISTORY_CAPACITY ||
         state->undo_count > CFR_KUHN_POKER_UNDO_HISTORY_CAPACITY) {
@@ -182,20 +181,14 @@ static Status validate_state(const KuhnPokerState *state) {
     if (!phase_is_known(state->phase))
         return CFR_STATUS_INVALID_ARGUMENT;
 
-    /*
-     * Las posiciones no utilizadas de la historia pública deben estar
-     * limpias.
-     */
+    /* Unused positions in the public history must be clear. */
     for (index = state->public_action_count;
          index < CFR_KUHN_POKER_PUBLIC_HISTORY_CAPACITY; index++) {
         if (state->public_actions[index] != CFR_KUHN_POKER_ACTION_NONE)
             return CFR_STATUS_INVALID_ARGUMENT;
     }
 
-    /*
-     * Las posiciones no utilizadas del historial de deshacer también deben
-     * contener la representación vacía.
-     */
+    /* Unused positions in the undo history must also be empty. */
     for (index = state->undo_count;
          index < CFR_KUHN_POKER_UNDO_HISTORY_CAPACITY; index++) {
         if (!undo_entry_is_empty(&state->undo_history[index])) {
@@ -203,9 +196,7 @@ static Status validate_state(const KuhnPokerState *state) {
         }
     }
 
-    /*
-     * La fase de azar solo puede representar la raíz exacta.
-     */
+    /* The chance phase can represent only the exact root state. */
     if (state->phase == CFR_KUHN_POKER_PHASE_CHANCE) {
         if (state->cards[0] != CFR_KUHN_POKER_CARD_NOT_DEALT ||
             state->cards[1] != CFR_KUHN_POKER_CARD_NOT_DEALT ||
@@ -216,24 +207,17 @@ static Status validate_state(const KuhnPokerState *state) {
         return CFR_STATUS_SUCCESS;
     }
 
-    /*
-     * Después del reparto deben existir dos cartas reales y diferentes.
-     */
+    /* After the deal, there must be two different real cards. */
     if (!card_is_real(state->cards[0]) || !card_is_real(state->cards[1]) ||
         state->cards[0] == state->cards[1]) {
         return CFR_STATUS_INVALID_ARGUMENT;
     }
 
-    /*
-     * Hay una entrada para deshacer el reparto y otra por cada acción
-     * pública.
-     */
+    /* There is one undo entry for the deal and one per public action. */
     if (state->undo_count != state->public_action_count + 1)
         return CFR_STATUS_INVALID_ARGUMENT;
 
-    /*
-     * La primera entrada debe describir la raíz anterior al reparto.
-     */
+    /* The first entry must describe the root before the deal. */
     const KuhnPokerUndoEntry *deal_entry = &state->undo_history[0];
 
     if (deal_entry->previous_phase != CFR_KUHN_POKER_PHASE_CHANCE ||
@@ -252,14 +236,12 @@ static Status validate_state(const KuhnPokerState *state) {
         if (dealt_cards[i] != state->cards[i])
             return CFR_STATUS_INVALID_ARGUMENT;
 
-    /*
-     * Después de un reparto válido siempre empieza el jugador cero.
-     */
+    /* Player zero always acts first after a valid deal. */
     expected_phase = CFR_KUHN_POKER_PHASE_PLAYER_0_OPEN;
 
     /*
-     * Se reproduce la historia pública. Cada entrada de undo debe describir
-     * exactamente el estado que existía antes de su acción.
+     * Replay the public history. Each undo entry must exactly describe the
+     * state that existed before its action.
      */
     for (index = 0; index < state->public_action_count; index++) {
         const KuhnPokerUndoEntry *entry = &state->undo_history[index + 1];
@@ -280,9 +262,7 @@ static Status validate_state(const KuhnPokerState *state) {
             return CFR_STATUS_INVALID_ARGUMENT;
     }
 
-    /*
-     * La fase obtenida al reproducir la historia debe ser la fase guardada.
-     */
+    /* The phase produced by replaying the history must match the stored phase. */
     if (expected_phase != state->phase)
         return CFR_STATUS_INVALID_ARGUMENT;
 
@@ -719,9 +699,7 @@ static Status kuhn_poker_information_set_key(const void *context,
         return CFR_STATUS_INVALID_ARGUMENT;
     }
 
-    /*
-     * Convertimos las cartas en códigos consecutivos desde cero.
-     */
+    /* Convert the cards to consecutive zero-based codes. */
     switch (private_card) {
     case CFR_KUHN_POKER_CARD_JACK:
         card_code = 0;
@@ -741,10 +719,8 @@ static Status kuhn_poker_information_set_key(const void *context,
     }
 
     /*
-     * Hay cuatro contextos y tres cartas.
-     *
-     * Primero seleccionamos el bloque del jugador y el contexto.
-     * Después seleccionamos la carta dentro de ese bloque.
+     * There are four contexts and three cards. First select the block for the
+     * player and context, then select the card within that block.
      */
     *result = ((player_code * 4) + context_code) * 3 + card_code;
 

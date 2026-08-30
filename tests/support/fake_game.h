@@ -37,23 +37,23 @@ typedef struct {
 } FakeGameState;
 
 typedef struct {
-    /* La probabilidad debe estar entre cero y uno. */
+    /* The probability must be between zero and one. */
     Probability heads_probability;
 } FakeGameConfig;
 
-/* Inicializa un estado que pertenece al llamador. */
+/* Initializes a caller-owned state. */
 Status fake_game_state_init(FakeGameState *state);
 
 /*
- * Presta un descriptor estático que vive durante todo el programa.
- * El descriptor usa una configuración interna inmutable.
+ * Returns a borrowed static descriptor that lives for the entire program.
+ * The descriptor uses immutable internal configuration.
  */
 const Game *fake_game_descriptor(void);
 
-/* Presenta un estado modificable mediante el tipo opaco del contrato. */
+/* Views a mutable state through the contract's opaque type. */
 GameState *fake_game_state_as_public(FakeGameState *fake_state);
 
-/* Presenta un estado de solo lectura mediante el tipo opaco del contrato. */
+/* Views a read-only state through the contract's opaque type. */
 const GameState *
 fake_game_state_as_public_const(const FakeGameState *fake_state);
 

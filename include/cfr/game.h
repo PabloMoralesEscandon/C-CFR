@@ -7,10 +7,10 @@
 #include "cfr/types.h"
 
 /*
- * Representa un estado mediante un tipo opaco.
+ * Represents a state through an opaque type.
  *
- * El adaptador define la representación concreta. El llamador posee cada
- * instancia. Las operaciones reciben un préstamo durante cada llamada.
+ * The adapter defines the concrete representation. The caller owns each
+ * instance. Operations borrow an instance for the duration of each call.
  */
 typedef struct CfrGameState GameState;
 
@@ -18,169 +18,170 @@ typedef struct CfrGameOperations GameOperations;
 typedef struct CfrGame Game;
 
 /*
- * Define las operaciones que un adaptador ofrece al motor.
+ * Defines the operations that an adapter provides to the engine.
  *
- * El adaptador posee esta tabla y el contexto asociado. Ambos objetos deben
- * vivir mientras exista el descriptor Game que los usa.
+ * The adapter owns this table and its associated context. Both objects must
+ * remain alive as long as a Game descriptor that uses them exists.
  *
- * El llamador posee los estados, los arrays y las variables de salida. Cada
- * callback recibe préstamos. Un callback no debe guardar, liberar ni cambiar
- * la propiedad de un puntero recibido.
+ * The caller owns the states, arrays, and output variables. Each callback
+ * borrows them. A callback must not retain, free, or change ownership of a
+ * pointer it receives.
  *
- * Un callback no debe reservar memoria durante una operación. El llamador
- * proporciona todo el almacenamiento que una operación necesita.
+ * A callback must not allocate memory during an operation. The caller provides
+ * all storage needed by the operation.
  *
- * Una salida es válida solo cuando el callback devuelve CFR_STATUS_SUCCESS.
- * El callback debe conservar las salidas cuando devuelve un error. La única
- * excepción es required_count cuando el búfer es insuficiente.
+ * An output is valid only when the callback returns CFR_STATUS_SUCCESS. The
+ * callback must preserve outputs when it returns an error. The only exception
+ * is required_count when the buffer is too small.
  */
 struct CfrGameOperations {
     /*
-     * Indica si el estado es terminal.
+     * Reports whether the state is terminal.
      *
-     * Esta consulta acepta cualquier estado válido. result recibe el valor
-     * solo cuando la operación termina correctamente. Un estado inválido
-     * produce CFR_STATUS_INVALID_ARGUMENT.
+     * This query accepts any valid state. result receives a value only when
+     * the operation completes successfully. An invalid state produces
+     * CFR_STATUS_INVALID_ARGUMENT.
      */
     Status (*is_terminal)(const void *context, const GameState *state,
                           bool *result);
 
     /*
-     * Obtiene la utilidad terminal para un jugador.
+     * Gets the terminal utility for one player.
      *
-     * El estado debe ser terminal. player debe identificar un jugador válido.
-     * result recibe la utilidad solo cuando la operación termina correctamente.
-     * Otro estado o jugador produce CFR_STATUS_INVALID_ARGUMENT.
+     * The state must be terminal. player must identify a valid player. result
+     * receives the utility only when the operation completes successfully. A
+     * nonterminal state or invalid player produces CFR_STATUS_INVALID_ARGUMENT.
      */
     Status (*terminal_utility)(const void *context, const GameState *state,
                                Player player, Utility *result);
 
     /*
-     * Obtiene el actor de un estado no terminal.
+     * Gets the actor in a nonterminal state.
      *
-     * result recibe el actor solo cuando la operación termina correctamente.
-     * Un estado terminal o inválido produce CFR_STATUS_INVALID_ARGUMENT.
+     * result receives the actor only when the operation completes
+     * successfully. A terminal or invalid state produces
+     * CFR_STATUS_INVALID_ARGUMENT.
      */
     Status (*current_actor)(const void *context, const GameState *state,
                             Actor *result);
 
     /*
-     * Enumera las acciones legales de un estado no terminal.
+     * Enumerates the legal actions of a nonterminal state.
      *
-     * capacity indica el número de elementos disponibles en actions. El
-     * puntero actions es obligatorio aunque capacity sea cero.
+     * capacity is the number of elements available in actions. The actions
+     * pointer is required even when capacity is zero.
      *
-     * required_count recibe el número de elementos necesarios. Si falta
-     * capacidad, el callback devuelve CFR_STATUS_BUFFER_TOO_SMALL. En ese caso,
-     * required_count recibe la capacidad necesaria y actions no cambia.
-     * Un estado terminal o inválido produce CFR_STATUS_INVALID_ARGUMENT.
+     * required_count receives the number of elements needed. If capacity is
+     * insufficient, the callback returns CFR_STATUS_BUFFER_TOO_SMALL. In that
+     * case, required_count receives the required capacity and actions remains
+     * unchanged. A terminal or invalid state produces
+     * CFR_STATUS_INVALID_ARGUMENT.
      */
     Status (*legal_actions)(const void *context, const GameState *state,
                             Action *actions, size_t capacity,
                             size_t *required_count);
 
     /*
-     * Aplica una acción legal a un estado no terminal.
+     * Applies a legal action to a nonterminal state.
      *
-     * El callback devuelve CFR_STATUS_ILLEGAL_ACTION para una acción ilegal.
-     * Un estado inválido produce CFR_STATUS_INVALID_ARGUMENT. El callback puede
-     * devolver CFR_STATUS_BUFFER_TOO_SMALL si no puede registrar otra acción.
-     * El callback no debe modificar el estado cuando devuelve un error.
+     * The callback returns CFR_STATUS_ILLEGAL_ACTION for an illegal action. An
+     * invalid state produces CFR_STATUS_INVALID_ARGUMENT. The callback can
+     * return CFR_STATUS_BUFFER_TOO_SMALL if it cannot record another action.
+     * The callback must not modify the state when it returns an error.
      */
     Status (*apply_action)(const void *context, GameState *state,
                            Action action);
 
     /*
-     * Deshace la última acción aplicada.
+     * Undoes the last applied action.
      *
-     * El estado debe contener una acción que se pueda deshacer. El callback no
-     * debe modificar el estado cuando devuelve un error.
-     * Un estado sin historial produce CFR_STATUS_INVALID_ARGUMENT.
+     * The state must contain an action that can be undone. The callback must
+     * not modify the state when it returns an error. A state without history
+     * produces CFR_STATUS_INVALID_ARGUMENT.
      */
     Status (*undo_action)(const void *context, GameState *state);
 
     /*
-     * Obtiene la probabilidad de una acción legal de azar.
+     * Gets the probability of a legal chance action.
      *
-     * El actor actual debe ser el azar. result recibe un valor entre cero y uno
-     * solo cuando la operación termina correctamente.
-     * Otro actor produce CFR_STATUS_INVALID_ARGUMENT. Una acción que no es de
-     * azar produce CFR_STATUS_ILLEGAL_ACTION.
+     * The current actor must be chance. result receives a value between zero
+     * and one only when the operation completes successfully. A different
+     * actor produces CFR_STATUS_INVALID_ARGUMENT. A non-chance action produces
+     * CFR_STATUS_ILLEGAL_ACTION.
      */
     Status (*chance_probability)(const void *context, const GameState *state,
                                  Action action, Probability *result);
 
     /*
-     * Obtiene la clave del conjunto de información del jugador actual.
+     * Gets the current player's information-set key.
      *
-     * El actor actual debe ser un jugador. Estados que el jugador no puede
-     * distinguir deben producir la misma clave estable.
-     * Otro actor o un estado inválido produce CFR_STATUS_INVALID_ARGUMENT.
+     * The current actor must be a player. States that the player cannot
+     * distinguish must produce the same stable key. A different actor or an
+     * invalid state produces CFR_STATUS_INVALID_ARGUMENT.
      */
     Status (*information_set_key)(const void *context, const GameState *state,
                                   InfoSetKey *result);
 };
 
-/* Describe un juego sin almacenar el estado de una partida. */
+/* Describes a game without storing the state of a match. */
 struct CfrGame {
-    /* Tabla prestada. El adaptador conserva la propiedad. */
+    /* Borrowed table. The adapter retains ownership. */
     const GameOperations *operations;
     /*
-     * Contexto prestado. El adaptador conserva la propiedad.
+     * Borrowed context. The adapter retains ownership.
      *
-     * El puntero puede ser nulo si el adaptador no necesita configuración. Un
-     * adaptador debe documentar y validar cualquier requisito adicional.
+     * The pointer can be null if the adapter needs no configuration. An
+     * adapter must document and validate any additional requirements.
      */
     const void *context;
-    /* Límite superior de acciones legales en cualquier estado. */
+    /* Upper bound on the number of legal actions in any state. */
     size_t max_legal_actions;
 };
 
 /*
- * Reglas comunes de las envolturas cfr_game_*:
+ * Common rules for the cfr_game_* wrappers:
  *
- * Cada envoltura valida game, operations, el callback, state y las salidas
- * obligatorias. Una validación fallida devuelve CFR_STATUS_INVALID_ARGUMENT.
- * En ese caso, la envoltura no llama al callback y no modifica las salidas.
+ * Each wrapper validates game, operations, the callback, state, and required
+ * outputs. Failed validation returns CFR_STATUS_INVALID_ARGUMENT. In that
+ * case, the wrapper does not call the callback or modify outputs.
  *
- * Una envoltura no valida las reglas del juego. El adaptador valida la fase,
- * el jugador y la acción. La envoltura devuelve sin cambios el Status del
- * callback.
+ * A wrapper does not validate game rules. The adapter validates the phase,
+ * player, and action. The wrapper returns the callback's Status unchanged.
  */
 
-/* Consulta si state es terminal y escribe el resultado en result. */
+/* Queries whether state is terminal and writes the answer to result. */
 Status cfr_game_is_terminal(const Game *game, const GameState *state,
                             bool *result);
 
-/* Consulta la utilidad terminal de player y la escribe en result. */
+/* Queries player terminal utility and writes it to result. */
 Status cfr_game_terminal_utility(const Game *game, const GameState *state,
                                  Player player, Utility *result);
 
-/* Consulta el actor actual y lo escribe en result. */
+/* Queries the current actor and writes it to result. */
 Status cfr_game_current_actor(const Game *game, const GameState *state,
                               Actor *result);
 
 /*
- * Enumera acciones legales en el array actions.
+ * Enumerates legal actions in the actions array.
  *
- * capacity cuenta elementos. required_count recibe el número necesario. El
- * puntero actions es obligatorio aunque capacity sea cero.
+ * capacity counts elements. required_count receives the required count. The
+ * actions pointer is required even when capacity is zero.
  */
 Status cfr_game_legal_actions(const Game *game, const GameState *state,
                               Action *actions, size_t capacity,
                               size_t *required_count);
 
-/* Aplica action al estado modificable state. */
+/* Applies action to the mutable state. */
 Status cfr_game_apply_action(const Game *game, GameState *state, Action action);
 
-/* Deshace la última acción aplicada al estado modificable state. */
+/* Undoes the last action applied to the mutable state. */
 Status cfr_game_undo_action(const Game *game, GameState *state);
 
-/* Consulta la probabilidad de action en un nodo de azar. */
+/* Queries the probability of action at a chance node. */
 Status cfr_game_chance_probability(const Game *game, const GameState *state,
                                    Action action, Probability *result);
 
-/* Consulta la clave estable del conjunto de información actual. */
+/* Queries the stable key of the current information set. */
 Status cfr_game_information_set_key(const Game *game, const GameState *state,
                                     InfoSetKey *result);
 

@@ -9,133 +9,131 @@
 typedef struct CfrInfoStoreEntry InfoStoreEntry;
 
 /*
- * Relaciona claves de conjuntos de información con nodos de aprendizaje.
+ * Maps information-set keys to learning nodes.
  *
- * El llamador posee la estructura InfoStore. El almacén posee el array de
- * celdas, cada InfoNode y los arrays internos de cada nodo. El llamador no debe
- * modificar los campos de InfoStore.
+ * The caller owns the InfoStore structure. The store owns the cell array, each
+ * InfoNode, and each node's internal arrays. The caller must not modify
+ * InfoStore fields.
  *
- * El llamador no debe copiar por asignación un almacén inicializado. Una copia
- * tendría los mismos punteros y no tendría una propiedad independiente.
+ * The caller must not copy an initialized store by assignment. A copy would
+ * contain the same pointers and would not have independent ownership.
  *
- * El almacén no permite borrar un nodo individual. cfr_info_store_destroy
- * libera todos los recursos que posee el almacén.
+ * The store does not support deleting individual nodes. cfr_info_store_destroy
+ * frees all resources owned by the store.
  */
 typedef struct {
-    /* Array propio de celdas privadas. El llamador no usa este puntero. */
+    /* Owned array of private cells. The caller does not use this pointer. */
     InfoStoreEntry *entries;
-    /* Número de nodos que contiene el almacén. */
+    /* Number of nodes in the store. */
     size_t size;
-    /* Número de celdas reservadas en el array. */
+    /* Number of cells allocated in the array. */
     size_t capacity;
-    /* Celdas con otra clave que encontraron find y get_or_create. */
+    /* Cells with other keys encountered by find and get_or_create. */
     size_t collision_count;
-    /* Número de crecimientos que terminaron correctamente. */
+    /* Number of successful growth operations. */
     size_t growth_count;
 } InfoStore;
 
-/* Contiene una copia de las estadísticas del almacén. */
+/* Contains a snapshot of the store statistics. */
 typedef struct {
-    /* Número de nodos que contiene el almacén. */
+    /* Number of nodes in the store. */
     size_t size;
-    /* Número de celdas reservadas en el array. */
+    /* Number of cells allocated in the array. */
     size_t capacity;
     /*
-     * Número acumulado de celdas con otra clave que encontraron find y
-     * get_or_create. El contador se satura en SIZE_MAX y no vuelve a cero.
+     * Cumulative number of cells with other keys encountered by find and
+     * get_or_create. The counter saturates at SIZE_MAX and does not reset.
      */
     size_t collision_count;
-    /* Número de crecimientos que terminaron correctamente. */
+    /* Number of successful growth operations. */
     size_t growth_count;
 } InfoStoreStats;
 
 /*
- * Inicializa info_store y reserva la tabla inicial.
+ * Initializes info_store and allocates the initial table.
  *
- * info_store debe estar puesto a cero o debe haber sido destruido. La función
- * devuelve CFR_STATUS_OUT_OF_MEMORY cuando no puede reservar la tabla. Un
- * error conserva info_store.
+ * info_store must be zero-initialized or previously destroyed. The function
+ * returns CFR_STATUS_OUT_OF_MEMORY when it cannot allocate the table. An error
+ * preserves info_store.
  */
 Status cfr_info_store_init(InfoStore *info_store);
 
 /*
- * Destruye info_store y deja todos sus campos a cero.
+ * Destroys info_store and sets all its fields to zero.
  *
- * La función libera las celdas, los nodos y los arrays internos de los nodos.
- * Un almacén puesto a cero o ya destruido produce CFR_STATUS_SUCCESS. Un
- * puntero nulo produce CFR_STATUS_INVALID_ARGUMENT.
+ * The function frees the cells, nodes, and nodes' internal arrays. A
+ * zero-initialized or previously destroyed store produces CFR_STATUS_SUCCESS.
+ * A null pointer produces CFR_STATUS_INVALID_ARGUMENT.
  *
- * La destrucción invalida todos los punteros prestados por el almacén. La
- * función no libera la estructura InfoStore que posee el llamador.
+ * Destruction invalidates all pointers borrowed from the store. The function
+ * does not free the caller-owned InfoStore structure.
  */
 Status cfr_info_store_destroy(InfoStore *info_store);
 
 /*
- * Busca key y escribe el nodo asociado en node_out.
+ * Finds key and writes the associated node to node_out.
  *
- * info_store debe estar inicializado. Si la clave existe, node_out recibe un
- * puntero prestado. El llamador no debe destruir ni liberar el nodo. El puntero
- * conserva su dirección durante los crecimientos del almacén. El puntero deja
- * de ser válido cuando el llamador destruye el almacén.
+ * info_store must be initialized. If the key exists, node_out receives a
+ * borrowed pointer. The caller must not destroy or free the node. Its address
+ * remains stable as the store grows. The pointer becomes invalid when the
+ * caller destroys the store.
  *
- * Si la clave no existe, la función escribe un puntero nulo y devuelve
- * CFR_STATUS_NOT_FOUND. Un argumento inválido produce
- * CFR_STATUS_INVALID_ARGUMENT y conserva node_out.
+ * If the key does not exist, the function writes a null pointer and returns
+ * CFR_STATUS_NOT_FOUND. An invalid argument produces
+ * CFR_STATUS_INVALID_ARGUMENT and preserves node_out.
  *
- * El sondeo puede aumentar collision_count aunque la función no encuentre la
- * clave.
+ * Probing can increase collision_count even when the function does not find the
+ * key.
  */
 Status cfr_info_store_find(InfoStore *info_store, InfoSetKey key,
                            InfoNode **node_out);
 
 /*
- * Obtiene el nodo de key o crea un nodo con action_count.
+ * Gets the node for key or creates a node with action_count.
  *
- * info_store debe estar inicializado. action_count debe ser mayor que cero. Si
- * la clave existe, action_count debe coincidir con el número de acciones del
- * nodo. Una cantidad distinta produce CFR_STATUS_INVALID_ARGUMENT y conserva
- * el nodo.
+ * info_store must be initialized. action_count must be greater than zero. If
+ * the key exists, action_count must match the node's number of actions. A
+ * different count produces CFR_STATUS_INVALID_ARGUMENT and preserves the node.
  *
- * Si la clave no existe, la función crea un nodo. La función aumenta la
- * capacidad antes de que la inserción supere tres cuartos de las celdas. Cada
- * crecimiento duplica la capacidad y conserva las direcciones de los nodos.
+ * If the key does not exist, the function creates a node. It increases capacity
+ * before an insertion would exceed three quarters of the cells. Each growth
+ * doubles the capacity and preserves node addresses.
  *
- * node_out recibe un puntero prestado solo cuando la función termina
- * correctamente. El llamador no debe destruir ni liberar el nodo. El puntero
- * conserva su dirección durante los crecimientos. El puntero deja de ser
- * válido cuando el llamador destruye el almacén.
+ * node_out receives a borrowed pointer only when the function completes
+ * successfully. The caller must not destroy or free the node. Its address
+ * remains stable as the store grows. The pointer becomes invalid when the
+ * caller destroys the store.
  *
- * Un error conserva node_out y no publica un nodo parcial. Un error conserva
- * los nodos existentes. El sondeo puede aumentar collision_count antes del
- * error.
+ * An error preserves node_out and does not publish a partial node. It preserves
+ * existing nodes. Probing can increase collision_count before the error.
  */
 Status cfr_info_store_get_or_create(InfoStore *info_store, InfoSetKey key,
                                     size_t action_count, InfoNode **node_out);
 
 /*
- * Copia las estadísticas actuales en stats_out.
+ * Copies the current statistics to stats_out.
  *
- * La copia no contiene punteros y no cambia después de otra operación. Un
- * argumento inválido produce CFR_STATUS_INVALID_ARGUMENT y conserva
+ * The copy contains no pointers and does not change after another operation.
+ * An invalid argument produces CFR_STATUS_INVALID_ARGUMENT and preserves
  * stats_out.
  */
 Status cfr_info_store_get_stats(const InfoStore *info_store,
                                 InfoStoreStats *stats_out);
 
 /*
- * Busca key y publica un préstamo constante al nodo asociado.
+ * Finds key and publishes a const borrowed pointer to the associated node.
  *
- * info_store debe estar inicializado. Si la clave existe, node_out recibe un
- * préstamo constante. El llamador no debe destruir ni liberar el nodo. El
- * préstamo conserva su dirección durante los crecimientos del almacén. El
- * préstamo deja de ser válido cuando el llamador destruye el almacén.
+ * info_store must be initialized. If the key exists, node_out receives a const
+ * borrowed pointer. The caller must not destroy or free the node. Its address
+ * remains stable as the store grows. The pointer becomes invalid when the
+ * caller destroys the store.
  *
- * Si la clave no existe, la función publica un puntero nulo y devuelve
- * CFR_STATUS_NOT_FOUND. Un argumento inválido produce
- * CFR_STATUS_INVALID_ARGUMENT y conserva node_out.
+ * If the key does not exist, the function publishes a null pointer and returns
+ * CFR_STATUS_NOT_FOUND. An invalid argument produces
+ * CFR_STATUS_INVALID_ARGUMENT and preserves node_out.
  *
- * La función no modifica los nodos. La función tampoco modifica size,
- * capacity, collision_count ni growth_count.
+ * The function does not modify nodes. It also does not modify size, capacity,
+ * collision_count, or growth_count.
  */
 Status cfr_info_store_find_const(const InfoStore *info_store, InfoSetKey key,
                                  const InfoNode **node_out);

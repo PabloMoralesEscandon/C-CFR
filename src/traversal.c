@@ -96,8 +96,8 @@ static Status workspace_init(WorkSpace *workspace, size_t max_legal_actions,
     }
 
     /*
-     * Cada entrada necesita action_count deltas de arrepentimiento
-     * y action_count deltas de estrategia.
+     * Each entry needs action_count regret deltas and action_count strategy
+     * deltas.
      */
     temporary.reserved_arena = INITIAL_ENTRY_CAPACITY * 2 * max_legal_actions;
 
@@ -163,10 +163,7 @@ static Status workspace_apply_deltas(WorkSpace *workspace) {
 
         double *delta_strategy = delta_regret + entry->action_count;
 
-        /*
-         * Todas las entradas ya han sido validadas por
-         * workspace_check_deltas.
-         */
+        /* All entries have already been validated by workspace_check_deltas. */
         Status status = cfr_info_node_apply_deltas(
             entry->node, delta_regret, delta_strategy, entry->action_count);
 
@@ -185,8 +182,8 @@ static Status workspace_apply_deltas(WorkSpace *workspace) {
 }
 
 static size_t hash_node(const InfoNode *node) {
-    /* Multiplicativo de Fibonacci. Los 4 bits bajos del puntero se
-       descartan porque la alineación de malloc los deja casi constantes. */
+    /* Fibonacci hashing. Discard the pointer's low 4 bits because malloc
+       alignment makes them nearly constant. */
     uintptr_t value = (uintptr_t)node >> 4;
     return (size_t)(value * 11400714819323198485ULL);
 }
@@ -198,7 +195,7 @@ static Status grow_table(WorkSpace *ws) {
         return CFR_STATUS_OUT_OF_MEMORY;
     for (size_t i = 0; i < new_capacity; i++)
         new_table[i] = CFR_CELL_EMPTY;
-    /* Reinsertar todas las entradas con la máscara nueva. */
+    /* Reinsert all entries with the new mask. */
     size_t mask = new_capacity - 1;
     for (size_t e = 0; e < ws->used_entries; e++) {
         size_t cell = hash_node(ws->entries[e].node) & mask;
@@ -214,25 +211,25 @@ static Status grow_table(WorkSpace *ws) {
 
 static Status find_or_create_entry(WorkSpace *ws, InfoNode *node,
                                    size_t action_count, size_t *index_out) {
-    /* Fase 1: si insertar superara 3/4 de ocupación, crecer ANTES de buscar. */
+    /* Phase 1: grow BEFORE searching if insertion would exceed 3/4 load. */
     if ((ws->used_table + 1) * 4 > ws->table_capacity * 3) {
         Status status = grow_table(ws);
         if (status != CFR_STATUS_SUCCESS)
             return status;
     }
-    /* Fase 2: sondeo lineal desde la celda que indica el hash. */
-    size_t mask = ws->table_capacity - 1; /* capacidad potencia de dos */
+    /* Phase 2: probe linearly from the cell selected by the hash. */
+    size_t mask = ws->table_capacity - 1; /* power-of-two capacity */
     size_t cell = hash_node(node) & mask;
     while (ws->table[cell] != CFR_CELL_EMPTY) {
         size_t candidate = ws->table[cell];
         if (ws->entries[candidate].node == node) {
-            *index_out = candidate; /* ya existía: la reutilizamos */
+            *index_out = candidate; /* it exists, so reuse it */
             return CFR_STATUS_SUCCESS;
         }
-        cell = (cell + 1) & mask; /* colisión: celda siguiente */
+        cell = (cell + 1) & mask; /* collision: try the next cell */
     }
-    /* cell es ahora una celda vacía donde anotaremos la entrada nueva. */
-    /* Fase 3a: hueco en el array de entradas. */
+    /* cell is now an empty cell in which to record the new entry. */
+    /* Phase 3a: reserve a slot in the entry array. */
     if (ws->used_entries == ws->entry_capacity) {
         size_t new_capacity = ws->entry_capacity * 2;
         Entry *grown = realloc(ws->entries, new_capacity * sizeof(Entry));
@@ -241,7 +238,7 @@ static Status find_or_create_entry(WorkSpace *ws, InfoNode *node,
         ws->entries = grown;
         ws->entry_capacity = new_capacity;
     }
-    /* Fase 3b: hueco en la arena para 2 * action_count doubles. */
+    /* Phase 3b: reserve arena space for 2 * action_count doubles. */
     if (ws->used_arena + 2 * action_count > ws->reserved_arena) {
         size_t new_reserved = ws->reserved_arena * 2;
         while (ws->used_arena + 2 * action_count > new_reserved)
@@ -252,7 +249,7 @@ static Status find_or_create_entry(WorkSpace *ws, InfoNode *node,
         ws->arena = grown;
         ws->reserved_arena = new_reserved;
     }
-    /* Fase 3c: estrenar la entrada, con sus deltas a cero. */
+    /* Phase 3c: initialize the entry with zero deltas. */
     size_t index = ws->used_entries;
     ws->entries[index].node = node;
     ws->entries[index].action_count = action_count;
@@ -280,7 +277,7 @@ static Status cfr_traverse_branch(const Game *game, GameState *state,
 
     Status status;
 
-    /* Comprueba si el estado es terminal. */
+    /* Check whether the state is terminal. */
     bool is_terminal;
     status = cfr_game_is_terminal(game, state, &is_terminal);
     if (status != CFR_STATUS_SUCCESS)
@@ -297,7 +294,7 @@ static Status cfr_traverse_branch(const Game *game, GameState *state,
         return CFR_STATUS_SUCCESS;
     }
 
-    /* Obtiene el actor actual. */
+    /* Get the current actor. */
     Actor current_actor;
     status = cfr_game_current_actor(game, state, &current_actor);
     if (status != CFR_STATUS_SUCCESS)
@@ -311,7 +308,7 @@ static Status cfr_traverse_branch(const Game *game, GameState *state,
          current_actor.player != CFR_PLAYER_1))
         return CFR_STATUS_INVALID_ARGUMENT;
 
-    /* Aumenta el array de marcos cuando falta capacidad. */
+    /* Grow the frame array when it has insufficient capacity. */
     if (depth == workspace->frame_capacity) {
         size_t new_capacity = workspace->frame_capacity * 2;
         Frame *new_frames =
@@ -322,7 +319,7 @@ static Status cfr_traverse_branch(const Game *game, GameState *state,
         workspace->frame_capacity = new_capacity;
     }
 
-    /* Obtiene las acciones legales. */
+    /* Get the legal actions. */
     Frame *frame = &(workspace->frames[depth]);
     size_t required_amount;
     status =
@@ -333,29 +330,29 @@ static Status cfr_traverse_branch(const Game *game, GameState *state,
     if (required_amount == 0 || required_amount > game->max_legal_actions)
         return CFR_STATUS_INVALID_ARGUMENT;
 
-    /* Obtiene la clave del conjunto de información. */
+    /* Get the information-set key. */
     InfoSetKey key;
     status = cfr_game_information_set_key(game, state, &key);
     if (status != CFR_STATUS_SUCCESS)
         return status;
 
-    /* Obtiene o crea el nodo de información. */
+    /* Get or create the information node. */
     InfoNode *node;
     status = cfr_info_store_get_or_create(store, key, required_amount, &node);
     if (status != CFR_STATUS_SUCCESS)
         return status;
 
-    /* Calcula la estrategia actual. */
+    /* Compute the current strategy. */
     status = cfr_info_node_current_strategy(node, frame->probabilities,
                                             required_amount);
     if (status != CFR_STATUS_SUCCESS)
         return status;
 
-    /* Inicializa la utilidad del nodo. */
+    /* Initialize the node utility. */
     Utility node_utility = 0.0;
 
     for (size_t i = 0; i < required_amount; i++) {
-        /* Actualiza el alcance del actor actual. */
+        /* Update the current actor's reach. */
         Probability reach_copy_0 = reach_0;
         Probability reach_copy_1 = reach_1;
         Probability reach_copy_chance = reach_chance;
@@ -375,18 +372,18 @@ static Status cfr_traverse_branch(const Game *game, GameState *state,
             return CFR_STATUS_INVALID_ARGUMENT;
         }
 
-        /* Aplica la acción. */
+        /* Apply the action. */
         status = cfr_game_apply_action(game, state, frame->actions[i]);
         if (status != CFR_STATUS_SUCCESS)
             return status;
         Utility branch_utility;
 
-        /* Recorre la rama hija. */
+        /* Traverse the child branch. */
         Status status_new_branch = cfr_traverse_branch(
             game, state, store, target_player, depth + 1, reach_copy_0,
             reach_copy_1, reach_copy_chance, workspace, &branch_utility);
 
-        /* Deshace la acción aplicada. */
+        /* Undo the applied action. */
         status = cfr_game_undo_action(game, state);
         if (status != CFR_STATUS_SUCCESS)
             return status;
@@ -394,7 +391,7 @@ static Status cfr_traverse_branch(const Game *game, GameState *state,
         if (status_new_branch != CFR_STATUS_SUCCESS)
             return status_new_branch;
 
-        /* Conserva la utilidad de la rama hija. */
+        /* Store the child branch utility. */
         frame->utilities[i] = branch_utility;
         Utility candidate =
             node_utility + branch_utility * frame->probabilities[i];
@@ -404,7 +401,7 @@ static Status cfr_traverse_branch(const Game *game, GameState *state,
     }
 
     if (current_actor.player == target_player) {
-        /* Obtiene los deltas pendientes del nodo. */
+        /* Get the node's pending deltas. */
         size_t index;
         status = find_or_create_entry(workspace, node, required_amount, &index);
         if (status != CFR_STATUS_SUCCESS)
@@ -413,7 +410,7 @@ static Status cfr_traverse_branch(const Game *game, GameState *state,
             workspace->arena + workspace->entries[index].offset;
         double *delta_strategy = delta_regret + required_amount;
 
-        /* Selecciona los alcances propio y rival. */
+        /* Select the acting player's and opponent's reaches. */
         Probability own_reach;
         Probability rival_reach;
         switch (current_actor.player) {
@@ -429,7 +426,7 @@ static Status cfr_traverse_branch(const Game *game, GameState *state,
             return CFR_STATUS_INVALID_ARGUMENT;
         }
 
-        /* Acumula los deltas pendientes. */
+        /* Accumulate the pending deltas. */
         for (size_t i = 0; i < required_amount; i++) {
             Utility change = rival_reach * reach_chance *
                              (frame->utilities[i] - node_utility);
@@ -458,7 +455,7 @@ static Status cfr_traverse_chance(const Game *game, GameState *state,
         workspace == NULL)
         return CFR_STATUS_INVALID_ARGUMENT;
 
-    /* Aumenta el array de marcos cuando falta capacidad. */
+    /* Grow the frame array when it has insufficient capacity. */
     if (depth == workspace->frame_capacity) {
         size_t new_capacity = workspace->frame_capacity * 2;
         Frame *new_frames =
@@ -469,7 +466,7 @@ static Status cfr_traverse_chance(const Game *game, GameState *state,
         workspace->frame_capacity = new_capacity;
     }
 
-    /* Obtiene los resultados de azar legales. */
+    /* Get the legal chance outcomes. */
     Frame *frame = &(workspace->frames[depth]);
     size_t required_amount;
     Status status =
@@ -480,8 +477,8 @@ static Status cfr_traverse_chance(const Game *game, GameState *state,
     if (required_amount == 0 || required_amount > game->max_legal_actions)
         return CFR_STATUS_INVALID_ARGUMENT;
 
-    /* Consulta y valida la distribución completa antes de aplicar la
-     * primera acción: una distribución inválida no recorre nada. */
+    /* Query and validate the complete distribution before applying the first
+     * action: an invalid distribution does not traverse any branch. */
     Probability probability_sum = 0.0;
     for (size_t i = 0; i < required_amount; i++) {
         Probability probability;
@@ -497,7 +494,7 @@ static Status cfr_traverse_chance(const Game *game, GameState *state,
     if (!isfinite(probability_sum) || !sum_is_one(probability_sum))
         return CFR_STATUS_INVALID_ARGUMENT;
 
-    /* Esperanza ponderada por la probabilidad de cada resultado. */
+    /* Expected value weighted by the probability of each outcome. */
     Utility expected_utility = 0.0;
 
     for (size_t i = 0; i < required_amount; i++) {
@@ -505,18 +502,18 @@ static Status cfr_traverse_chance(const Game *game, GameState *state,
         if (!isfinite(child_chance))
             return CFR_STATUS_NUMERIC_ERROR;
 
-        /* Aplica el resultado de azar. */
+        /* Apply the chance outcome. */
         status = cfr_game_apply_action(game, state, frame->actions[i]);
         if (status != CFR_STATUS_SUCCESS)
             return status;
         Utility branch_utility;
 
-        /* Recorre la rama hija con el alcance de azar actualizado. */
+        /* Traverse the child branch with the updated chance reach. */
         Status status_new_branch = cfr_traverse_branch(
             game, state, store, target_player, depth + 1, reach_0, reach_1,
             child_chance, workspace, &branch_utility);
 
-        /* Deshace siempre la acción aplicada. */
+        /* Always undo the applied action. */
         status = cfr_game_undo_action(game, state);
         if (status != CFR_STATUS_SUCCESS)
             return status;
@@ -524,7 +521,7 @@ static Status cfr_traverse_chance(const Game *game, GameState *state,
         if (status_new_branch != CFR_STATUS_SUCCESS)
             return status_new_branch;
 
-        /* Conserva la utilidad de la rama hija. */
+        /* Store the child branch utility. */
         frame->utilities[i] = branch_utility;
         Utility candidate =
             expected_utility + frame->probabilities[i] * branch_utility;

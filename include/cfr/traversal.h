@@ -4,104 +4,97 @@
 #include "cfr/game.h"
 #include "cfr/info_store.h"
 
-/* Número máximo de acciones legales que admite un recorrido. */
+/* Maximum number of legal actions supported by a traversal. */
 #define CFR_TRAVERSAL_MAX_ACTIONS 64
 
-/* Contiene las estadísticas de un recorrido correcto. */
+/* Contains statistics for a successful traversal. */
 typedef struct {
     /*
-     * Número de estados visitados. El contador incluye estados de jugador,
-     * estados de azar y estados terminales. Cada entrada en la ayuda recursiva
-     * cuenta como una visita. El contador se satura en SIZE_MAX.
+     * Number of visited states. The counter includes player, chance, and
+     * terminal states. Each entry into the recursive helper counts as one
+     * visit. The counter saturates at SIZE_MAX.
      */
     size_t visited_nodes;
 } TraversalStats;
 
 /*
- * Recorre el árbol del juego y actualiza el aprendizaje de target_player.
+ * Traverses the game tree and updates learning data for target_player.
  *
- * El llamador posee game, state, store y utility_out. La función toma estos
- * parámetros prestados. game debe ser un descriptor válido. state y store
- * deben estar inicializados y se pueden modificar. utility_out debe ser un
- * puntero válido.
+ * The caller owns game, state, store, and utility_out. The function borrows
+ * these parameters. game must be a valid descriptor. state and store must be
+ * initialized and can be modified. utility_out must be a valid pointer.
  *
- * game->max_legal_actions debe estar entre uno y
- * CFR_TRAVERSAL_MAX_ACTIONS. Cada estado no terminal debe tener entre una y
- * game->max_legal_actions acciones legales. Estas condiciones también se
- * aplican a los estados descendientes.
+ * game->max_legal_actions must be between one and CFR_TRAVERSAL_MAX_ACTIONS.
+ * Every nonterminal state must have between one and game->max_legal_actions
+ * legal actions. These conditions also apply to descendant states.
  *
- * El recorrido enumera todas las acciones legales de un nodo de azar. El
- * recorrido consulta chance_probability una vez para cada acción. Cada
- * probabilidad debe ser finita y mayor o igual que cero. Una probabilidad cero
- * es válida y su rama también se recorre.
+ * The traversal enumerates every legal action at a chance node. It queries
+ * chance_probability once for each action. Every probability must be finite
+ * and greater than or equal to zero. A zero probability is valid, and its
+ * branch is still traversed.
  *
- * La suma de las probabilidades debe ser uno dentro de las tolerancias del
- * módulo. La tolerancia relativa es 1e-8. La tolerancia absoluta es 1e-12. El
- * recorrido valida la distribución completa antes de aplicar la primera acción
- * del nodo de azar. Una distribución inválida produce
+ * The sum of probabilities must equal one within the module tolerances. The
+ * relative tolerance is 1e-8, and the absolute tolerance is 1e-12. The
+ * traversal validates the complete distribution before applying the first
+ * chance-node action. An invalid distribution produces
  * CFR_STATUS_INVALID_ARGUMENT.
  *
- * Un nodo de azar no crea un nodo de información y no genera deltas. El alcance
- * de azar pondera los arrepentimientos. El alcance de azar no pondera las sumas
- * de estrategia.
+ * A chance node does not create an information node or generate deltas. Chance
+ * reach weights regrets but does not weight strategy sums.
  *
- * La función aplica y deshace acciones sobre state. La función restaura state
- * después de cada acción que se aplicó correctamente. Si una operación para
- * deshacer una acción falla, la función devuelve ese error y no puede
- * garantizar la restauración de state.
+ * The function applies and undoes actions on state. It restores state after
+ * each successfully applied action. If an undo operation fails, the function
+ * returns that error and cannot guarantee that state was restored.
  *
- * store conserva la propiedad de sus nodos. La función puede añadir nodos y
- * cambiar sus estadísticas internas. Si ocurre un error, los acumulados que
- * existían antes de la llamada no cambian. Los nodos nuevos con acumulados a
- * cero pueden permanecer en store.
+ * store retains ownership of its nodes. The function can add nodes and modify
+ * their internal statistics. If an error occurs, accumulators that existed
+ * before the call do not change. New nodes with zero accumulators can remain in
+ * store.
  *
- * Una llamada correcta usa una estrategia fija para cada nodo. Solo actualiza
- * los arrepentimientos y las sumas de estrategia de target_player.
- * utility_out recibe la utilidad desde la perspectiva de target_player. Un
- * error conserva el valor anterior de utility_out.
+ * A successful call uses a fixed strategy for each node. It updates only the
+ * regrets and strategy sums of target_player. utility_out receives utility from
+ * the target_player perspective. An error preserves the previous utility_out
+ * value.
  */
 Status cfr_traverse(const Game *game, GameState *state, InfoStore *store,
                     Player target_player, Utility *utility_out);
 
 /*
- * Ejecuta cfr_traverse y publica las estadísticas del recorrido.
+ * Runs cfr_traverse and publishes traversal statistics.
  *
- * game, state, store, target_player y utility_out tienen el contrato de
- * cfr_traverse. El llamador posee stats_out. La función toma stats_out prestado
- * y lo puede modificar.
+ * game, state, store, target_player, and utility_out follow the cfr_traverse
+ * contract. The caller owns stats_out. The function borrows and can modify it.
  *
- * stats_out->visited_nodes cuenta cada estado que entra en la ayuda recursiva.
- * El contador incluye estados de jugador, estados de azar y estados terminales.
- * La función escribe utility_out y stats_out solo cuando devuelve
- * CFR_STATUS_SUCCESS. Un error conserva los valores anteriores de las dos
- * salidas.
+ * stats_out->visited_nodes counts every state passed to the recursive helper.
+ * The counter includes player, chance, and terminal states. The function writes
+ * utility_out and stats_out only when it returns CFR_STATUS_SUCCESS. An error
+ * preserves the previous values of both outputs.
  */
 Status cfr_traverse_with_stats(const Game *game, GameState *state,
                                InfoStore *store, Player target_player,
                                Utility *utility_out, TraversalStats *stats_out);
 
 /*
- * Recorre el árbol con las actualizaciones de CFR+ para target_player.
+ * Traverses the tree with CFR+ updates for target_player.
  *
- * game, state, store, target_player y utility_out tienen el contrato de
- * cfr_traverse. iteration identifica la iteración completa de CFR+ y debe ser
- * mayor que cero. El recorrido pondera por iteration la contribución a la
- * estrategia media y trunca a cero cada arrepentimiento actualizado que
- * resultaría negativo.
+ * game, state, store, target_player, and utility_out follow the cfr_traverse
+ * contract. iteration identifies the complete CFR+ iteration and must be
+ * greater than zero. The traversal weights the average-strategy contribution
+ * by iteration and truncates each updated negative regret to zero.
  *
- * La función conserva las garantías de restauración del estado y de
- * atomicidad de los acumulados de cfr_traverse. Un valor iteration igual a
- * cero produce CFR_STATUS_INVALID_ARGUMENT.
+ * The function preserves the cfr_traverse guarantees for state restoration and
+ * accumulator atomicity. An iteration value of zero produces
+ * CFR_STATUS_INVALID_ARGUMENT.
  */
 Status cfr_traverse_plus(const Game *game, GameState *state, InfoStore *store,
                          Player target_player, size_t iteration,
                          Utility *utility_out);
 
 /*
- * Ejecuta cfr_traverse_plus y publica las estadísticas del recorrido.
+ * Runs cfr_traverse_plus and publishes traversal statistics.
  *
- * Todos los parámetros salvo stats_out tienen el contrato de
- * cfr_traverse_plus. stats_out tiene el contrato de cfr_traverse_with_stats.
+ * All parameters except stats_out follow the cfr_traverse_plus contract.
+ * stats_out follows the cfr_traverse_with_stats contract.
  */
 Status cfr_traverse_plus_with_stats(
     const Game *game, GameState *state, InfoStore *store, Player target_player,

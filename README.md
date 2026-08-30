@@ -1,59 +1,59 @@
-# CFR y CFR+ en C17
+# CFR and CFR+ in C17
 
-Este proyecto implementa una biblioteca de CFR y CFR+ para juegos extensivos
-finitos. La primera versión admite dos jugadores y juegos de suma cero.
+This project implements a CFR and CFR+ library for finite extensive-form games.
+The first version supports two-player zero-sum games.
 
-El repositorio incluye un adaptador completo de Kuhn Poker. También incluye una
-aplicación que entrena y evalúa ese juego.
+The repository includes a complete Kuhn Poker adapter. It also includes an
+application that trains and evaluates that game.
 
-## Construcción
+## Building
 
-Ejecute los comandos desde la raíz del repositorio.
+Run the commands from the repository root.
 
 ```sh
 make all
 ```
 
-Este objetivo crea los siguientes archivos de entrega:
+This target creates the following release artifacts:
 
 - `build/release/libcfr.a`
 - `build/release/cfr-kuhn`
 
-La biblioteca no contiene la aplicación. El archivo `app/cfr_cli.c` consume la
-API pública como una aplicación externa.
+The application is not part of the library. `app/cfr_cli.c` consumes the public
+API as an external application.
 
-Use el siguiente objetivo para crear la configuración de depuración:
+Use the following target to create the debug configuration:
 
 ```sh
 make debug
 ```
 
-Este objetivo crea la biblioteca, la suite C y la aplicación de depuración.
-Los archivos quedan en `build/debug`.
+This target creates the library, the C test suite, and the debug application.
+The files are placed in `build/debug`.
 
-Use `make clean` para eliminar el directorio `build`.
+Use `make clean` to remove the `build` directory.
 
-## Pruebas
+## Testing
 
-Ejecute la suite C y la prueba integral de la aplicación:
+Run the C test suite and the application integration test:
 
 ```sh
 make test
 ```
 
-La prueba integral comprueba los argumentos, los informes y la estrategia
-media. También comprueba la reproducibilidad y la convergencia.
+The integration test checks arguments, reports, and the average strategy. It
+also checks reproducibility and convergence.
 
-Ejecute la inyección de fallos de reserva:
+Run allocation fault injection:
 
 ```sh
 make test-alloc
 ```
 
-Este objetivo inyecta fallos en la suite C de la biblioteca. El objetivo no
-inyecta fallos en `cfr-kuhn`.
+This target injects failures into the library's C test suite. It does not
+inject failures into `cfr-kuhn`.
 
-Los siguientes objetivos ejecutan las pruebas con sanitizadores:
+The following targets run the tests with sanitizers:
 
 ```sh
 make test-asan
@@ -61,167 +61,166 @@ make test-ubsan
 make test-sanitize
 ```
 
-`test-asan` usa AddressSanitizer. `test-ubsan` usa
-UndefinedBehaviorSanitizer. `test-sanitize` combina los dos sanitizadores.
+`test-asan` uses AddressSanitizer. `test-ubsan` uses
+UndefinedBehaviorSanitizer. `test-sanitize` combines both sanitizers.
 
-Los objetivos necesitan un compilador que admita las opciones solicitadas. Un
-compilador sin ese soporte produce un fallo visible.
+The targets require a compiler that supports the requested options. A compiler
+without that support produces a visible failure.
 
-## Uso de la aplicación
+## Using the application
 
-Muestre la ayuda con uno de estos comandos:
+Display help with either of these commands:
 
 ```sh
 build/release/cfr-kuhn --help
 build/release/cfr-kuhn -h
 ```
 
-La forma general es esta:
+The general form is:
 
 ```text
 cfr-kuhn --iterations N [--report-every N] [--print-strategy] [--cfr-plus]
 ```
 
-| Opción | Descripción |
+| Option | Description |
 |---|---|
-| `--iterations N` | Ejecuta `N` iteraciones. `N` debe ser un entero decimal positivo. |
-| `--report-every N` | Publica un informe después de cada bloque de hasta `N` iteraciones. |
-| `--print-strategy` | Publica la estrategia media después del último informe. |
-| `--cfr-plus` | Usa CFR+ en lugar del CFR clásico predeterminado. |
-| `--help`, `-h` | Publica la ayuda y no inicializa CFR. |
+| `--iterations N` | Runs `N` iterations. `N` must be a positive decimal integer. |
+| `--report-every N` | Prints a report after each block of at most `N` iterations. |
+| `--print-strategy` | Prints the average strategy after the final report. |
+| `--cfr-plus` | Uses CFR+ instead of the default classic CFR. |
+| `--help`, `-h` | Prints help without initializing CFR. |
 
-Si omite `--report-every`, la aplicación publica solo el informe final. Use
-una frecuencia explícita durante una ejecución larga.
+If you omit `--report-every`, the application prints only the final report. Use
+an explicit frequency during a long run.
 
-Por ejemplo, use `--report-every 10000` con 100 000 iteraciones. La aplicación
-publicará diez informes. Una frecuencia menor aumenta el coste de evaluación.
+For example, use `--report-every 10000` with 100,000 iterations. The application
+will print ten reports. A lower interval increases evaluation overhead.
 
-## Variantes de entrenamiento
+## Training variants
 
-Sin opciones adicionales, la aplicación y `cfr_trainer_init` conservan el CFR
-clásico. Para usar CFR+ desde la aplicación, añada `--cfr-plus`:
+Without additional options, the application and `cfr_trainer_init` use classic
+CFR. To use CFR+ from the application, add `--cfr-plus`:
 
 ```sh
 build/release/cfr-kuhn --iterations 1000 --cfr-plus
 ```
 
-Desde la biblioteca, inicialice el entrenador con
-`cfr_trainer_init_plus`. CFR+ reutiliza la actualización alterna existente y
-añade sus otras dos reglas:
+When using the library, initialize the trainer with `cfr_trainer_init_plus`.
+CFR+ reuses the existing alternating update and adds its other two rules:
 
-- Regret Matching+ trunca a cero los arrepentimientos acumulados negativos
-  después de cada recorrido correcto.
-- La estrategia de la iteración `t` contribuye a la estrategia media con peso
-  `t`, por lo que las estrategias recientes pesan más.
+- Regret Matching+ truncates negative cumulative regrets to zero after each
+  successful traversal.
+- The strategy from iteration `t` contributes to the average strategy with
+  weight `t`, so recent strategies have more weight.
 
-El entrenador conserva el número de iteraciones de aprendizaje entre llamadas
-a `cfr_trainer_run`. `cfr_trainer_reset_stats` solo reinicia las estadísticas y
-no reinicia esos pesos.
+The trainer retains the number of training iterations across calls to
+`cfr_trainer_run`. `cfr_trainer_reset_stats` resets only the statistics, not
+these weights.
 
-Para construir un bucle propio, `cfr_traverse_plus` y
-`cfr_traverse_plus_with_stats` reciben explícitamente el número de iteración.
-El valor comienza en uno y debe ser el mismo para los recorridos de ambos
-jugadores.
+To build a custom loop, pass the iteration number explicitly to
+`cfr_traverse_plus` and `cfr_traverse_plus_with_stats`. The value starts at one
+and must be the same for both players' traversals.
 
-### Códigos de salida
+### Exit codes
 
-| Código | Significado |
+| Code | Meaning |
 |---|---|
-| `0` | La ayuda o la ejecución terminó correctamente. |
-| `1` | Falló una operación, el reloj o una escritura. |
-| `2` | Los argumentos son inválidos. |
+| `0` | Help or execution completed successfully. |
+| `1` | An operation, clock query, or write failed. |
+| `2` | The arguments are invalid. |
 
-Estos códigos son los valores que devuelve `main`. El sistema operativo también
-puede terminar el proceso mediante una señal. Por ejemplo, una tubería cerrada
-puede producir `SIGPIPE`.
+These codes are the values returned by `main`. The operating system can also
+terminate the process with a signal. For example, a closed pipe can produce
+`SIGPIPE`.
 
-## Informes
+## Reports
 
-Cada informe contiene los siguientes campos:
+Each report contains the following fields:
 
-| Campo | Significado |
+| Field | Meaning |
 |---|---|
-| `iteraciones` | Número de iteraciones completadas. |
-| `valor_medio_jugador_0` | Valor del jugador cero en el perfil de estrategia media. |
-| `explotabilidad` | `NashConv` dividido entre dos según la convención del proyecto. |
-| `conjuntos_informacion` | Número de conjuntos de información del almacén. |
-| `segundos` | Tiempo transcurrido desde el inicio de la ejecución. |
+| `iterations` | Number of completed iterations. |
+| `average_value_player_0` | Player zero's value in the average-strategy profile. |
+| `exploitability` | `NashConv` divided by two, following this project's convention. |
+| `information_sets` | Number of information sets in the store. |
+| `seconds` | Elapsed time since the run started. |
 
-Una explotabilidad menor indica un perfil más difícil de explotar. Una
-explotabilidad de cero no permite una mejora unilateral.
+Lower exploitability indicates a profile that is harder to exploit. An
+exploitability of zero allows no unilateral improvement.
 
-El tiempo solo informa sobre la ejecución. El tiempo no cambia el aprendizaje.
+Time is reported only as execution information. It does not affect learning.
 
-## Ejecución corta
+## Short run
 
-Este comando ejecuta cinco iteraciones y publica tres informes:
+This command runs five iterations and prints three reports:
 
 ```sh
 build/release/cfr-kuhn --iterations 5 --report-every 2
 ```
 
-Una ejecución produjo esta salida:
+One run produced this output:
 
 ```text
-informe iteraciones=2 valor_medio_jugador_0=5.5511151231257827e-17 explotabilidad=0.27083333333333343 conjuntos_informacion=12 segundos=0.000056
-informe iteraciones=4 valor_medio_jugador_0=-0.05598958333333337 explotabilidad=0.14062500000000003 conjuntos_informacion=12 segundos=0.000107
-informe iteraciones=5 valor_medio_jugador_0=-0.048166666666666691 explotabilidad=0.12138888888888885 conjuntos_informacion=12 segundos=0.000131
+report iterations=2 average_value_player_0=5.5511151231257827e-17 exploitability=0.27083333333333343 information_sets=12 seconds=0.000056
+report iterations=4 average_value_player_0=-0.05598958333333337 exploitability=0.14062500000000003 information_sets=12 seconds=0.000107
+report iterations=5 average_value_player_0=-0.048166666666666691 exploitability=0.12138888888888885 information_sets=12 seconds=0.000131
 ```
 
-El campo `segundos` cambia entre ejecuciones.
+The `seconds` field changes between runs.
 
-Añada `--print-strategy` para publicar las doce decisiones. La aplicación
-mantiene un orden estable por contexto y por carta.
+Add `--print-strategy` to print all twelve decisions. The application keeps a
+stable order by context and card.
 
-## Validación larga
+## Long validation run
 
-Use este comando para repetir la validación larga:
+Use this command to repeat the long validation run:
 
 ```sh
 build/release/cfr-kuhn --iterations 100000 --report-every 100000
 ```
 
-El valor del jugador cero debe quedar a menos de `0,0001` de `-1/18`. La
-explotabilidad debe ser menor o igual que `0,01`.
+Player zero's value must be within `0.0001` of `-1/18`. Exploitability must be
+less than or equal to `0.01`.
 
-La medición de esta documentación produjo estos valores:
+The measurement recorded for this documentation produced these values:
 
 ```text
-informe iteraciones=100000 valor_medio_jugador_0=-0.055556357899689546 explotabilidad=1.7310539843606865e-05 conjuntos_informacion=12 segundos=0.556525
+report iterations=100000 average_value_player_0=-0.055556357899689546 exploitability=1.7310539843606865e-05 information_sets=12 seconds=0.556525
 ```
 
-La distancia respecto de `-1/18` es aproximadamente `8,02e-07`. Los dos
-resultados cumplen los límites documentados.
+The distance from `-1/18` is approximately `8.02e-07`. Both results satisfy the
+documented limits.
 
-CFR aproxima un equilibrio. La salida no representa una solución exacta.
+CFR approximates an equilibrium. The output does not represent an exact
+solution.
 
-## Reproducibilidad
+## Reproducibility
 
-El entrenador enumera los resultados de azar. Por ello, el programa no usa una
-semilla aleatoria.
+The trainer enumerates chance outcomes, so the program does not use a random
+seed.
 
-Dos ejecuciones con los mismos argumentos producen las mismas métricas. También
-producen las mismas estrategias y el mismo orden.
+Two runs with the same arguments produce the same metrics. They also produce
+the same strategies in the same order.
 
-La comparación debe excluir únicamente el campo `segundos`. El tiempo depende
-del sistema y puede cambiar entre ejecuciones.
+The comparison must exclude only the `seconds` field. Timing depends on the
+system and can differ between runs.
 
-## Referencia de rendimiento
+## Performance reference
 
-Esta referencia corresponde a una medición concreta del 29 de agosto de 2026.
+This reference is from a specific measurement taken on August 29, 2026.
 
-| Elemento | Valor |
+| Item | Value |
 |---|---|
-| Compilador | GCC 16.1.1 |
-| Sistema | Linux 7.1.3 x86_64 |
-| Procesador | AMD Ryzen AI 7 350 con Radeon 860M |
-| Configuración | Entrega con `-O2` mediante `make all` |
-| Comando | `build/release/cfr-kuhn --iterations 100000 --report-every 100000` |
-| Tiempo real | `0,557319` segundos |
-| Memoria residente máxima | `1.620` KiB |
+| Compiler | GCC 16.1.1 |
+| System | Linux 7.1.3 x86_64 |
+| Processor | AMD Ryzen AI 7 350 with Radeon 860M |
+| Configuration | Release with `-O2` through `make all` |
+| Command | `build/release/cfr-kuhn --iterations 100000 --report-every 100000` |
+| Wall-clock time | `0.557319` seconds |
+| Maximum resident set size | `1,620` KiB |
 
-Una sonda temporal midió el proceso hijo con `CLOCK_MONOTONIC` y `wait4`. En
-Linux, `ru_maxrss` publica la memoria residente máxima en KiB.
+A temporary probe measured the child process with `CLOCK_MONOTONIC` and
+`wait4`. On Linux, `ru_maxrss` reports the maximum resident set size in KiB.
 
-Esta medición es una referencia. No es una promesa de rendimiento. El resultado
-puede cambiar con el compilador, el equipo y la carga del sistema.
+This measurement is a reference, not a performance guarantee. The result can
+change with the compiler, hardware, and system load.

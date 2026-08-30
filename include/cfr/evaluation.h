@@ -8,131 +8,129 @@
 #include "cfr/types.h"
 
 /*
- * Contiene las métricas de una evaluación puntual.
+ * Contains the metrics from a point-in-time evaluation.
  *
- * La estructura contiene valores y no posee memoria dinámica. Cada valor usa
- * la utilidad del jugador correspondiente.
+ * The structure contains values and owns no dynamic memory. Each value uses the
+ * corresponding player's utility.
  */
 typedef struct {
-    /* Valor del jugador cero en el perfil de estrategia media. */
+    /* Player zero's value in the average-strategy profile. */
     Utility profile_value_player_0;
-    /* Valor del jugador uno en el perfil de estrategia media. */
+    /* Player one's value in the average-strategy profile. */
     Utility profile_value_player_1;
-    /* Mejor valor del jugador cero contra la estrategia media rival. */
+    /* Player zero's best value against the opponent's average strategy. */
     Utility best_response_value_player_0;
-    /* Mejor valor del jugador uno contra la estrategia media rival. */
+    /* Player one's best value against the opponent's average strategy. */
     Utility best_response_value_player_1;
-    /* Diferencia entre la mejor respuesta y el perfil del jugador cero. */
+    /* Difference between best response and profile value for player zero. */
     Utility improvement_player_0;
-    /* Diferencia entre la mejor respuesta y el perfil del jugador uno. */
+    /* Difference between best response and profile value for player one. */
     Utility improvement_player_1;
-    /* Suma de las mejoras de los dos jugadores. */
+    /* Sum of both players' improvements. */
     Utility nash_conv;
-    /* NashConv dividido entre dos según la convención de este proyecto. */
+    /* NashConv divided by two, following this project's convention. */
     Utility exploitability;
 } EvaluationMetrics;
 
 /*
- * Copia la estrategia media del conjunto que identifica key.
+ * Copies the average strategy for the information set identified by key.
  *
- * La función normaliza strategy_sums. La función no usa la estrategia actual.
- * store debe estar inicializado. strategy_out y required_count son
- * obligatorios, incluso si capacity vale cero. capacity cuenta elementos.
+ * The function normalizes strategy_sums and does not use the current strategy.
+ * store must be initialized. strategy_out and required_count are required even
+ * when capacity is zero. capacity counts elements.
  *
- * Un éxito publica la estrategia y la cantidad de acciones. Una capacidad
- * insuficiente conserva strategy_out. En ese caso, la función publica la
- * cantidad necesaria y devuelve CFR_STATUS_BUFFER_TOO_SMALL.
+ * Success publishes the strategy and action count. Insufficient capacity
+ * preserves strategy_out. In that case, the function publishes the required
+ * count and returns CFR_STATUS_BUFFER_TOO_SMALL.
  *
- * Una clave ausente devuelve CFR_STATUS_NOT_FOUND. La función no crea un nodo.
- * Un argumento inválido devuelve CFR_STATUS_INVALID_ARGUMENT. Un acumulado
- * negativo o no finito devuelve CFR_STATUS_NUMERIC_ERROR. Estos errores
- * conservan las dos salidas.
+ * A missing key returns CFR_STATUS_NOT_FOUND. The function does not create a
+ * node. An invalid argument returns CFR_STATUS_INVALID_ARGUMENT. A negative or
+ * non-finite accumulator returns CFR_STATUS_NUMERIC_ERROR. These errors
+ * preserve both outputs.
  *
- * La función no modifica el almacén ni sus estadísticas.
+ * The function does not modify the store or its statistics.
  */
 Status cfr_evaluation_average_strategy(const InfoStore *store, InfoSetKey key,
                                        Probability *strategy_out,
                                        size_t capacity, size_t *required_count);
 
 /*
- * Evalúa el perfil de estrategia media desde la perspectiva de player.
+ * Evaluates the average-strategy profile from player's perspective.
  *
- * game, state, store y utility_out son obligatorios. player debe identificar
- * un jugador válido. game->max_legal_actions debe ser mayor que cero.
+ * game, state, store, and utility_out are required. player must identify a
+ * valid player. game->max_legal_actions must be greater than zero.
  *
- * La función enumera todas las ramas, incluidas las ramas de probabilidad cero.
- * La función no usa muestreo. La función no usa la estrategia actual. La
- * memoria temporal crece con el árbol completo.
+ * The function enumerates all branches, including zero-probability branches.
+ * It does not use sampling or the current strategy. Temporary memory grows with
+ * the complete tree.
  *
- * Un éxito publica utility_out y restaura state. La función no modifica store.
- * Un error conserva utility_out.
+ * Success publishes utility_out and restores state. The function does not
+ * modify store. An error preserves utility_out.
  *
- * Una clave ausente produce
- * CFR_STATUS_NOT_FOUND. Un fallo de reserva produce
- * CFR_STATUS_OUT_OF_MEMORY. Un argumento o modelo incoherente produce
- * CFR_STATUS_INVALID_ARGUMENT. Un cálculo no finito produce
+ * A missing key produces CFR_STATUS_NOT_FOUND. An allocation failure produces
+ * CFR_STATUS_OUT_OF_MEMORY. An invalid argument or inconsistent model produces
+ * CFR_STATUS_INVALID_ARGUMENT. A non-finite computation produces
  * CFR_STATUS_NUMERIC_ERROR.
  *
- * La función propaga los errores de las operaciones del juego. La función
- * restaura state antes de propagar un error de una rama. Si undo_action falla,
- * ese error tiene prioridad y state puede quedar sin restaurar.
+ * The function propagates errors from game operations. It restores state before
+ * propagating an error from a branch. If undo_action fails, that error takes
+ * priority and state can remain unrestored.
  */
 Status cfr_evaluation_profile_value(const Game *game, GameState *state,
                                     const InfoStore *store, Player player,
                                     Utility *utility_out);
 
 /*
- * Calcula la mejor respuesta de player contra la estrategia media del rival.
+ * Computes player's best response against the opponent's average strategy.
  *
- * game, state, store y utility_out son obligatorios. player debe identificar
- * un jugador válido. game->max_legal_actions debe ser mayor que cero.
+ * game, state, store, and utility_out are required. player must identify a
+ * valid player. game->max_legal_actions must be greater than zero.
  *
- * La mejor respuesta usa una acción determinista por conjunto de información.
- * Todas las apariciones del conjunto usan la misma acción. La función enumera
- * el árbol completo y no usa muestreo. La memoria temporal crece con el árbol.
+ * The best response uses one deterministic action per information set. Every
+ * occurrence of the set uses the same action. The function enumerates the
+ * complete tree without sampling. Temporary memory grows with the tree.
  *
- * Un éxito publica utility_out y restaura state. La función no modifica store.
- * Un error conserva utility_out.
+ * Success publishes utility_out and restores state. The function does not
+ * modify store. An error preserves utility_out.
  *
- * Una clave ausente produce
- * CFR_STATUS_NOT_FOUND. Un fallo de reserva produce
- * CFR_STATUS_OUT_OF_MEMORY. Un argumento o modelo incoherente produce
- * CFR_STATUS_INVALID_ARGUMENT. Un cálculo no finito produce
+ * A missing key produces CFR_STATUS_NOT_FOUND. An allocation failure produces
+ * CFR_STATUS_OUT_OF_MEMORY. An invalid argument or inconsistent model produces
+ * CFR_STATUS_INVALID_ARGUMENT. A non-finite computation produces
  * CFR_STATUS_NUMERIC_ERROR.
  *
- * La función propaga los errores de las operaciones del juego. La función
- * restaura state antes de propagar un error de una rama. Si undo_action falla,
- * ese error tiene prioridad y state puede quedar sin restaurar.
+ * The function propagates errors from game operations. It restores state before
+ * propagating an error from a branch. If undo_action fails, that error takes
+ * priority and state can remain unrestored.
  */
 Status cfr_evaluation_best_response_value(const Game *game, GameState *state,
                                           const InfoStore *store, Player player,
                                           Utility *utility_out);
 
 /*
- * Calcula todas las métricas en una sola evaluación del árbol.
+ * Computes all metrics in a single tree evaluation.
  *
- * game, state, store y eval_out son obligatorios.
- * game->max_legal_actions debe ser mayor que cero. La función usa la estrategia
- * media y no usa la estrategia actual.
+ * game, state, store, and eval_out are required. game->max_legal_actions must be
+ * greater than zero. The function uses the average strategy and does not use
+ * the current strategy.
  *
- * La función construye una sola instantánea del árbol completo. La función
- * enumera las ramas de probabilidad cero y no usa muestreo. La memoria temporal
- * crece con el árbol completo.
+ * The function builds one snapshot of the complete tree. It enumerates
+ * zero-probability branches without sampling. Temporary memory grows with the
+ * complete tree.
  *
- * NashConv es la suma de las dos mejoras. La explotabilidad es NashConv
- * dividido entre dos según la convención de este proyecto.
+ * NashConv is the sum of both improvements. Exploitability is NashConv divided
+ * by two, following this project's convention.
  *
- * Un éxito publica eval_out y restaura state. La función no modifica store. Un
- * error conserva eval_out.
+ * Success publishes eval_out and restores state. The function does not modify
+ * store. An error preserves eval_out.
  *
- * Una clave ausente produce CFR_STATUS_NOT_FOUND. Un fallo de reserva produce
- * CFR_STATUS_OUT_OF_MEMORY. Un argumento o modelo incoherente produce
- * CFR_STATUS_INVALID_ARGUMENT. Un cálculo no finito produce
+ * A missing key produces CFR_STATUS_NOT_FOUND. An allocation failure produces
+ * CFR_STATUS_OUT_OF_MEMORY. An invalid argument or inconsistent model produces
+ * CFR_STATUS_INVALID_ARGUMENT. A non-finite computation produces
  * CFR_STATUS_NUMERIC_ERROR.
  *
- * La función propaga los errores de las operaciones del juego. La función
- * restaura state antes de propagar un error de una rama. Si undo_action falla,
- * ese error tiene prioridad y state puede quedar sin restaurar.
+ * The function propagates errors from game operations. It restores state before
+ * propagating an error from a branch. If undo_action fails, that error takes
+ * priority and state can remain unrestored.
  */
 Status cfr_evaluation_metrics(const Game *game, GameState *state,
                               const InfoStore *store,

@@ -3,47 +3,47 @@
 
 #include <stdint.h>
 
-/* Identifica uno de los dos jugadores del juego de suma cero. */
+/* Identifies one of the two players in the zero-sum game. */
 typedef enum { CFR_PLAYER_0, CFR_PLAYER_1 } Player;
 
-/* Identifica la entidad que selecciona la próxima acción. */
+/* Identifies the entity that selects the next action. */
 typedef enum { CFR_ACTOR_PLAYER, CFR_ACTOR_CHANCE } ActorKind;
 
-/* Describe al actor actual. */
+/* Describes the current actor. */
 typedef struct {
     ActorKind kind;
-    /* Interprete este campo solo cuando kind sea CFR_ACTOR_PLAYER. */
+    /* Interpret this field only when kind is CFR_ACTOR_PLAYER. */
     Player player;
 } Actor;
 
-/* Identifica una acción según las reglas del adaptador. */
+/* Identifies an action according to the adapter's rules. */
 typedef int Action;
 
-/* Identifica de forma estable un conjunto de información. */
+/* Provides a stable identifier for an information set. */
 typedef int64_t InfoSetKey;
 
-/* Indica el resultado de una operación del contrato. */
+/* Indicates the result of a contract operation. */
 typedef enum {
-    /* La operación terminó correctamente. Las salidas son válidas. */
+    /* The operation completed successfully. Outputs are valid. */
     CFR_STATUS_SUCCESS,
-    /* Un argumento es nulo, inválido o no corresponde al estado. */
+    /* An argument is null, invalid, or inconsistent with the state. */
     CFR_STATUS_INVALID_ARGUMENT,
-    /* La acción no es legal en el estado actual. */
+    /* The action is not legal in the current state. */
     CFR_STATUS_ILLEGAL_ACTION,
-    /* El almacenamiento del llamador no tiene capacidad suficiente. */
+    /* The caller-provided buffer does not have enough capacity. */
     CFR_STATUS_BUFFER_TOO_SMALL,
-    /* Un acumulado o un resultado aritmético no es finito. */
+    /* An accumulator or arithmetic result is not finite. */
     CFR_STATUS_NUMERIC_ERROR,
-    /* El módulo no pudo completar una reserva interna. */
+    /* The module could not complete an internal allocation. */
     CFR_STATUS_OUT_OF_MEMORY,
-    /* Una búsqueda válida no encontró la clave solicitada. */
+    /* A valid lookup did not find the requested key. */
     CFR_STATUS_NOT_FOUND
 } Status;
 
-/* Representa la utilidad de un estado terminal para un jugador. */
+/* Represents the utility of a terminal state for one player. */
 typedef double Utility;
 
-/* Representa una probabilidad en el intervalo cerrado de cero a uno. */
+/* Represents a probability in the closed interval from zero to one. */
 typedef double Probability;
 
 #endif

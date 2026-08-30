@@ -16,10 +16,10 @@ int main(void) {
     failures += test_evaluation();
 
     if (failures != 0) {
-        fprintf(stderr, "Fallaron %d comprobaciones.\n", failures);
+        fprintf(stderr, "%d checks failed.\n", failures);
         return 1;
     }
 
-    puts("Todas las pruebas terminaron correctamente.");
+    puts("All tests completed successfully.");
     return 0;
 }

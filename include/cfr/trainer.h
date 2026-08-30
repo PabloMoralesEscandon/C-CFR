@@ -7,131 +7,126 @@
 #include "cfr/info_store.h"
 
 /*
- * Contiene una copia de las estadísticas acumuladas del entrenador.
+ * Contains a snapshot of the trainer's cumulative statistics.
  *
- * Los cuatro contadores se saturan en SIZE_MAX. Un contador saturado no vuelve
- * a cero durante una ejecución posterior.
+ * All four counters saturate at SIZE_MAX. A saturated counter does not return
+ * to zero during a later run.
  */
 typedef struct {
-    /* Número de iteraciones que completaron los dos recorridos. */
+    /* Number of iterations in which both traversals completed. */
     size_t iterations;
-    /* Número de recorridos que terminaron correctamente. */
+    /* Number of traversals that completed successfully. */
     size_t traversals;
-    /* Número de estados visitados por los recorridos correctos. */
+    /* Number of states visited by successful traversals. */
     size_t visited_nodes;
-    /* Número de recorridos fallidos dentro de cfr_trainer_run. */
+    /* Number of failed traversals within cfr_trainer_run. */
     size_t errors;
 } TrainerStats;
 
-/* Selecciona la regla de actualización que ejecuta el entrenador. */
+/* Selects the update rule used by the trainer. */
 typedef enum {
-    /* CFR clásico con arrepentimientos acumulados sin truncar y peso uno. */
+    /* Classic CFR with untruncated cumulative regrets and unit weight. */
     CFR_TRAINER_VARIANT_CFR,
-    /* CFR+ con arrepentimientos truncados y promedio lineal. */
+    /* CFR+ with truncated regrets and linear averaging. */
     CFR_TRAINER_VARIANT_CFR_PLUS
 } TrainerVariant;
 
 /*
- * Conserva los préstamos y las estadísticas de un entrenamiento.
+ * Stores borrowed objects and statistics for a training session.
  *
- * El llamador posee Trainer, Game, GameState e InfoStore. El entrenador toma
- * game, state y store prestados. El llamador debe mantener los tres préstamos
- * vivos mientras use el entrenador.
+ * The caller owns Trainer, Game, GameState, and InfoStore. The trainer borrows
+ * game, state, and store. The caller must keep all three borrowed objects alive
+ * while using the trainer.
  *
- * game es un préstamo constante. state y store son préstamos modificables. El
- * entrenador aplica y deshace acciones sobre state. El entrenador añade
- * aprendizaje a store.
+ * game is borrowed as const. state and store are borrowed as mutable. The
+ * trainer applies and undoes actions on state and adds learning data to store.
  *
- * El entrenador no posee los tres préstamos. cfr_trainer_init no reserva
- * memoria. El entrenador tampoco conserva una copia del estado raíz.
+ * The trainer does not own the three borrowed objects. cfr_trainer_init does
+ * not allocate memory. The trainer also does not retain a copy of the root
+ * state.
  */
 typedef struct {
-    /* Descriptor constante y prestado del juego. */
+    /* Borrowed const game descriptor. */
     const Game *game;
-    /* Estado raíz modificable y prestado. */
+    /* Borrowed mutable root state. */
     GameState *state;
-    /* Almacén modificable y prestado. */
+    /* Borrowed mutable store. */
     InfoStore *store;
-    /* Variante seleccionada durante la inicialización. */
+    /* Variant selected during initialization. */
     TrainerVariant variant;
     /*
-     * Iteraciones de aprendizaje completas desde la inicialización. Este
-     * contador gobierna los pesos de CFR+ y no se reinicia con las
-     * estadísticas públicas. El contador se satura en SIZE_MAX.
+     * Number of complete training iterations since initialization. This
+     * counter determines the CFR+ weights and is not reset with the public
+     * statistics. The counter saturates at SIZE_MAX.
      */
     size_t training_iterations;
-    /* Estadísticas que pertenecen al entrenador. */
+    /* Statistics owned by the trainer. */
     TrainerStats stats;
 } Trainer;
 
 /*
- * Inicializa trainer con tres préstamos y pone las estadísticas a cero.
+ * Initializes trainer with three borrowed objects and zeroes the statistics.
  *
- * trainer, game, state y store deben ser distintos de nulo. El llamador debe
- * proporcionar un juego, un estado y un almacén válidos. Un argumento nulo
- * produce CFR_STATUS_INVALID_ARGUMENT. Un error conserva un trainer no nulo.
+ * trainer, game, state, and store must not be null. The caller must provide a
+ * valid game, state, and store. A null argument produces
+ * CFR_STATUS_INVALID_ARGUMENT. An error preserves a non-null trainer.
  */
 Status cfr_trainer_init(Trainer *trainer, const Game *game, GameState *state,
                         InfoStore *store);
 
 /*
- * Inicializa trainer para ejecutar CFR+.
+ * Initializes trainer to run CFR+.
  *
- * Los préstamos, la propiedad, los errores y la conservación de trainer son
- * los mismos que en cfr_trainer_init. La primera iteración usa peso uno en la
- * estrategia media; cada iteración completa posterior aumenta linealmente el
- * peso.
+ * Borrowing, ownership, error handling, and trainer preservation are the same
+ * as in cfr_trainer_init. The first iteration uses unit weight in the average
+ * strategy. Each subsequent complete iteration increases the weight linearly.
  */
 Status cfr_trainer_init_plus(Trainer *trainer, const Game *game,
                              GameState *state, InfoStore *store);
 
 /*
- * Ejecuta amount iteraciones con actualización alterna.
+ * Runs amount iterations with alternating updates.
  *
- * trainer debe estar inicializado. Los tres préstamos de trainer deben ser
- * válidos. Una iteración ejecuta primero un recorrido para CFR_PLAYER_0. La
- * iteración ejecuta después un recorrido para CFR_PLAYER_1. El segundo recorrido
- * observa el aprendizaje que confirmó el primer recorrido.
+ * trainer must be initialized. Its three borrowed objects must be valid. An
+ * iteration first runs a traversal for CFR_PLAYER_0 and then a traversal for
+ * CFR_PLAYER_1. The second traversal observes the learning committed by the
+ * first traversal.
  *
- * Un entrenador inicializado con cfr_trainer_init usa CFR clásico. Un
- * entrenador inicializado con cfr_trainer_init_plus usa Regret Matching+ y
- * pondera las estrategias de la iteración t con peso t. El peso depende de
- * training_iterations y continúa entre llamadas.
+ * A trainer initialized with cfr_trainer_init uses classic CFR. A trainer
+ * initialized with cfr_trainer_init_plus uses Regret Matching+ and weights the
+ * strategies from iteration t with weight t. The weight depends on
+ * training_iterations and continues across calls.
  *
- * Cada recorrido confirma sus propios cambios. Si el segundo recorrido falla,
- * los cambios del primer recorrido permanecen en store. iterations aumenta
- * solo después de dos recorridos correctos. traversals y visited_nodes aumentan
- * después de cada recorrido correcto. errors aumenta después de un recorrido
- * fallido. Las estadísticas se acumulan entre llamadas. Los cuatro contadores
- * se saturan en SIZE_MAX.
+ * Each traversal commits its own changes. If the second traversal fails, the
+ * first traversal's changes remain in store. iterations increases only after
+ * two successful traversals. traversals and visited_nodes increase after each
+ * successful traversal. errors increases after a failed traversal. Statistics
+ * accumulate across calls. All four counters saturate at SIZE_MAX.
  *
- * Un valor amount igual a cero produce CFR_STATUS_SUCCESS y no cambia el
- * entrenador. La función devuelve sin cambios el Status de un recorrido
- * fallido.
+ * An amount of zero produces CFR_STATUS_SUCCESS and does not change the
+ * trainer. The function returns the Status of a failed traversal unchanged.
  *
- * Después de cualquier error, el llamador debe restaurar state a la raíz antes
- * de volver a llamar a cfr_trainer_run. El entrenador no puede comprobar si
- * state representa la raíz. Si una operación para deshacer una acción falla,
- * state puede permanecer en un estado descendiente.
+ * After any error, the caller must restore state to the root before calling
+ * cfr_trainer_run again. The trainer cannot verify that state represents the
+ * root. If an undo operation fails, state can remain at a descendant state.
  */
 Status cfr_trainer_run(Trainer *trainer, size_t amount);
 
 /*
- * Copia las estadísticas de trainer en stats_out.
+ * Copies trainer statistics to stats_out.
  *
- * trainer y stats_out deben ser distintos de nulo. La función no modifica
- * trainer. Un argumento nulo produce CFR_STATUS_INVALID_ARGUMENT y conserva
- * stats_out.
+ * trainer and stats_out must not be null. The function does not modify trainer.
+ * A null argument produces CFR_STATUS_INVALID_ARGUMENT and preserves stats_out.
  */
 Status cfr_trainer_get_stats(const Trainer *trainer, TrainerStats *stats_out);
 
 /*
- * Pone a cero los cuatro contadores de trainer.
+ * Resets all four trainer counters to zero.
  *
- * trainer debe ser distinto de nulo. La función conserva game, state y store.
- * La función no modifica el estado, el aprendizaje del almacén, variant ni
- * training_iterations. Por ello, reiniciar las estadísticas no reinicia los
- * pesos lineales de CFR+.
+ * trainer must not be null. The function preserves game, state, and store. It
+ * does not modify the game state, the learning data in the store, variant, or
+ * training_iterations. Therefore, resetting statistics does not reset the CFR+
+ * linear weights.
  */
 Status cfr_trainer_reset_stats(Trainer *trainer);
 

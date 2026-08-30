@@ -75,7 +75,7 @@ test-alloc:
 		LDFLAGS='$(LDFLAGS) -Wl,--wrap=malloc -Wl,--wrap=realloc -Wl,--wrap=free' \
 		test-alloc-run
 
-# El asignador envuelto pertenece a la suite C y no se enlaza con la CLI.
+# The wrapped allocator belongs to the C test suite and is not linked into the CLI.
 test-alloc-run: $(TEST_BINARY)
 	$(TEST_ENV) ./$(TEST_BINARY)
 

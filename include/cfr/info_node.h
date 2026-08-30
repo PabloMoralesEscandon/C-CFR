@@ -6,87 +6,87 @@
 #include "cfr/types.h"
 
 /*
- * Conserva el aprendizaje de un conjunto de información.
+ * Stores the learning data for an information set.
  *
- * El llamador posee la estructura. El nodo posee los arrays regret_sums y
- * strategy_sums. El llamador debe destruir el nodo antes de abandonar la
- * estructura. La destrucción libera los arrays, pero no libera la estructura.
+ * The caller owns the structure. The node owns the regret_sums and
+ * strategy_sums arrays. The caller must destroy the node before discarding the
+ * structure. Destruction frees the arrays but not the structure.
  *
- * El llamador no debe copiar por asignación un nodo inicializado. Una copia
- * tendría los mismos punteros y no tendría una propiedad independiente.
+ * The caller must not copy an initialized node by assignment. A copy would
+ * contain the same pointers and would not have independent ownership.
  *
- * action_count fija el número de índices válidos. Los índices válidos están
- * en el intervalo desde cero hasta action_count menos uno. El adaptador debe
- * mantener una correspondencia estable entre cada índice y su acción legal.
- * El nodo no almacena esa correspondencia.
+ * action_count fixes the number of valid indices. Valid indices range from
+ * zero through action_count minus one. The adapter must maintain a stable
+ * mapping between each index and its legal action. The node does not store that
+ * mapping.
  *
- * Las operaciones de estrategia y arrepentimiento no reservan memoria. El
- * llamador proporciona los arrays de entrada y de salida. Una operación que
- * devuelve un error conserva el nodo y los arrays de salida.
+ * Strategy and regret operations do not allocate memory. The caller provides
+ * the input and output arrays. An operation that returns an error preserves the
+ * node and output arrays.
  *
- * Un argumento numérico no finito produce CFR_STATUS_INVALID_ARGUMENT. Un
- * acumulado no finito o un resultado aritmético no finito produce
+ * A non-finite numeric argument produces CFR_STATUS_INVALID_ARGUMENT. A
+ * non-finite accumulator or arithmetic result produces
  * CFR_STATUS_NUMERIC_ERROR.
  */
 typedef struct {
-    /* Identifica la decisión observable que representa el nodo. */
+    /* Identifies the observable decision represented by the node. */
     InfoSetKey key;
-    /* Indica el número de acciones y de elementos en cada array interno. */
+    /* Number of actions and elements in each internal array. */
     size_t action_count;
-    /* Array propio con un arrepentimiento acumulado por acción. */
+    /* Owned array containing one cumulative regret per action. */
     Utility *regret_sums;
-    /* Array propio con una suma ponderada de estrategia por acción. */
+    /* Owned array containing one weighted strategy sum per action. */
     double *strategy_sums;
 } InfoNode;
 
 /*
- * Inicializa node con key y action_count.
+ * Initializes node with key and action_count.
  *
- * node debe estar puesto a cero o debe haber sido destruido. action_count debe
- * ser mayor que cero. La función reserva los dos arrays internos y pone sus
- * elementos a cero.
+ * node must be zero-initialized or previously destroyed. action_count must be
+ * greater than zero. The function allocates both internal arrays and sets their
+ * elements to zero.
  *
- * Un argumento inválido produce CFR_STATUS_INVALID_ARGUMENT. Un fallo de una
- * reserva produce CFR_STATUS_OUT_OF_MEMORY. Un error conserva node.
+ * An invalid argument produces CFR_STATUS_INVALID_ARGUMENT. An allocation
+ * failure produces CFR_STATUS_OUT_OF_MEMORY. An error preserves node.
  */
 Status cfr_info_node_init(InfoNode *node, InfoSetKey key, size_t action_count);
 
 /*
- * Destruye node y deja todos sus campos a cero.
+ * Destroys node and sets all its fields to zero.
  *
- * node debe ser distinto de nulo. Un nodo ya destruido produce
- * CFR_STATUS_SUCCESS. La función no libera la estructura que contiene el nodo.
+ * node must not be null. A previously destroyed node produces
+ * CFR_STATUS_SUCCESS. The function does not free the structure containing the
+ * node.
  */
 Status cfr_info_node_destroy(InfoNode *node);
 
 /*
- * Calcula la estrategia actual y la escribe en strategy_array.
+ * Computes the current strategy and writes it to strategy_array.
  *
- * node debe estar inicializado. strategy_array debe ser distinto de nulo.
- * strategy_capacity cuenta elementos y debe ser igual o mayor que
- * node->action_count. Una capacidad menor produce
- * CFR_STATUS_BUFFER_TOO_SMALL.
+ * node must be initialized. strategy_array must not be null. strategy_capacity
+ * counts elements and must be at least node->action_count. A smaller capacity
+ * produces CFR_STATUS_BUFFER_TOO_SMALL.
  *
- * La función usa los arrepentimientos positivos. La función usa una
- * distribución uniforme cuando no existe un arrepentimiento positivo. Un
- * arrepentimiento almacenado no finito produce CFR_STATUS_NUMERIC_ERROR.
+ * The function uses positive regrets. It uses a uniform distribution when no
+ * positive regret exists. A stored non-finite regret produces
+ * CFR_STATUS_NUMERIC_ERROR.
  */
 Status cfr_info_node_current_strategy(const InfoNode *node,
                                       Probability *strategy_array,
                                       size_t strategy_capacity);
 
 /*
- * Comprueba deltas de aprendizaje sin modificar node.
+ * Checks learning deltas without modifying node.
  *
- * node debe estar inicializado. delta_regret y delta_strategy_sum deben
- * contener action_count elementos. action_count debe ser igual a
- * node->action_count. Cada delta debe ser finito. Cada delta de suma de
- * estrategia debe ser mayor o igual que cero.
+ * node must be initialized. delta_regret and delta_strategy_sum must contain
+ * action_count elements. action_count must equal node->action_count. Every
+ * delta must be finite. Every strategy-sum delta must be greater than or equal
+ * to zero.
  *
- * La función comprueba también los acumulados resultantes. Un resultado no
- * finito o una suma de estrategia negativa produce
- * CFR_STATUS_NUMERIC_ERROR. Un argumento inválido produce
- * CFR_STATUS_INVALID_ARGUMENT. Un error conserva node y los arrays de entrada.
+ * The function also checks the resulting accumulators. A non-finite result or
+ * a negative strategy sum produces CFR_STATUS_NUMERIC_ERROR. An invalid
+ * argument produces CFR_STATUS_INVALID_ARGUMENT. An error preserves node and
+ * the input arrays.
  */
 Status cfr_info_node_check_deltas(const InfoNode *node,
                                   const Utility *delta_regret,
@@ -94,41 +94,40 @@ Status cfr_info_node_check_deltas(const InfoNode *node,
                                   size_t action_count);
 
 /*
- * Valida y aplica deltas de aprendizaje a node.
+ * Validates and applies learning deltas to node.
  *
- * Los parámetros tienen los mismos requisitos que
- * cfr_info_node_check_deltas. La función suma cada delta al acumulado del mismo
- * índice. La función no modifica los arrays de entrada.
+ * The parameters have the same requirements as cfr_info_node_check_deltas.
+ * The function adds each delta to the accumulator at the same index. It does
+ * not modify the input arrays.
  *
- * Un error conserva todos los acumulados de node. La función no reserva
- * memoria.
+ * An error preserves all node accumulators. The function does not allocate
+ * memory.
  */
 Status cfr_info_node_apply_deltas(InfoNode *node, const Utility *delta_regret,
                                   const double *delta_strategy_sum,
                                   size_t action_count);
 
 /*
- * Suma regret_change al arrepentimiento de action_index.
+ * Adds regret_change to the regret at action_index.
  *
- * node debe estar inicializado. action_index debe ser menor que
- * node->action_count. regret_change debe ser finito. Un resultado aritmético
- * no finito produce CFR_STATUS_NUMERIC_ERROR.
+ * node must be initialized. action_index must be less than node->action_count.
+ * regret_change must be finite. A non-finite arithmetic result produces
+ * CFR_STATUS_NUMERIC_ERROR.
  */
 Status cfr_info_node_add_regret(InfoNode *node, size_t action_index,
                                 Utility regret_change);
 
 /*
- * Acumula strategy_array con el peso weight.
+ * Accumulates strategy_array with weight.
  *
- * strategy_count debe ser igual a node->action_count. Cada probabilidad debe
- * ser finita y debe estar en el intervalo cerrado de cero a uno. La suma debe
- * ser uno dentro de la tolerancia numérica del módulo. weight debe ser finito
- * y debe estar en el intervalo cerrado de cero a uno.
+ * strategy_count must equal node->action_count. Each probability must be finite
+ * and in the closed interval from zero to one. The sum must equal one within
+ * the module's numeric tolerance. weight must be finite and in the closed
+ * interval from zero to one.
  *
- * Una entrada inválida produce CFR_STATUS_INVALID_ARGUMENT. Un acumulado no
- * finito o negativo produce CFR_STATUS_NUMERIC_ERROR. Un resultado aritmético
- * no finito también produce CFR_STATUS_NUMERIC_ERROR. Un error conserva todos
- * los acumulados.
+ * Invalid input produces CFR_STATUS_INVALID_ARGUMENT. A non-finite or negative
+ * accumulator produces CFR_STATUS_NUMERIC_ERROR. A non-finite arithmetic result
+ * also produces CFR_STATUS_NUMERIC_ERROR. An error preserves all accumulators.
  */
 Status cfr_info_node_accumulate_strategy(InfoNode *node,
                                          const Probability *strategy_array,
@@ -136,16 +135,15 @@ Status cfr_info_node_accumulate_strategy(InfoNode *node,
                                          Probability weight);
 
 /*
- * Calcula la estrategia media y la escribe en strategy_array.
+ * Computes the average strategy and writes it to strategy_array.
  *
- * node debe estar inicializado. strategy_array debe ser distinto de nulo.
- * strategy_capacity cuenta elementos y debe ser igual o mayor que
- * node->action_count. Una capacidad menor produce
- * CFR_STATUS_BUFFER_TOO_SMALL.
+ * node must be initialized. strategy_array must not be null. strategy_capacity
+ * counts elements and must be at least node->action_count. A smaller capacity
+ * produces CFR_STATUS_BUFFER_TOO_SMALL.
  *
- * La función normaliza strategy_sums. La función usa una distribución
- * uniforme cuando todos los acumulados son cero. Un acumulado no finito o
- * negativo produce CFR_STATUS_NUMERIC_ERROR.
+ * The function normalizes strategy_sums. It uses a uniform distribution when
+ * all accumulators are zero. A non-finite or negative accumulator produces
+ * CFR_STATUS_NUMERIC_ERROR.
  */
 Status cfr_info_node_average_strategy(const InfoNode *node,
                                       Probability *strategy_array,

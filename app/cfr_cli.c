@@ -47,24 +47,24 @@ static bool print_usage(FILE *stream, const char *program_name) {
         return false;
 
     if (fprintf(stream,
-                "Uso: %s --iterations N [--report-every N] "
+                "Usage: %s --iterations N [--report-every N] "
                 "[--print-strategy] [--cfr-plus]\n"
                 "       %s --help\n"
                 "\n"
-                "Opciones:\n"
-                "  --iterations N     Iteraciones de entrenamiento; N debe "
-                "ser positivo.\n"
-                "  --report-every N   Iteraciones entre informes; si se "
-                "omite, solo se informa al final.\n"
-                "  --print-strategy   Imprime la estrategia media final.\n"
-                "  --cfr-plus        Usa CFR+ con Regret Matching+ y promedio "
-                "lineal.\n"
-                "  --help, -h         Muestra esta ayuda.\n"
+                "Options:\n"
+                "  --iterations N     Training iterations; N must be "
+                "positive.\n"
+                "  --report-every N   Iterations between reports; if omitted, "
+                "only the final report is printed.\n"
+                "  --print-strategy   Print the final average strategy.\n"
+                "  --cfr-plus         Use CFR+ with Regret Matching+ and linear "
+                "averaging.\n"
+                "  --help, -h         Display this help.\n"
                 "\n"
-                "Códigos de salida:\n"
-                "  0  Ejecución correcta o ayuda.\n"
-                "  1  Fallo operativo, de biblioteca, reloj o escritura.\n"
-                "  2  Argumentos inválidos.\n",
+                "Exit codes:\n"
+                "  0  Successful execution or help.\n"
+                "  1  Operation, library, clock, or write failure.\n"
+                "  2  Invalid arguments.\n",
                 program_name, program_name) < 0) {
         return false;
     }
@@ -120,26 +120,27 @@ static CliParseResult parse_options(int argc, char *const argv[],
         const char *argument = argv[index];
 
         if (argument == NULL) {
-            (void)fprintf(diagnostic, "error: argumento nulo\n");
+            (void)fprintf(diagnostic, "error: null argument\n");
             return CLI_PARSE_ERROR;
         }
 
         if (strcmp(argument, "--iterations") == 0) {
             if (iterations_seen) {
-                (void)fprintf(diagnostic,
-                              "error: --iterations está repetida\n");
+                (void)fprintf(
+                    diagnostic,
+                    "error: --iterations was specified more than once\n");
                 return CLI_PARSE_ERROR;
             }
             if (index + 1 >= argc || argv[index + 1] == NULL) {
                 (void)fprintf(diagnostic,
-                              "error: falta el valor de --iterations\n");
+                              "error: missing value for --iterations\n");
                 return CLI_PARSE_ERROR;
             }
             index += 1;
             if (!parse_positive_size(argv[index], &options.iterations)) {
                 (void)fprintf(diagnostic,
-                              "error: --iterations requiere un entero decimal "
-                              "positivo representable\n");
+                              "error: --iterations requires a representable "
+                              "positive decimal integer\n");
                 return CLI_PARSE_ERROR;
             }
             iterations_seen = true;
@@ -148,21 +149,22 @@ static CliParseResult parse_options(int argc, char *const argv[],
 
         if (strcmp(argument, "--report-every") == 0) {
             if (report_every_seen) {
-                (void)fprintf(diagnostic,
-                              "error: --report-every está repetida\n");
+                (void)fprintf(
+                    diagnostic,
+                    "error: --report-every was specified more than once\n");
                 return CLI_PARSE_ERROR;
             }
             if (index + 1 >= argc || argv[index + 1] == NULL) {
                 (void)fprintf(diagnostic,
-                              "error: falta el valor de --report-every\n");
+                              "error: missing value for --report-every\n");
                 return CLI_PARSE_ERROR;
             }
             index += 1;
             if (!parse_positive_size(argv[index], &options.report_every)) {
                 (void)fprintf(
                     diagnostic,
-                    "error: --report-every requiere un entero decimal "
-                    "positivo representable\n");
+                    "error: --report-every requires a representable positive "
+                    "decimal integer\n");
                 return CLI_PARSE_ERROR;
             }
             report_every_seen = true;
@@ -171,8 +173,9 @@ static CliParseResult parse_options(int argc, char *const argv[],
 
         if (strcmp(argument, "--print-strategy") == 0) {
             if (print_strategy_seen) {
-                (void)fprintf(diagnostic,
-                              "error: --print-strategy está repetida\n");
+                (void)fprintf(
+                    diagnostic,
+                    "error: --print-strategy was specified more than once\n");
                 return CLI_PARSE_ERROR;
             }
             options.print_strategy = true;
@@ -182,8 +185,9 @@ static CliParseResult parse_options(int argc, char *const argv[],
 
         if (strcmp(argument, "--cfr-plus") == 0) {
             if (cfr_plus_seen) {
-                (void)fprintf(diagnostic,
-                              "error: --cfr-plus está repetida\n");
+                (void)fprintf(
+                    diagnostic,
+                    "error: --cfr-plus was specified more than once\n");
                 return CLI_PARSE_ERROR;
             }
             options.cfr_plus = true;
@@ -194,17 +198,17 @@ static CliParseResult parse_options(int argc, char *const argv[],
         if (strcmp(argument, "--help") == 0 || strcmp(argument, "-h") == 0) {
             (void)fprintf(
                 diagnostic,
-                "error: la ayuda solo puede solicitarse sin otras opciones\n");
+                "error: help can only be requested without other options\n");
             return CLI_PARSE_ERROR;
         }
 
-        (void)fprintf(diagnostic, "error: opción desconocida: %s\n", argument);
+        (void)fprintf(diagnostic, "error: unknown option: %s\n", argument);
         return CLI_PARSE_ERROR;
     }
 
     if (!iterations_seen) {
         (void)fprintf(diagnostic,
-                      "error: falta la opción obligatoria --iterations\n");
+                      "error: missing required option --iterations\n");
         return CLI_PARSE_ERROR;
     }
 
@@ -239,13 +243,13 @@ static const char *status_name(Status status) {
 static const char *action_name(Action action) {
     switch ((KuhnPokerAction)action) {
     case CFR_KUHN_POKER_ACTION_CHECK:
-        return "pasar";
+        return "check";
     case CFR_KUHN_POKER_ACTION_BET:
-        return "apostar";
+        return "bet";
     case CFR_KUHN_POKER_ACTION_FOLD:
-        return "retirarse";
+        return "fold";
     case CFR_KUHN_POKER_ACTION_CALL:
-        return "igualar";
+        return "call";
     case CFR_KUHN_POKER_ACTION_NONE:
     case CFR_KUHN_POKER_ACTION_JQ:
     case CFR_KUHN_POKER_ACTION_JK:
@@ -288,9 +292,8 @@ static bool print_report(FILE *stream, size_t completed_iterations,
     }
 
     if (fprintf(stream,
-                "informe iteraciones=%zu valor_medio_jugador_0=%.17g "
-                "explotabilidad=%.17g conjuntos_informacion=%zu "
-                "segundos=%.6f\n",
+                "report iterations=%zu average_value_player_0=%.17g "
+                "exploitability=%.17g information_sets=%zu seconds=%.6f\n",
                 completed_iterations, metrics->profile_value_player_0,
                 metrics->exploitability, store_stats->size, seconds) < 0) {
         return false;
@@ -304,7 +307,7 @@ static bool print_status_error(FILE *stream, const char *operation,
     if (stream == NULL || operation == NULL)
         return false;
 
-    return fprintf(stream, "error: %s falló: %s\n", operation,
+    return fprintf(stream, "error: %s failed: %s\n", operation,
                    status_name(status)) >= 0;
 }
 
@@ -374,10 +377,10 @@ static Status print_strategy_row(FILE *stream, const Game *game,
     }
 
     /*
-     * Status representa solo operaciones CFR. El llamador detecta los errores
-     * del flujo mediante fflush y ferror.
+     * Status represents only CFR operations. The caller detects stream errors
+     * through fflush and ferror.
      */
-    if (fprintf(stream, "estrategia %s", row->label) < 0)
+    if (fprintf(stream, "strategy %s", row->label) < 0)
         return CFR_STATUS_SUCCESS;
     for (index = 0; index < action_count; index += 1) {
         const char *name = action_name(actions[index]);
@@ -394,53 +397,53 @@ static Status print_strategy_row(FILE *stream, const Game *game,
 static Status print_final_strategy(FILE *stream, const Game *game,
                                    const InfoStore *store) {
     static const StrategyRow rows[] = {
-        {"jugador_0_apertura_carta_J",
+        {"player_0_open_card_J",
          CFR_PLAYER_0,
          {CFR_KUHN_POKER_ACTION_JQ},
          1},
-        {"jugador_0_apertura_carta_Q",
+        {"player_0_open_card_Q",
          CFR_PLAYER_0,
          {CFR_KUHN_POKER_ACTION_QJ},
          1},
-        {"jugador_0_apertura_carta_K",
+        {"player_0_open_card_K",
          CFR_PLAYER_0,
          {CFR_KUHN_POKER_ACTION_KJ},
          1},
-        {"jugador_1_despues_de_pasar_carta_J",
+        {"player_1_after_check_card_J",
          CFR_PLAYER_1,
          {CFR_KUHN_POKER_ACTION_QJ, CFR_KUHN_POKER_ACTION_CHECK},
          2},
-        {"jugador_1_despues_de_pasar_carta_Q",
+        {"player_1_after_check_card_Q",
          CFR_PLAYER_1,
          {CFR_KUHN_POKER_ACTION_JQ, CFR_KUHN_POKER_ACTION_CHECK},
          2},
-        {"jugador_1_despues_de_pasar_carta_K",
+        {"player_1_after_check_card_K",
          CFR_PLAYER_1,
          {CFR_KUHN_POKER_ACTION_JK, CFR_KUHN_POKER_ACTION_CHECK},
          2},
-        {"jugador_1_ante_apuesta_inicial_carta_J",
+        {"player_1_facing_open_bet_card_J",
          CFR_PLAYER_1,
          {CFR_KUHN_POKER_ACTION_QJ, CFR_KUHN_POKER_ACTION_BET},
          2},
-        {"jugador_1_ante_apuesta_inicial_carta_Q",
+        {"player_1_facing_open_bet_card_Q",
          CFR_PLAYER_1,
          {CFR_KUHN_POKER_ACTION_JQ, CFR_KUHN_POKER_ACTION_BET},
          2},
-        {"jugador_1_ante_apuesta_inicial_carta_K",
+        {"player_1_facing_open_bet_card_K",
          CFR_PLAYER_1,
          {CFR_KUHN_POKER_ACTION_JK, CFR_KUHN_POKER_ACTION_BET},
          2},
-        {"jugador_0_ante_pasar_apostar_carta_J",
+        {"player_0_facing_check_bet_card_J",
          CFR_PLAYER_0,
          {CFR_KUHN_POKER_ACTION_JQ, CFR_KUHN_POKER_ACTION_CHECK,
           CFR_KUHN_POKER_ACTION_BET},
          3},
-        {"jugador_0_ante_pasar_apostar_carta_Q",
+        {"player_0_facing_check_bet_card_Q",
          CFR_PLAYER_0,
          {CFR_KUHN_POKER_ACTION_QJ, CFR_KUHN_POKER_ACTION_CHECK,
           CFR_KUHN_POKER_ACTION_BET},
          3},
-        {"jugador_0_ante_pasar_apostar_carta_K",
+        {"player_0_facing_check_bet_card_K",
          CFR_PLAYER_0,
          {CFR_KUHN_POKER_ACTION_KJ, CFR_KUHN_POKER_ACTION_CHECK,
           CFR_KUHN_POKER_ACTION_BET},
@@ -481,8 +484,8 @@ static int run_training(const CliOptions *options, FILE *output,
 
     status = cfr_kuhn_poker_state_init(&state);
     if (status != CFR_STATUS_SUCCESS) {
-        (void)print_status_error(diagnostic,
-                                 "inicializar el estado de Kuhn Poker", status);
+        (void)print_status_error(diagnostic, "initialize the Kuhn Poker state",
+                                 status);
         goto cleanup;
     }
 
@@ -490,13 +493,13 @@ static int run_training(const CliOptions *options, FILE *output,
     game_state = cfr_kuhn_poker_state_as_game_state(&state);
     if (game == NULL || game_state == NULL) {
         (void)fprintf(diagnostic,
-                      "error: el adaptador de Kuhn Poker no está disponible\n");
+                      "error: the Kuhn Poker adapter is unavailable\n");
         goto cleanup;
     }
 
     status = cfr_info_store_init(&store);
     if (status != CFR_STATUS_SUCCESS) {
-        (void)print_status_error(diagnostic, "inicializar el almacén", status);
+        (void)print_status_error(diagnostic, "initialize the store", status);
         goto cleanup;
     }
     store_initialized = true;
@@ -506,14 +509,13 @@ static int run_training(const CliOptions *options, FILE *output,
     else
         status = cfr_trainer_init(&trainer, game, game_state, &store);
     if (status != CFR_STATUS_SUCCESS) {
-        (void)print_status_error(diagnostic, "inicializar el entrenador",
-                                 status);
+        (void)print_status_error(diagnostic, "initialize the trainer", status);
         goto cleanup;
     }
 
     if (timespec_get(&start, TIME_UTC) != TIME_UTC) {
         (void)fprintf(diagnostic,
-                      "error: no se pudo obtener la marca de tiempo inicial\n");
+                      "error: could not obtain the initial timestamp\n");
         goto cleanup;
     }
 
@@ -529,22 +531,20 @@ static int run_training(const CliOptions *options, FILE *output,
 
         status = cfr_trainer_run(&trainer, block);
         if (status != CFR_STATUS_SUCCESS) {
-            (void)print_status_error(diagnostic, "entrenar", status);
+            (void)print_status_error(diagnostic, "train", status);
             goto cleanup;
         }
         completed += block;
 
         status = cfr_evaluation_metrics(game, game_state, &store, &metrics);
         if (status != CFR_STATUS_SUCCESS) {
-            (void)print_status_error(diagnostic, "evaluar las métricas",
-                                     status);
+            (void)print_status_error(diagnostic, "evaluate metrics", status);
             goto cleanup;
         }
 
         status = cfr_info_store_get_stats(&store, &store_stats);
         if (status != CFR_STATUS_SUCCESS) {
-            (void)print_status_error(diagnostic, "consultar el almacén",
-                                     status);
+            (void)print_status_error(diagnostic, "query the store", status);
             goto cleanup;
         }
 
@@ -552,13 +552,12 @@ static int run_training(const CliOptions *options, FILE *output,
             !elapsed_seconds(&start, &current, &seconds)) {
             (void)fprintf(
                 diagnostic,
-                "error: no se pudo calcular el tiempo transcurrido\n");
+                "error: could not calculate elapsed time\n");
             goto cleanup;
         }
 
         if (!print_report(output, completed, &metrics, &store_stats, seconds)) {
-            (void)fprintf(diagnostic,
-                          "error: no se pudo escribir el informe\n");
+            (void)fprintf(diagnostic, "error: could not write the report\n");
             goto cleanup;
         }
     }
@@ -566,13 +565,13 @@ static int run_training(const CliOptions *options, FILE *output,
     if (options->print_strategy) {
         status = print_final_strategy(output, game, &store);
         if (status != CFR_STATUS_SUCCESS) {
-            (void)print_status_error(diagnostic, "imprimir la estrategia media",
+            (void)print_status_error(diagnostic, "print the average strategy",
                                      status);
             goto cleanup;
         }
         if (fflush(output) != 0 || ferror(output)) {
             (void)fprintf(diagnostic,
-                          "error: no se pudo escribir la estrategia media\n");
+                          "error: could not write the average strategy\n");
             goto cleanup;
         }
     }
@@ -583,7 +582,7 @@ cleanup:
     if (store_initialized) {
         status = cfr_info_store_destroy(&store);
         if (status != CFR_STATUS_SUCCESS) {
-            (void)print_status_error(diagnostic, "destruir el almacén", status);
+            (void)print_status_error(diagnostic, "destroy the store", status);
             result = CLI_EXIT_RUNTIME_ERROR;
         }
     }

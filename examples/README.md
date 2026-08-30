@@ -1,13 +1,13 @@
-# Ejemplos
+# Examples
 
-El repositorio incluye un adaptador completo de Kuhn Poker. La aplicación de
-`app/cfr_cli.c` conecta el adaptador con el entrenador y el evaluador.
+The repository includes a complete Kuhn Poker adapter. The application in
+`app/cfr_cli.c` connects the adapter to the trainer and evaluator.
 
-La aplicación consume la API pública mediante las funciones `cfr_game_*`. La
-aplicación también conserva la propiedad del estado del juego.
+The application consumes the public API through the `cfr_game_*` functions. It
+also retains ownership of the game state.
 
-La aplicación no forma parte de la biblioteca pública. Consulte el
-[`README.md`](../README.md) principal para construir y usar el ejecutable.
+The application is not part of the public library. See the main
+[`README.md`](../README.md) to build and use the executable.
 
-El ejemplo usa CFR clásico de forma predeterminada. Pase `--cfr-plus` para usar
-Regret Matching+ y el promedio lineal de estrategias.
+The example uses classic CFR by default. Pass `--cfr-plus` to use Regret
+Matching+ and linear strategy averaging.
