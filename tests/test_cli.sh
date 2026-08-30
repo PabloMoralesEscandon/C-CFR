@@ -149,6 +149,7 @@ require_text "$case_output" "--load FILE"
 require_text "$case_output" "--save FILE"
 require_text "$case_output" "--evaluate"
 require_text "$case_output" "--export-strategy FILE"
+require_text "$case_output" "FILE must not exist."
 require_text "$case_output" "0  Successful execution or help."
 require_text "$case_output" \
     "1  Operation, library, clock, or write failure."
@@ -223,6 +224,9 @@ check_usage_error load_with_plus \
 check_usage_error same_output_path \
     "--save and --export-strategy require different paths" \
     --iterations 1 --save output --export-strategy output
+check_usage_error export_over_load_path \
+    "--export-strategy cannot write to the --load checkpoint" \
+    --load model --iterations 1 --export-strategy model
 check_usage_error combined_help "help can only be requested" \
     --iterations 1 --help
 
@@ -315,6 +319,82 @@ run_case replaced_evaluation --load "$checkpoint_file" --evaluate
 require_status 0
 require_empty "$case_error"
 require_text "$case_output" "evaluation training_iterations=8 "
+
+# A text export must never replace the checkpoint, however it is spelled.
+check_export_refused() {
+    refused_name=$1
+    refused_target=$2
+
+    run_case "$refused_name" --load "$checkpoint_file" --iterations 1 \
+        --export-strategy "$refused_target"
+    require_status 1
+    require_empty "$case_output"
+    require_text "$case_error" "already exists"
+    run_case "${refused_name}_survived" --load "$checkpoint_file" --evaluate
+    require_status 0
+    require_text "$case_output" "evaluation training_iterations=8 "
+}
+
+check_export_refused export_over_relative_alias \
+    "$temporary_directory/../${temporary_directory##*/}/strategy.cfr"
+
+alias_link=$temporary_directory/alias.cfr
+if ln -s "$checkpoint_file" "$alias_link" 2>/dev/null; then
+    check_export_refused export_over_symlink_alias "$alias_link"
+    rm -f -- "$alias_link"
+fi
+
+# Failure to inspect an existing target is unsafe. In particular, a checkpoint
+# that is writable but not readable must not be mistaken for a new file and
+# truncated by the export.
+write_only_checkpoint=$temporary_directory/write-only.cfr
+cp "$checkpoint_file" "$write_only_checkpoint"
+chmod 200 "$write_only_checkpoint"
+if [ ! -r "$write_only_checkpoint" ]; then
+    run_case export_over_write_only --iterations 1 \
+        --export-strategy "$write_only_checkpoint"
+    require_status 1
+    require_empty "$case_output"
+    require_text "$case_error" "inspect the export target failed"
+    chmod 600 "$write_only_checkpoint"
+    run_case write_only_survived --load "$write_only_checkpoint" --evaluate
+    require_status 0
+    require_empty "$case_error"
+    require_text "$case_output" "evaluation training_iterations=8 "
+else
+    chmod 600 "$write_only_checkpoint"
+fi
+
+fresh_export=$temporary_directory/fresh-strategy.txt
+run_case export_to_fresh_path --load "$checkpoint_file" --iterations 1 \
+    --export-strategy "$fresh_export"
+require_status 0
+require_empty "$case_error"
+require_text "$fresh_export" "cfr-strategy version=1 schema=cfr.kuhn-poker/v1"
+
+# Existing text is protected too; export never replaces any filesystem object.
+preserved_export=$temporary_directory/preserved-strategy.txt
+cp "$fresh_export" "$preserved_export"
+run_case export_over_previous_export --load "$checkpoint_file" \
+    --iterations 1 --export-strategy "$fresh_export"
+require_status 1
+require_empty "$case_output"
+require_text "$case_error" "already exists"
+if ! cmp -s "$fresh_export" "$preserved_export"; then
+    fail "export_over_previous_export changed the existing text export"
+fi
+
+# Different path strings can still resolve to the same future file. Saving the
+# checkpoint first must make the later exclusive export fail without damage.
+aliased_output=$temporary_directory/aliased-output.cfr
+run_case save_export_relative_alias --iterations 1 --save "$aliased_output" \
+    --export-strategy "$temporary_directory/./aliased-output.cfr"
+require_status 1
+require_text "$case_error" "already exists"
+run_case save_export_alias_survived --load "$aliased_output" --evaluate
+require_status 0
+require_empty "$case_error"
+require_text "$case_output" "evaluation training_iterations=1 "
 
 corrupt_checkpoint=$temporary_directory/corrupt.cfr
 cp "$checkpoint_file" "$corrupt_checkpoint"

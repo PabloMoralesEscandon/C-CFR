@@ -181,6 +181,9 @@ must change when game rules, information-set keys, or the meaning or order of
 action indices becomes incompatible. Serialization stores generic keys and
 indexed arrays; it does not contain Kuhn-specific actions or labels.
 
+Both bundled adapters are serializable: Kuhn Poker declares
+`cfr.kuhn-poker/v1` and blackjack declares `cfr.blackjack/v1`.
+
 ### Exact evaluation of a saved strategy
 
 Run the complete-tree evaluator directly on a checkpoint with:
@@ -203,6 +206,17 @@ build/release/cfr-kuhn --load kuhn-150000.cfr --evaluate \
 The text file is deterministic and ordered by information-set key and action
 index. It intentionally omits cumulative regrets and cannot be loaded or used
 to resume training.
+
+Because the text export cannot be loaded, writing it over a checkpoint destroys
+that checkpoint. The application therefore creates strategy exports
+exclusively and refuses to replace any existing filesystem object, including a
+previous text export. Exclusive creation also covers a symbolic link, a
+relative-path alias, a write-only file, and a target created while training is
+running. Remove an old text export explicitly or choose a new path before
+exporting again.
+
+`--save` is unaffected: replacing the loaded checkpoint with a newer one is how
+training resumes.
 
 ## Training variants
 
@@ -344,14 +358,18 @@ build/release/cfr-blackjack --help
 The general form is:
 
 ```text
-cfr-blackjack --iterations N [--report-every N] [--evaluate] [--cfr-plus]
-              [--save FILE] [--export-strategy FILE]
-cfr-blackjack --load FILE --iterations N [--report-every N] [--evaluate]
-              [--save FILE] [--export-strategy FILE]
+cfr-blackjack --deal R,R,R --iterations N [--report-every N] [--evaluate]
+              [--cfr-plus | --load FILE] [--save FILE]
+              [--export-strategy FILE]
+cfr-blackjack --full-tree --iterations N [--report-every N] [--evaluate]
+              [--cfr-plus | --load FILE] [--save FILE]
+              [--export-strategy FILE]
 ```
 
 | Option | Description |
 |---|---|
+| `--deal R,R,R` | Solves the hand defined by the three visible initial cards. |
+| `--full-tree` | Trains from the undealt deck instead. Not practically computable; see below. |
 | `--iterations N` | Runs `N` complete training iterations. |
 | `--report-every N` | Reports statistics after each block of up to `N` iterations. |
 | `--evaluate` | Evaluates the average profile after training and reports its value and exploitability. |
@@ -361,31 +379,65 @@ cfr-blackjack --load FILE --iterations N [--report-every N] [--evaluate]
 | `--export-strategy FILE` | Exports the average strategy as deterministic, human-readable text. |
 | `--help`, `-h` | Displays help without initializing CFR. |
 
-Always start with one iteration and no evaluation:
+Exactly one of `--deal` and `--full-tree` is required. The executable prints and
+flushes a `start` line, naming the chosen scope, before the first traversal.
+
+### Solving one initial deal
+
+`--deal` takes the three visible cards in dealing order: player, dealer up card,
+player. Each rank is an integer from 1 to 10, where 1 is an ace and 10 covers
+every ten, jack, queen, and king. The hidden dealer hole card is deliberately
+not supplied: it remains the first chance event below the traversal root, so
+training includes every state in the player's information set.
 
 ```sh
-build/release/cfr-blackjack --iterations 1 --report-every 1
+build/release/cfr-blackjack --deal 5,10,6 --iterations 10 \
+    --report-every 5 --evaluate
 ```
+
+That command completes in a few seconds on a typical development machine and
+reports the player's average value and its exploitability for a hard eleven
+against a dealer ten. This is the supported blackjack workflow.
+
+### Saving and resuming a strategy
 
 To retain both the resumable data and a readable snapshot, use distinct paths:
 
 ```sh
-build/release/cfr-blackjack --iterations 1 --report-every 1 \
+build/release/cfr-blackjack --deal 5,10,6 --iterations 10 \
     --save blackjack.cfr --export-strategy blackjack-strategy.txt
+```
+
+The checkpoint stores the trainer and strategy data, but not the traversal root.
+When loading it, select the same `--deal` or `--full-tree` scope that created it:
+
+```sh
+build/release/cfr-blackjack --deal 5,10,6 --load blackjack.cfr \
+    --iterations 10 --save blackjack.cfr
 ```
 
 Checkpoint and text exports are written through temporary sibling files and
 atomically replace their destinations only after successful training and
-serialization. A loaded checkpoint selects classic CFR or CFR+ automatically.
+serialization. A loaded checkpoint selects classic CFR or CFR+ automatically,
+so `--load` cannot be combined with `--cfr-plus`.
+
+### Why the complete tree is not a workflow
 
 Each iteration runs one traversal for the only strategic player and enumerates
-the complete tree. The dealer follows a deterministic policy and its draws are
-chance nodes, so it does not receive a second traversal. A full-deck blackjack
-tree is much larger than Kuhn's tree. The `--evaluate` option performs another
-complete enumeration and can require considerably more time and memory. The
-executable prints and flushes a `start` line before the first traversal, giving
-immediate confirmation of the configuration and selected variant during a long
-run.
+the tree below the root. The dealer follows a deterministic policy and its draws
+are chance nodes, so it does not receive a second traversal.
+
+From the undealt deck that tree covers every deal of a 52-card deck, and its
+information-set keys retain the order in which cards were drawn. A measured
+single `--full-tree` iteration exceeds a billion visited states and does not
+finish in any practical time; individual low-card deals alone reach tens of
+millions of states each. `--evaluate` enumerates the same tree while
+materializing it in memory, so it is more demanding still.
+
+`--full-tree` therefore exists for experiments, not for use. It is retained so
+that the complete-game formulation stays reachable and measurable, and the
+executable requires it explicitly so that its cost cannot be mistaken for a
+hang.
 
 Each training report contains:
 

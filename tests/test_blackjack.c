@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include "cfr/blackjack.h"
+#include "cfr/checkpoint.h"
 #include "cfr/info_store.h"
 #include "cfr/trainer.h"
 #include "test_suite.h"
@@ -502,6 +503,78 @@ static void check_trainer_compatibility(void) {
     CHECK(cfr_info_store_destroy(&store) == CFR_STATUS_SUCCESS);
 }
 
+/*
+ * The descriptor must expose a schema identifier: without it every checkpoint
+ * and text-strategy operation fails only after training has already finished.
+ */
+static void check_persistence(void) {
+    const Game *game = cfr_blackjack_descriptor();
+    BlackjackState state;
+    BlackjackState restored_state;
+    InfoStore store = {0};
+    InfoStore restored_store = {0};
+    Trainer trainer = {0};
+    Trainer restored_trainer = {0};
+    FILE *checkpoint = tmpfile();
+    FILE *text = tmpfile();
+    long text_length = 0;
+
+    CHECK(game->strategy_schema_id != NULL);
+    if (game->strategy_schema_id != NULL)
+        CHECK(strcmp(game->strategy_schema_id, "cfr.blackjack/v1") == 0);
+
+    CHECK(checkpoint != NULL);
+    CHECK(text != NULL);
+    if (checkpoint == NULL || text == NULL) {
+        if (checkpoint != NULL)
+            (void)fclose(checkpoint);
+        if (text != NULL)
+            (void)fclose(text);
+        return;
+    }
+
+    initialize(&state);
+    deal_initial_hand(game, &state, CFR_BLACKJACK_ACTION_DEAL_TEN,
+                      CFR_BLACKJACK_ACTION_DEAL_TEN,
+                      CFR_BLACKJACK_ACTION_DEAL_TEN,
+                      CFR_BLACKJACK_ACTION_DEAL_TEN);
+    CHECK(cfr_info_store_init(&store) == CFR_STATUS_SUCCESS);
+    CHECK(cfr_trainer_init(&trainer, game, as_state(&state), &store) ==
+          CFR_STATUS_SUCCESS);
+    CHECK(cfr_trainer_run(&trainer, 5) == CFR_STATUS_SUCCESS);
+    CHECK(store.size > 0);
+
+    CHECK(cfr_checkpoint_write(checkpoint, &trainer) == CFR_STATUS_SUCCESS);
+    CHECK(fflush(checkpoint) == 0);
+    rewind(checkpoint);
+
+    initialize(&restored_state);
+    deal_initial_hand(game, &restored_state, CFR_BLACKJACK_ACTION_DEAL_TEN,
+                      CFR_BLACKJACK_ACTION_DEAL_TEN,
+                      CFR_BLACKJACK_ACTION_DEAL_TEN,
+                      CFR_BLACKJACK_ACTION_DEAL_TEN);
+    CHECK(cfr_checkpoint_read(checkpoint, game, as_state(&restored_state),
+                              &restored_store,
+                              &restored_trainer) == CFR_STATUS_SUCCESS);
+    CHECK(restored_store.size == store.size);
+    CHECK(restored_trainer.training_iterations == trainer.training_iterations);
+    CHECK(restored_trainer.variant == trainer.variant);
+
+    /* The restored trainer must continue training without further setup. */
+    CHECK(cfr_trainer_run(&restored_trainer, 1) == CFR_STATUS_SUCCESS);
+
+    CHECK(cfr_strategy_write_text(text, &trainer) == CFR_STATUS_SUCCESS);
+    CHECK(fflush(text) == 0);
+    CHECK(fseek(text, 0, SEEK_END) == 0);
+    text_length = ftell(text);
+    CHECK(text_length > 0);
+
+    CHECK(cfr_info_store_destroy(&restored_store) == CFR_STATUS_SUCCESS);
+    CHECK(cfr_info_store_destroy(&store) == CFR_STATUS_SUCCESS);
+    (void)fclose(checkpoint);
+    (void)fclose(text);
+}
+
 int test_blackjack(void) {
     failures = 0;
 
@@ -514,6 +587,7 @@ int test_blackjack(void) {
     check_undo_and_terminal_contract();
     check_corrupt_states_are_rejected();
     check_trainer_compatibility();
+    check_persistence();
 
     return failures;
 }
