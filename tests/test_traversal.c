@@ -87,6 +87,15 @@ static void check_zero_learning(const InfoNode *node) {
     }
 }
 
+static size_t validation_calls;
+
+static Status reject_root_state(const void *context, const GameState *state) {
+    (void)context;
+    (void)state;
+    validation_calls += 1;
+    return CFR_STATUS_NUMERIC_ERROR;
+}
+
 static void test_terminal_utility_and_signs(void) {
     const Game *game = traversal_game_descriptor();
     TraversalGameState state;
@@ -305,6 +314,31 @@ static void test_excessive_action_limit_is_rejected(void) {
                        CFR_PLAYER_0, &utility) ==
           CFR_STATUS_INVALID_ARGUMENT);
     CHECK(utility == 94.875);
+    CHECK(store.size == 0);
+    CHECK(same_state(&state, &snapshot));
+    destroy_store(&store);
+}
+
+static void test_root_validation_precedes_traversal(void) {
+    const Game *descriptor = traversal_game_descriptor();
+    Game game = *descriptor;
+    GameOperations operations = *descriptor->operations;
+    TraversalGameState state;
+    TraversalGameState snapshot;
+    InfoStore store;
+    Utility utility = 94.9;
+
+    initialize_store(&store);
+    CHECK(traversal_game_state_init(&state) == CFR_STATUS_SUCCESS);
+    snapshot = state;
+    operations.validate_state = reject_root_state;
+    game.operations = &operations;
+    validation_calls = 0;
+
+    CHECK(cfr_traverse(&game, traversal_game_state_as_public(&state), &store,
+                       CFR_PLAYER_0, &utility) == CFR_STATUS_NUMERIC_ERROR);
+    CHECK(validation_calls == 1);
+    CHECK(utility == 94.9);
     CHECK(store.size == 0);
     CHECK(same_state(&state, &snapshot));
     destroy_store(&store);
@@ -556,6 +590,7 @@ int test_traversal(void) {
     test_learning_update_is_atomic();
     test_strategy_validation_precedes_regret_publish();
     test_excessive_action_limit_is_rejected();
+    test_root_validation_precedes_traversal();
     test_error_after_apply_restores_state();
     test_error_after_completed_branch_restores_state();
     test_undo_error_is_propagated();

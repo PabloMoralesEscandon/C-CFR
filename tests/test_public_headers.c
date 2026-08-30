@@ -31,7 +31,7 @@ int test_public_headers(void) {
             status == CFR_STATUS_SUCCESS && utility == 0.0 &&
             probability == 1.0 && node.action_count == 0 && store.size == 0 &&
             kuhn_poker_state.public_action_count == 0 &&
-            blackjack_state.player_card_count == 0 &&
+            blackjack_state.player_hand.card_count == 0 &&
             evaluation_metrics.exploitability == 0.0 &&
             trainer_variant == CFR_TRAINER_VARIANT_CFR_PLUS &&
             checkpoint_writer != NULL)

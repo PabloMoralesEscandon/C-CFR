@@ -121,6 +121,19 @@ struct CfrGameOperations {
      */
     Status (*information_set_key)(const void *context, const GameState *state,
                                   InfoSetKey *result);
+
+    /*
+     * Performs an adapter-specific semantic validation of a complete state.
+     *
+     * The callback is optional. Engines use it at operation boundaries such
+     * as the start of a complete traversal; individual hot-path callbacks are
+     * responsible only for the inexpensive checks needed by their operation.
+     * The callback must not modify state.
+     *
+     * This optional extension remains last so positional initializers written
+     * for older adapters continue to initialize the original operations.
+     */
+    Status (*validate_state)(const void *context, const GameState *state);
 };
 
 /* Describes a game without storing the state of a match. */
@@ -173,6 +186,14 @@ struct CfrGame {
 /* Queries whether state is terminal and writes the answer to result. */
 Status cfr_game_is_terminal(const Game *game, const GameState *state,
                             bool *result);
+
+/*
+ * Runs the adapter's optional deep state validator.
+ *
+ * Games without a validate_state callback accept every non-null state. This
+ * operation never modifies state.
+ */
+Status cfr_game_validate_state(const Game *game, const GameState *state);
 
 /* Queries player terminal utility and writes it to result. */
 Status cfr_game_terminal_utility(const Game *game, const GameState *state,

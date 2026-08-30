@@ -182,7 +182,7 @@ action indices becomes incompatible. Serialization stores generic keys and
 indexed arrays; it does not contain Kuhn-specific actions or labels.
 
 Both bundled adapters are serializable: Kuhn Poker declares
-`cfr.kuhn-poker/v1` and blackjack declares `cfr.blackjack/v1`.
+`cfr.kuhn-poker/v1` and blackjack declares `cfr.blackjack/v2`.
 
 ### Exact evaluation of a saved strategy
 
@@ -428,11 +428,14 @@ the tree below the root. The dealer follows a deterministic policy and its draws
 are chance nodes, so it does not receive a second traversal.
 
 From the undealt deck that tree covers every deal of a 52-card deck, and its
-information-set keys retain the order in which cards were drawn. A measured
-single `--full-tree` iteration exceeds a billion visited states and does not
-finish in any practical time; individual low-card deals alone reach tens of
-millions of states each. `--evaluate` enumerates the same tree while
-materializing it in memory, so it is more demanding still.
+information-set keys merge player hands with the same hard or soft total.
+Different card orders and different hard-card compositions therefore reuse one
+stored strategy node. Soft and hard hands remain separate. The chance traversal
+still retains the undealt rank counts required by the without-replacement
+rules. A measured single `--full-tree` iteration exceeds a billion visited
+states and does not finish in any practical time; individual low-card deals
+alone reach tens of millions of states each. `--evaluate` enumerates the same
+tree while materializing it in memory, so it is more demanding still.
 
 `--full-tree` therefore exists for experiments, not for use. It is retained so
 that the complete-game formulation stays reachable and measurable, and the

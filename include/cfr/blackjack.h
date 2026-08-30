@@ -1,6 +1,7 @@
 #ifndef CFR_BLACKJACK_H
 #define CFR_BLACKJACK_H
 
+#include <stdbool.h>
 #include <stddef.h>
 
 #include "cfr/game.h"
@@ -83,6 +84,22 @@ typedef struct {
 } BlackjackUndoEntry;
 
 /*
+ * Stores the decision-relevant value of one hand.
+ *
+ * total is the best current blackjack total: an ace counts as eleven exactly
+ * when doing so does not bust the hand. is_soft records whether total currently
+ * includes such an ace. ace_count is the minimal extra information needed to
+ * update and undo soft-hand transitions. The individual card sequence is
+ * deliberately not retained.
+ */
+typedef struct {
+    int total;
+    size_t card_count;
+    size_t ace_count;
+    bool is_soft;
+} BlackjackHand;
+
+/*
  * Contains the complete state of a blackjack hand.
  *
  * Adapter rules:
@@ -103,17 +120,20 @@ typedef struct {
  * not modify fields directly; operations reject inconsistent states that they
  * can detect.
  *
- * dealer_cards[0] is the up card. Cards after the hole card are stored in draw
- * order.
+ * Player and dealer hands retain only their total, card count, and softness.
+ * dealer_up_card is kept separately because it is the dealer information
+ * visible to the player. remaining_cards still records rank-class depletion so
+ * chance probabilities continue to model a finite deck without replacement.
  */
 typedef struct {
     BlackjackPhase phase;
-    BlackjackCard player_cards[CFR_BLACKJACK_HAND_CAPACITY];
-    size_t player_card_count;
-    BlackjackCard dealer_cards[CFR_BLACKJACK_HAND_CAPACITY];
-    size_t dealer_card_count;
+    BlackjackHand player_hand;
+    BlackjackHand dealer_hand;
+    BlackjackCard dealer_up_card;
     /* Undealt count for each rank, in ace-to-ten order. */
     size_t remaining_cards[CFR_BLACKJACK_NUMBER_OF_CARD_RANKS];
+    /* Total number of undealt cards, maintained incrementally. */
+    size_t cards_remaining;
     BlackjackUndoEntry undo_history[CFR_BLACKJACK_UNDO_HISTORY_CAPACITY];
     size_t undo_count;
 } BlackjackState;
@@ -127,7 +147,7 @@ Status cfr_blackjack_state_init(BlackjackState *state);
 /*
  * Returns the const, static-lifetime blackjack descriptor.
  *
- * The descriptor supplies strategy_schema_id "cfr.blackjack/v1", so trainers
+ * The descriptor supplies strategy_schema_id "cfr.blackjack/v2", so trainers
  * bound to it work with cfr_checkpoint_write, cfr_checkpoint_read, and
  * cfr_strategy_write_text. The identifier must change whenever the rules, the
  * information-set keys, or the meaning of the action indices become

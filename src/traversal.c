@@ -565,9 +565,12 @@ static Status traverse_with_stats(const Game *game, GameState *state,
         return CFR_STATUS_INVALID_ARGUMENT;
     if (target_player != CFR_PLAYER_0 && target_player != CFR_PLAYER_1)
         return CFR_STATUS_INVALID_ARGUMENT;
+    Status status = cfr_game_validate_state(game, state);
+    if (status != CFR_STATUS_SUCCESS)
+        return status;
     WorkSpace ws = {0};
-    Status status = workspace_init(&ws, game->max_legal_actions,
-                                   strategy_weight, regret_matching_plus);
+    status = workspace_init(&ws, game->max_legal_actions, strategy_weight,
+                            regret_matching_plus);
     if (status != CFR_STATUS_SUCCESS)
         return status;
     Utility temp_utility = 0.0;

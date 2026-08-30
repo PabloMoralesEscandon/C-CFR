@@ -1,5 +1,14 @@
 #include "cfr/game.h"
 
+Status cfr_game_validate_state(const Game *game, const GameState *state) {
+    if (game == NULL || game->operations == NULL || state == NULL)
+        return CFR_STATUS_INVALID_ARGUMENT;
+    if (game->operations->validate_state == NULL)
+        return CFR_STATUS_SUCCESS;
+
+    return game->operations->validate_state(game->context, state);
+}
+
 Status cfr_game_is_terminal(const Game *game, const GameState *state,
                             bool *result) {
     if (game == NULL || game->operations == NULL ||

@@ -39,16 +39,18 @@ static bool same_state(const BlackjackState *left,
     size_t index;
 
     if (left->phase != right->phase ||
-        left->player_card_count != right->player_card_count ||
-        left->dealer_card_count != right->dealer_card_count ||
+        left->player_hand.total != right->player_hand.total ||
+        left->player_hand.card_count != right->player_hand.card_count ||
+        left->player_hand.ace_count != right->player_hand.ace_count ||
+        left->player_hand.is_soft != right->player_hand.is_soft ||
+        left->dealer_hand.total != right->dealer_hand.total ||
+        left->dealer_hand.card_count != right->dealer_hand.card_count ||
+        left->dealer_hand.ace_count != right->dealer_hand.ace_count ||
+        left->dealer_hand.is_soft != right->dealer_hand.is_soft ||
+        left->dealer_up_card != right->dealer_up_card ||
+        left->cards_remaining != right->cards_remaining ||
         left->undo_count != right->undo_count) {
         return false;
-    }
-    for (index = 0; index < CFR_BLACKJACK_HAND_CAPACITY; index += 1) {
-        if (left->player_cards[index] != right->player_cards[index] ||
-            left->dealer_cards[index] != right->dealer_cards[index]) {
-            return false;
-        }
     }
     for (index = 0; index < CFR_BLACKJACK_NUMBER_OF_CARD_RANKS; index += 1) {
         if (left->remaining_cards[index] != right->remaining_cards[index])
@@ -118,7 +120,7 @@ static void check_root_and_distribution(void) {
     CHECK(game->strategic_player_count == 1);
     CHECK(game->max_legal_actions == CFR_BLACKJACK_MAX_POSSIBLE_ACTIONS);
     CHECK(game->strategy_schema_id != NULL);
-    CHECK(strcmp(game->strategy_schema_id, "cfr.blackjack/v1") == 0);
+    CHECK(strcmp(game->strategy_schema_id, "cfr.blackjack/v2") == 0);
     CHECK(game->operations->is_terminal != NULL);
     CHECK(game->operations->terminal_utility != NULL);
     CHECK(game->operations->current_actor != NULL);
@@ -133,9 +135,17 @@ static void check_root_and_distribution(void) {
     CHECK(cfr_blackjack_state_as_game_state_const(&state) ==
           (const GameState *)&state);
     CHECK(state.phase == CFR_BLACKJACK_PHASE_DEAL_PLAYER_FIRST);
-    CHECK(state.player_card_count == 0);
-    CHECK(state.dealer_card_count == 0);
+    CHECK(state.player_hand.total == 0);
+    CHECK(state.player_hand.card_count == 0);
+    CHECK(state.player_hand.ace_count == 0);
+    CHECK(!state.player_hand.is_soft);
+    CHECK(state.dealer_hand.total == 0);
+    CHECK(state.dealer_hand.card_count == 0);
+    CHECK(state.dealer_hand.ace_count == 0);
+    CHECK(!state.dealer_hand.is_soft);
+    CHECK(state.dealer_up_card == CFR_BLACKJACK_CARD_NOT_DEALT);
     CHECK(state.undo_count == 0);
+    CHECK(state.cards_remaining == CFR_BLACKJACK_DECK_SIZE);
     CHECK(state.remaining_cards[0] == 4);
     CHECK(state.remaining_cards[9] == 16);
 
@@ -201,7 +211,10 @@ static void check_depletion_and_player_turn(void) {
     initialize(&state);
     apply(game, &state, CFR_BLACKJACK_ACTION_DEAL_TEN);
     CHECK(state.phase == CFR_BLACKJACK_PHASE_DEAL_DEALER_UP_CARD);
-    CHECK(state.player_cards[0] == CFR_BLACKJACK_CARD_TEN);
+    CHECK(state.player_hand.total == 10);
+    CHECK(state.player_hand.card_count == 1);
+    CHECK(!state.player_hand.is_soft);
+    CHECK(state.cards_remaining == CFR_BLACKJACK_DECK_SIZE - 1);
     CHECK(state.remaining_cards[9] == 15);
     CHECK(cfr_game_chance_probability(
               game, as_const_state(&state), CFR_BLACKJACK_ACTION_DEAL_TEN,
@@ -212,8 +225,11 @@ static void check_depletion_and_player_turn(void) {
     apply(game, &state, CFR_BLACKJACK_ACTION_DEAL_SEVEN);
     apply(game, &state, CFR_BLACKJACK_ACTION_DEAL_TEN);
     CHECK(state.phase == CFR_BLACKJACK_PHASE_PLAYER_TURN);
-    CHECK(state.player_card_count == 2);
-    CHECK(state.dealer_card_count == 2);
+    CHECK(state.player_hand.total == 17);
+    CHECK(state.player_hand.card_count == 2);
+    CHECK(state.dealer_hand.total == 16);
+    CHECK(state.dealer_hand.card_count == 2);
+    CHECK(state.dealer_up_card == CFR_BLACKJACK_CARD_SIX);
     CHECK(cfr_game_current_actor(game, as_const_state(&state), &actor) ==
           CFR_STATUS_SUCCESS);
     CHECK(actor.kind == CFR_ACTOR_PLAYER);
@@ -318,6 +334,45 @@ static void check_soft_seventeen_stands(void) {
     CHECK(utility == 0.0);
 }
 
+static void check_soft_player_transition(void) {
+    const Game *game = cfr_blackjack_descriptor();
+    BlackjackState soft_state;
+    BlackjackState soft_before_hit;
+    BlackjackState hard_state;
+
+    initialize(&soft_state);
+    deal_initial_hand(game, &soft_state, CFR_BLACKJACK_ACTION_DEAL_ACE,
+                      CFR_BLACKJACK_ACTION_DEAL_FOUR,
+                      CFR_BLACKJACK_ACTION_DEAL_FIVE,
+                      CFR_BLACKJACK_ACTION_DEAL_TEN);
+    CHECK(soft_state.player_hand.total == 16);
+    CHECK(soft_state.player_hand.is_soft);
+    soft_before_hit = soft_state;
+    apply(game, &soft_state, CFR_BLACKJACK_ACTION_HIT);
+    apply(game, &soft_state, CFR_BLACKJACK_ACTION_DEAL_TEN);
+    CHECK(soft_state.phase == CFR_BLACKJACK_PHASE_PLAYER_TURN);
+    CHECK(soft_state.player_hand.total == 16);
+    CHECK(!soft_state.player_hand.is_soft);
+    CHECK(soft_state.player_hand.card_count == 3);
+    CHECK(cfr_game_undo_action(game, as_state(&soft_state)) ==
+          CFR_STATUS_SUCCESS);
+    CHECK(cfr_game_undo_action(game, as_state(&soft_state)) ==
+          CFR_STATUS_SUCCESS);
+    CHECK(same_state(&soft_state, &soft_before_hit));
+
+    initialize(&hard_state);
+    deal_initial_hand(game, &hard_state, CFR_BLACKJACK_ACTION_DEAL_TEN,
+                      CFR_BLACKJACK_ACTION_DEAL_FOUR,
+                      CFR_BLACKJACK_ACTION_DEAL_SIX,
+                      CFR_BLACKJACK_ACTION_DEAL_FIVE);
+    CHECK(hard_state.player_hand.total == 16);
+    CHECK(!hard_state.player_hand.is_soft);
+    apply(game, &hard_state, CFR_BLACKJACK_ACTION_HIT);
+    apply(game, &hard_state, CFR_BLACKJACK_ACTION_DEAL_TEN);
+    CHECK(hard_state.phase == CFR_BLACKJACK_PHASE_TERMINAL);
+    CHECK(hard_state.player_hand.total == 26);
+}
+
 static InfoSetKey information_key_for_hand(BlackjackAction player_first,
                                            BlackjackAction dealer_up,
                                            BlackjackAction player_second,
@@ -335,6 +390,27 @@ static InfoSetKey information_key_for_hand(BlackjackAction player_first,
     return key;
 }
 
+static InfoSetKey information_key_after_hit(BlackjackAction player_first,
+                                            BlackjackAction dealer_up,
+                                            BlackjackAction player_second,
+                                            BlackjackAction dealer_hole,
+                                            BlackjackAction hit_card) {
+    const Game *game = cfr_blackjack_descriptor();
+    BlackjackState state;
+    InfoSetKey key = -1;
+
+    initialize(&state);
+    deal_initial_hand(game, &state, player_first, dealer_up, player_second,
+                      dealer_hole);
+    CHECK(state.phase == CFR_BLACKJACK_PHASE_PLAYER_TURN);
+    apply(game, &state, CFR_BLACKJACK_ACTION_HIT);
+    apply(game, &state, hit_card);
+    CHECK(state.phase == CFR_BLACKJACK_PHASE_PLAYER_TURN);
+    CHECK(cfr_game_information_set_key(game, as_const_state(&state), &key) ==
+          CFR_STATUS_SUCCESS);
+    return key;
+}
+
 static void check_information_sets(void) {
     const InfoSetKey first_hidden = information_key_for_hand(
         CFR_BLACKJACK_ACTION_DEAL_TEN, CFR_BLACKJACK_ACTION_DEAL_SIX,
@@ -345,12 +421,40 @@ static void check_information_sets(void) {
     const InfoSetKey reversed_player_cards = information_key_for_hand(
         CFR_BLACKJACK_ACTION_DEAL_SEVEN, CFR_BLACKJACK_ACTION_DEAL_SIX,
         CFR_BLACKJACK_ACTION_DEAL_TEN, CFR_BLACKJACK_ACTION_DEAL_FIVE);
+    const InfoSetKey same_hard_total = information_key_for_hand(
+        CFR_BLACKJACK_ACTION_DEAL_FIVE, CFR_BLACKJACK_ACTION_DEAL_SIX,
+        CFR_BLACKJACK_ACTION_DEAL_TEN, CFR_BLACKJACK_ACTION_DEAL_EIGHT);
+    const InfoSetKey equivalent_hard_total = information_key_for_hand(
+        CFR_BLACKJACK_ACTION_DEAL_SEVEN, CFR_BLACKJACK_ACTION_DEAL_SIX,
+        CFR_BLACKJACK_ACTION_DEAL_EIGHT, CFR_BLACKJACK_ACTION_DEAL_FIVE);
+    const InfoSetKey same_total_after_hit = information_key_after_hit(
+        CFR_BLACKJACK_ACTION_DEAL_FIVE, CFR_BLACKJACK_ACTION_DEAL_SIX,
+        CFR_BLACKJACK_ACTION_DEAL_TEN, CFR_BLACKJACK_ACTION_DEAL_EIGHT,
+        CFR_BLACKJACK_ACTION_DEAL_TWO);
+    const InfoSetKey hard_seventeen = information_key_for_hand(
+        CFR_BLACKJACK_ACTION_DEAL_TEN, CFR_BLACKJACK_ACTION_DEAL_SIX,
+        CFR_BLACKJACK_ACTION_DEAL_SEVEN, CFR_BLACKJACK_ACTION_DEAL_FIVE);
+    const InfoSetKey soft_seventeen = information_key_for_hand(
+        CFR_BLACKJACK_ACTION_DEAL_ACE, CFR_BLACKJACK_ACTION_DEAL_SIX,
+        CFR_BLACKJACK_ACTION_DEAL_SIX, CFR_BLACKJACK_ACTION_DEAL_FIVE);
+    const InfoSetKey hard_sixteen = information_key_for_hand(
+        CFR_BLACKJACK_ACTION_DEAL_TEN, CFR_BLACKJACK_ACTION_DEAL_FOUR,
+        CFR_BLACKJACK_ACTION_DEAL_SIX, CFR_BLACKJACK_ACTION_DEAL_FIVE);
+    const InfoSetKey soft_sixteen = information_key_for_hand(
+        CFR_BLACKJACK_ACTION_DEAL_ACE, CFR_BLACKJACK_ACTION_DEAL_FOUR,
+        CFR_BLACKJACK_ACTION_DEAL_FIVE, CFR_BLACKJACK_ACTION_DEAL_SIX);
     const InfoSetKey different_up_card = information_key_for_hand(
         CFR_BLACKJACK_ACTION_DEAL_TEN, CFR_BLACKJACK_ACTION_DEAL_FIVE,
         CFR_BLACKJACK_ACTION_DEAL_SEVEN, CFR_BLACKJACK_ACTION_DEAL_SIX);
 
     CHECK(first_hidden == second_hidden);
-    CHECK(first_hidden != reversed_player_cards);
+    CHECK(first_hidden == reversed_player_cards);
+    CHECK(first_hidden == hard_seventeen);
+    CHECK(first_hidden != same_hard_total);
+    CHECK(same_hard_total == equivalent_hard_total);
+    CHECK(first_hidden == same_total_after_hit);
+    CHECK(hard_seventeen != soft_seventeen);
+    CHECK(hard_sixteen != soft_sixteen);
     CHECK(first_hidden != different_up_card);
 }
 
@@ -446,30 +550,33 @@ static void check_corrupt_states_are_rejected(void) {
     const Game *game = cfr_blackjack_descriptor();
     BlackjackState valid;
     BlackjackState corrupt;
-    bool terminal = true;
 
     initialize(&valid);
+    CHECK(cfr_game_validate_state(game, as_const_state(&valid)) ==
+          CFR_STATUS_SUCCESS);
 
     corrupt = valid;
     corrupt.remaining_cards[0] = 3;
-    CHECK(cfr_game_is_terminal(game, as_const_state(&corrupt), &terminal) ==
+    CHECK(cfr_game_validate_state(game, as_const_state(&corrupt)) ==
           CFR_STATUS_INVALID_ARGUMENT);
-    CHECK(terminal);
 
     corrupt = valid;
-    corrupt.player_cards[0] = CFR_BLACKJACK_CARD_ACE;
-    CHECK(cfr_game_is_terminal(game, as_const_state(&corrupt), &terminal) ==
+    corrupt.player_hand.total = 11;
+    corrupt.player_hand.card_count = 1;
+    corrupt.player_hand.ace_count = 1;
+    corrupt.player_hand.is_soft = true;
+    CHECK(cfr_game_validate_state(game, as_const_state(&corrupt)) ==
           CFR_STATUS_INVALID_ARGUMENT);
 
     corrupt = valid;
     corrupt.phase = CFR_BLACKJACK_PHASE_PLAYER_TURN;
-    CHECK(cfr_game_is_terminal(game, as_const_state(&corrupt), &terminal) ==
+    CHECK(cfr_game_validate_state(game, as_const_state(&corrupt)) ==
           CFR_STATUS_INVALID_ARGUMENT);
 
     corrupt = valid;
     corrupt.undo_history[0].applied_action =
         CFR_BLACKJACK_ACTION_DEAL_ACE;
-    CHECK(cfr_game_is_terminal(game, as_const_state(&corrupt), &terminal) ==
+    CHECK(cfr_game_validate_state(game, as_const_state(&corrupt)) ==
           CFR_STATUS_INVALID_ARGUMENT);
 }
 
@@ -521,7 +628,7 @@ static void check_persistence(void) {
 
     CHECK(game->strategy_schema_id != NULL);
     if (game->strategy_schema_id != NULL)
-        CHECK(strcmp(game->strategy_schema_id, "cfr.blackjack/v1") == 0);
+        CHECK(strcmp(game->strategy_schema_id, "cfr.blackjack/v2") == 0);
 
     CHECK(checkpoint != NULL);
     CHECK(text != NULL);
@@ -582,6 +689,7 @@ int test_blackjack(void) {
     check_depletion_and_player_turn();
     check_terminal_utilities();
     check_soft_seventeen_stands();
+    check_soft_player_transition();
     check_information_sets();
     check_exhausted_rank();
     check_undo_and_terminal_contract();

@@ -632,7 +632,10 @@ static Status workspace_build_snapshot(const Game *game, GameState *state,
         return CFR_STATUS_INVALID_ARGUMENT;
 
     EvaluationWorkspace temporary = {0};
-    Status status = workspace_init(&temporary, game->max_legal_actions);
+    Status status = cfr_game_validate_state(game, state);
+    if (status != CFR_STATUS_SUCCESS)
+        return status;
+    status = workspace_init(&temporary, game->max_legal_actions);
     if (status != CFR_STATUS_SUCCESS)
         return status;
 

@@ -432,6 +432,8 @@ static void test_public_wrapper_validation(void) {
 
     CHECK(cfr_game_is_terminal(NULL, const_state, &terminal) ==
           CFR_STATUS_INVALID_ARGUMENT);
+    CHECK(cfr_game_validate_state(NULL, const_state) ==
+          CFR_STATUS_INVALID_ARGUMENT);
     CHECK(cfr_game_terminal_utility(NULL, const_state, CFR_PLAYER_0, &utility) ==
           CFR_STATUS_INVALID_ARGUMENT);
     CHECK(cfr_game_current_actor(NULL, const_state, &actor) ==
@@ -451,6 +453,10 @@ static void test_public_wrapper_validation(void) {
 
     CHECK(cfr_game_is_terminal(&no_operations, const_state, &terminal) ==
           CFR_STATUS_INVALID_ARGUMENT);
+    CHECK(cfr_game_validate_state(&no_operations, const_state) ==
+          CFR_STATUS_INVALID_ARGUMENT);
+    CHECK(cfr_game_validate_state(&no_callbacks, const_state) ==
+          CFR_STATUS_SUCCESS);
     CHECK(cfr_game_is_terminal(&no_callbacks, const_state, &terminal) ==
           CFR_STATUS_INVALID_ARGUMENT);
     CHECK(cfr_game_terminal_utility(&no_callbacks, const_state, CFR_PLAYER_0,
@@ -474,6 +480,9 @@ static void test_public_wrapper_validation(void) {
 
     CHECK(cfr_game_is_terminal(game, NULL, &terminal) ==
           CFR_STATUS_INVALID_ARGUMENT);
+    CHECK(cfr_game_validate_state(game, NULL) ==
+          CFR_STATUS_INVALID_ARGUMENT);
+    CHECK(cfr_game_validate_state(game, const_state) == CFR_STATUS_SUCCESS);
     CHECK(cfr_game_is_terminal(game, const_state, NULL) ==
           CFR_STATUS_INVALID_ARGUMENT);
     CHECK(cfr_game_terminal_utility(game, NULL, CFR_PLAYER_0, &utility) ==
