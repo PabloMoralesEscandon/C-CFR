@@ -11,6 +11,7 @@ int main(void) {
     failures += test_info_store();
     failures += test_traversal();
     failures += test_chance_trainer();
+    failures += test_cfr_plus();
     failures += test_kuhn_poker();
     failures += test_evaluation();
 

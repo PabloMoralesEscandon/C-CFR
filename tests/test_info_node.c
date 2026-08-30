@@ -405,7 +405,9 @@ static void check_composition_for_size(size_t action_count) {
         CHECK(strategy[index] <= 1.0);
         sum += (long double)strategy[index];
     }
-    CHECK(fabsl(sum - 1.0L) <= 1e-12L);
+    /* En plataformas donde long double equivale a double, 100 000 sumandos
+     * acumulan más de 1e-12 de redondeo. Use la tolerancia del módulo. */
+    CHECK(fabsl(sum - 1.0L) <= 1e-8L);
     CHECK(cfr_info_node_accumulate_strategy(&node, strategy, action_count,
                                             1.0) == CFR_STATUS_SUCCESS);
 

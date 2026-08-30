@@ -144,6 +144,7 @@ require_text "$case_output" "Uso:"
 require_text "$case_output" "--iterations N"
 require_text "$case_output" "--report-every N"
 require_text "$case_output" "--print-strategy"
+require_text "$case_output" "--cfr-plus"
 require_text "$case_output" "0  Ejecución correcta o ayuda."
 require_text "$case_output" \
     "1  Fallo operativo, de biblioteca, reloj o escritura."
@@ -182,6 +183,8 @@ check_usage_error informe_repetido "--report-every está repetida" \
     --iterations 1 --report-every 1 --report-every 1
 check_usage_error estrategia_repetida "--print-strategy está repetida" \
     --iterations 1 --print-strategy --print-strategy
+check_usage_error cfr_plus_repetida "--cfr-plus está repetida" \
+    --iterations 1 --cfr-plus --cfr-plus
 check_usage_error ayuda_combinada "la ayuda solo puede solicitarse" \
     --iterations 1 --help
 
@@ -198,6 +201,9 @@ run_case frecuencia_menor_divisora --iterations 6 --report-every 2
 validate_only_reports "2 4 6"
 
 run_case frecuencia_no_divisora --iterations 5 --report-every 2
+validate_only_reports "2 4 5"
+
+run_case cfr_plus_corto --iterations 5 --report-every 2 --cfr-plus
 validate_only_reports "2 4 5"
 
 if [ -c /dev/full ] && [ -w /dev/full ]; then

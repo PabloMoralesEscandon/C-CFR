@@ -32,6 +32,7 @@ typedef struct {
     size_t iterations;
     size_t report_every;
     bool print_strategy;
+    bool cfr_plus;
 } CliOptions;
 
 typedef struct {
@@ -47,7 +48,7 @@ static bool print_usage(FILE *stream, const char *program_name) {
 
     if (fprintf(stream,
                 "Uso: %s --iterations N [--report-every N] "
-                "[--print-strategy]\n"
+                "[--print-strategy] [--cfr-plus]\n"
                 "       %s --help\n"
                 "\n"
                 "Opciones:\n"
@@ -56,6 +57,8 @@ static bool print_usage(FILE *stream, const char *program_name) {
                 "  --report-every N   Iteraciones entre informes; si se "
                 "omite, solo se informa al final.\n"
                 "  --print-strategy   Imprime la estrategia media final.\n"
+                "  --cfr-plus        Usa CFR+ con Regret Matching+ y promedio "
+                "lineal.\n"
                 "  --help, -h         Muestra esta ayuda.\n"
                 "\n"
                 "Códigos de salida:\n"
@@ -102,6 +105,7 @@ static CliParseResult parse_options(int argc, char *const argv[],
     bool iterations_seen = false;
     bool report_every_seen = false;
     bool print_strategy_seen = false;
+    bool cfr_plus_seen = false;
     int index;
 
     if (argv == NULL || diagnostic == NULL || options_out == NULL)
@@ -173,6 +177,17 @@ static CliParseResult parse_options(int argc, char *const argv[],
             }
             options.print_strategy = true;
             print_strategy_seen = true;
+            continue;
+        }
+
+        if (strcmp(argument, "--cfr-plus") == 0) {
+            if (cfr_plus_seen) {
+                (void)fprintf(diagnostic,
+                              "error: --cfr-plus está repetida\n");
+                return CLI_PARSE_ERROR;
+            }
+            options.cfr_plus = true;
+            cfr_plus_seen = true;
             continue;
         }
 
@@ -486,7 +501,10 @@ static int run_training(const CliOptions *options, FILE *output,
     }
     store_initialized = true;
 
-    status = cfr_trainer_init(&trainer, game, game_state, &store);
+    if (options->cfr_plus)
+        status = cfr_trainer_init_plus(&trainer, game, game_state, &store);
+    else
+        status = cfr_trainer_init(&trainer, game, game_state, &store);
     if (status != CFR_STATUS_SUCCESS) {
         (void)print_status_error(diagnostic, "inicializar el entrenador",
                                  status);

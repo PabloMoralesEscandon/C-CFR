@@ -1,7 +1,7 @@
-# CFR en C17
+# CFR y CFR+ en C17
 
-Este proyecto implementa una biblioteca de CFR para juegos extensivos finitos.
-La primera versión admite dos jugadores y juegos de suma cero.
+Este proyecto implementa una biblioteca de CFR y CFR+ para juegos extensivos
+finitos. La primera versión admite dos jugadores y juegos de suma cero.
 
 El repositorio incluye un adaptador completo de Kuhn Poker. También incluye una
 aplicación que entrena y evalúa ese juego.
@@ -79,7 +79,7 @@ build/release/cfr-kuhn -h
 La forma general es esta:
 
 ```text
-cfr-kuhn --iterations N [--report-every N] [--print-strategy]
+cfr-kuhn --iterations N [--report-every N] [--print-strategy] [--cfr-plus]
 ```
 
 | Opción | Descripción |
@@ -87,6 +87,7 @@ cfr-kuhn --iterations N [--report-every N] [--print-strategy]
 | `--iterations N` | Ejecuta `N` iteraciones. `N` debe ser un entero decimal positivo. |
 | `--report-every N` | Publica un informe después de cada bloque de hasta `N` iteraciones. |
 | `--print-strategy` | Publica la estrategia media después del último informe. |
+| `--cfr-plus` | Usa CFR+ en lugar del CFR clásico predeterminado. |
 | `--help`, `-h` | Publica la ayuda y no inicializa CFR. |
 
 Si omite `--report-every`, la aplicación publica solo el informe final. Use
@@ -94,6 +95,33 @@ una frecuencia explícita durante una ejecución larga.
 
 Por ejemplo, use `--report-every 10000` con 100 000 iteraciones. La aplicación
 publicará diez informes. Una frecuencia menor aumenta el coste de evaluación.
+
+## Variantes de entrenamiento
+
+Sin opciones adicionales, la aplicación y `cfr_trainer_init` conservan el CFR
+clásico. Para usar CFR+ desde la aplicación, añada `--cfr-plus`:
+
+```sh
+build/release/cfr-kuhn --iterations 1000 --cfr-plus
+```
+
+Desde la biblioteca, inicialice el entrenador con
+`cfr_trainer_init_plus`. CFR+ reutiliza la actualización alterna existente y
+añade sus otras dos reglas:
+
+- Regret Matching+ trunca a cero los arrepentimientos acumulados negativos
+  después de cada recorrido correcto.
+- La estrategia de la iteración `t` contribuye a la estrategia media con peso
+  `t`, por lo que las estrategias recientes pesan más.
+
+El entrenador conserva el número de iteraciones de aprendizaje entre llamadas
+a `cfr_trainer_run`. `cfr_trainer_reset_stats` solo reinicia las estadísticas y
+no reinicia esos pesos.
+
+Para construir un bucle propio, `cfr_traverse_plus` y
+`cfr_traverse_plus_with_stats` reciben explícitamente el número de iteración.
+El valor comienza en uno y debe ser el mismo para los recorridos de ambos
+jugadores.
 
 ### Códigos de salida
 

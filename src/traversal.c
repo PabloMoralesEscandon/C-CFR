@@ -36,6 +36,8 @@ typedef struct {
     size_t used_arena;
     size_t reserved_arena;
     size_t visits;
+    double strategy_weight;
+    bool regret_matching_plus;
 } WorkSpace;
 
 static Status cfr_traverse_chance(const Game *game, GameState *state,
@@ -63,9 +65,12 @@ static void workspace_destroy(WorkSpace *workspace) {
     *workspace = (WorkSpace){0};
 }
 
-static Status workspace_init(WorkSpace *workspace, size_t max_legal_actions) {
+static Status workspace_init(WorkSpace *workspace, size_t max_legal_actions,
+                             double strategy_weight,
+                             bool regret_matching_plus) {
     if (workspace == NULL || max_legal_actions == 0 ||
-        max_legal_actions > CFR_TRAVERSAL_MAX_ACTIONS)
+        max_legal_actions > CFR_TRAVERSAL_MAX_ACTIONS ||
+        !isfinite(strategy_weight) || strategy_weight <= 0.0)
         return CFR_STATUS_INVALID_ARGUMENT;
 
     WorkSpace temporary = {0};
@@ -115,6 +120,8 @@ static Status workspace_init(WorkSpace *workspace, size_t max_legal_actions) {
         temporary.table[i] = CFR_CELL_EMPTY;
 
     temporary.visits = 0;
+    temporary.strategy_weight = strategy_weight;
+    temporary.regret_matching_plus = regret_matching_plus;
 
     *workspace = temporary;
     return CFR_STATUS_SUCCESS;
@@ -165,6 +172,13 @@ static Status workspace_apply_deltas(WorkSpace *workspace) {
 
         if (status != CFR_STATUS_SUCCESS)
             return status;
+
+        if (workspace->regret_matching_plus) {
+            for (size_t action = 0; action < entry->action_count; action++) {
+                if (entry->node->regret_sums[action] < 0.0)
+                    entry->node->regret_sums[action] = 0.0;
+            }
+        }
     }
 
     return CFR_STATUS_SUCCESS;
@@ -422,7 +436,13 @@ static Status cfr_traverse_branch(const Game *game, GameState *state,
             if (!isfinite(change))
                 return CFR_STATUS_NUMERIC_ERROR;
             delta_regret[i] += change;
-            delta_strategy[i] += own_reach * frame->probabilities[i];
+            double strategy_change = own_reach * frame->probabilities[i] *
+                                     workspace->strategy_weight;
+            if (!isfinite(strategy_change))
+                return CFR_STATUS_NUMERIC_ERROR;
+            delta_strategy[i] += strategy_change;
+            if (!isfinite(delta_strategy[i]))
+                return CFR_STATUS_NUMERIC_ERROR;
         }
     }
     *utility_out = node_utility;
@@ -525,10 +545,20 @@ Status cfr_traverse(const Game *game, GameState *state, InfoStore *store,
     return status;
 }
 
-Status cfr_traverse_with_stats(const Game *game, GameState *state,
-                               InfoStore *store, Player target_player,
-                               Utility *utility_out,
-                               TraversalStats *stats_out) {
+Status cfr_traverse_plus(const Game *game, GameState *state, InfoStore *store,
+                         Player target_player, size_t iteration,
+                         Utility *utility_out) {
+    TraversalStats discard = {0};
+    return cfr_traverse_plus_with_stats(game, state, store, target_player,
+                                        iteration, utility_out, &discard);
+}
+
+static Status traverse_with_stats(const Game *game, GameState *state,
+                                  InfoStore *store, Player target_player,
+                                  double strategy_weight,
+                                  bool regret_matching_plus,
+                                  Utility *utility_out,
+                                  TraversalStats *stats_out) {
     if (game == NULL || state == NULL || store == NULL || utility_out == NULL ||
         stats_out == NULL)
         return CFR_STATUS_INVALID_ARGUMENT;
@@ -539,7 +569,8 @@ Status cfr_traverse_with_stats(const Game *game, GameState *state,
     if (target_player != CFR_PLAYER_0 && target_player != CFR_PLAYER_1)
         return CFR_STATUS_INVALID_ARGUMENT;
     WorkSpace ws = {0};
-    Status status = workspace_init(&ws, game->max_legal_actions);
+    Status status = workspace_init(&ws, game->max_legal_actions,
+                                   strategy_weight, regret_matching_plus);
     if (status != CFR_STATUS_SUCCESS)
         return status;
     Utility temp_utility = 0.0;
@@ -555,4 +586,22 @@ Status cfr_traverse_with_stats(const Game *game, GameState *state,
     }
     workspace_destroy(&ws);
     return status;
+}
+
+Status cfr_traverse_with_stats(const Game *game, GameState *state,
+                               InfoStore *store, Player target_player,
+                               Utility *utility_out,
+                               TraversalStats *stats_out) {
+    return traverse_with_stats(game, state, store, target_player, 1.0, false,
+                               utility_out, stats_out);
+}
+
+Status cfr_traverse_plus_with_stats(
+    const Game *game, GameState *state, InfoStore *store, Player target_player,
+    size_t iteration, Utility *utility_out, TraversalStats *stats_out) {
+    if (iteration == 0)
+        return CFR_STATUS_INVALID_ARGUMENT;
+
+    return traverse_with_stats(game, state, store, target_player,
+                               (double)iteration, true, utility_out, stats_out);
 }

@@ -8,3 +8,6 @@ aplicación también conserva la propiedad del estado del juego.
 
 La aplicación no forma parte de la biblioteca pública. Consulte el
 [`README.md`](../README.md) principal para construir y usar el ejecutable.
+
+El ejemplo usa CFR clásico de forma predeterminada. Pase `--cfr-plus` para usar
+Regret Matching+ y el promedio lineal de estrategias.

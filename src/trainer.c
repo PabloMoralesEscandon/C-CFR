@@ -3,28 +3,61 @@
 #include "cfr/trainer.h"
 #include "cfr/traversal.h"
 
-Status cfr_trainer_init(Trainer *trainer, const Game *game, GameState *state,
-                        InfoStore *store) {
+static Status trainer_init(Trainer *trainer, const Game *game, GameState *state,
+                           InfoStore *store, TrainerVariant variant) {
     if (trainer == NULL || game == NULL || state == NULL || store == NULL)
         return CFR_STATUS_INVALID_ARGUMENT;
     trainer->game = game;
     trainer->state = state;
-    trainer->stats = (TrainerStats){0};
     trainer->store = store;
+    trainer->variant = variant;
+    trainer->training_iterations = 0;
+    trainer->stats = (TrainerStats){0};
     return CFR_STATUS_SUCCESS;
+}
+
+Status cfr_trainer_init(Trainer *trainer, const Game *game, GameState *state,
+                        InfoStore *store) {
+    return trainer_init(trainer, game, state, store, CFR_TRAINER_VARIANT_CFR);
+}
+
+Status cfr_trainer_init_plus(Trainer *trainer, const Game *game,
+                             GameState *state, InfoStore *store) {
+    return trainer_init(trainer, game, state, store,
+                        CFR_TRAINER_VARIANT_CFR_PLUS);
+}
+
+static Status trainer_traverse(Trainer *trainer, Player target_player,
+                               size_t iteration, Utility *utility,
+                               TraversalStats *stats) {
+    if (trainer->variant == CFR_TRAINER_VARIANT_CFR) {
+        return cfr_traverse_with_stats(trainer->game, trainer->state,
+                                       trainer->store, target_player, utility,
+                                       stats);
+    }
+    if (trainer->variant == CFR_TRAINER_VARIANT_CFR_PLUS) {
+        return cfr_traverse_plus_with_stats(
+            trainer->game, trainer->state, trainer->store, target_player,
+            iteration, utility, stats);
+    }
+    return CFR_STATUS_INVALID_ARGUMENT;
 }
 
 Status cfr_trainer_run(Trainer *trainer, size_t amount) {
     if (trainer == NULL || trainer->game == NULL || trainer->state == NULL ||
-        trainer->store == NULL)
+        trainer->store == NULL ||
+        (trainer->variant != CFR_TRAINER_VARIANT_CFR &&
+         trainer->variant != CFR_TRAINER_VARIANT_CFR_PLUS))
         return CFR_STATUS_INVALID_ARGUMENT;
     Status status;
     for (size_t i = 0; i < amount; i++) {
         TraversalStats traverse_stats = {0};
         Utility utility = 0.0;
-        status = cfr_traverse_with_stats(trainer->game, trainer->state,
-                                         trainer->store, CFR_PLAYER_0, &utility,
-                                         &traverse_stats);
+        size_t iteration = trainer->training_iterations;
+        if (iteration != SIZE_MAX)
+            iteration += 1;
+        status = trainer_traverse(trainer, CFR_PLAYER_0, iteration, &utility,
+                                  &traverse_stats);
         if (status != CFR_STATUS_SUCCESS) {
             if (!(trainer->stats.errors == SIZE_MAX))
                 trainer->stats.errors += 1;
@@ -37,9 +70,8 @@ Status cfr_trainer_run(Trainer *trainer, size_t amount) {
             trainer->stats.visited_nodes = SIZE_MAX;
         else
             trainer->stats.visited_nodes += traverse_stats.visited_nodes;
-        status = cfr_traverse_with_stats(trainer->game, trainer->state,
-                                         trainer->store, CFR_PLAYER_1, &utility,
-                                         &traverse_stats);
+        status = trainer_traverse(trainer, CFR_PLAYER_1, iteration, &utility,
+                                  &traverse_stats);
         if (status != CFR_STATUS_SUCCESS) {
             if (!(trainer->stats.errors == SIZE_MAX))
                 trainer->stats.errors += 1;
@@ -54,6 +86,8 @@ Status cfr_trainer_run(Trainer *trainer, size_t amount) {
             trainer->stats.visited_nodes += traverse_stats.visited_nodes;
         if (!(trainer->stats.iterations == SIZE_MAX))
             trainer->stats.iterations += 1;
+        if (trainer->training_iterations != SIZE_MAX)
+            trainer->training_iterations += 1;
     }
     return CFR_STATUS_SUCCESS;
 }

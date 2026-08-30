@@ -33,6 +33,7 @@ TEST_SOURCES := \
 	tests/test_info_store.c \
 	tests/test_traversal.c \
 	tests/test_chance_trainer.c \
+	tests/test_cfr_plus.c \
 	tests/test_kuhn_poker.c \
 	tests/test_evaluation.c \
 	tests/support/test_allocator.c \

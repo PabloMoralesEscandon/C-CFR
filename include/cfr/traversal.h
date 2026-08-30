@@ -80,4 +80,31 @@ Status cfr_traverse_with_stats(const Game *game, GameState *state,
                                InfoStore *store, Player target_player,
                                Utility *utility_out, TraversalStats *stats_out);
 
+/*
+ * Recorre el árbol con las actualizaciones de CFR+ para target_player.
+ *
+ * game, state, store, target_player y utility_out tienen el contrato de
+ * cfr_traverse. iteration identifica la iteración completa de CFR+ y debe ser
+ * mayor que cero. El recorrido pondera por iteration la contribución a la
+ * estrategia media y trunca a cero cada arrepentimiento actualizado que
+ * resultaría negativo.
+ *
+ * La función conserva las garantías de restauración del estado y de
+ * atomicidad de los acumulados de cfr_traverse. Un valor iteration igual a
+ * cero produce CFR_STATUS_INVALID_ARGUMENT.
+ */
+Status cfr_traverse_plus(const Game *game, GameState *state, InfoStore *store,
+                         Player target_player, size_t iteration,
+                         Utility *utility_out);
+
+/*
+ * Ejecuta cfr_traverse_plus y publica las estadísticas del recorrido.
+ *
+ * Todos los parámetros salvo stats_out tienen el contrato de
+ * cfr_traverse_plus. stats_out tiene el contrato de cfr_traverse_with_stats.
+ */
+Status cfr_traverse_plus_with_stats(
+    const Game *game, GameState *state, InfoStore *store, Player target_player,
+    size_t iteration, Utility *utility_out, TraversalStats *stats_out);
+
 #endif

@@ -23,6 +23,14 @@ typedef struct {
     size_t errors;
 } TrainerStats;
 
+/* Selecciona la regla de actualización que ejecuta el entrenador. */
+typedef enum {
+    /* CFR clásico con arrepentimientos acumulados sin truncar y peso uno. */
+    CFR_TRAINER_VARIANT_CFR,
+    /* CFR+ con arrepentimientos truncados y promedio lineal. */
+    CFR_TRAINER_VARIANT_CFR_PLUS
+} TrainerVariant;
+
 /*
  * Conserva los préstamos y las estadísticas de un entrenamiento.
  *
@@ -44,6 +52,14 @@ typedef struct {
     GameState *state;
     /* Almacén modificable y prestado. */
     InfoStore *store;
+    /* Variante seleccionada durante la inicialización. */
+    TrainerVariant variant;
+    /*
+     * Iteraciones de aprendizaje completas desde la inicialización. Este
+     * contador gobierna los pesos de CFR+ y no se reinicia con las
+     * estadísticas públicas. El contador se satura en SIZE_MAX.
+     */
+    size_t training_iterations;
     /* Estadísticas que pertenecen al entrenador. */
     TrainerStats stats;
 } Trainer;
@@ -59,12 +75,28 @@ Status cfr_trainer_init(Trainer *trainer, const Game *game, GameState *state,
                         InfoStore *store);
 
 /*
+ * Inicializa trainer para ejecutar CFR+.
+ *
+ * Los préstamos, la propiedad, los errores y la conservación de trainer son
+ * los mismos que en cfr_trainer_init. La primera iteración usa peso uno en la
+ * estrategia media; cada iteración completa posterior aumenta linealmente el
+ * peso.
+ */
+Status cfr_trainer_init_plus(Trainer *trainer, const Game *game,
+                             GameState *state, InfoStore *store);
+
+/*
  * Ejecuta amount iteraciones con actualización alterna.
  *
  * trainer debe estar inicializado. Los tres préstamos de trainer deben ser
  * válidos. Una iteración ejecuta primero un recorrido para CFR_PLAYER_0. La
  * iteración ejecuta después un recorrido para CFR_PLAYER_1. El segundo recorrido
  * observa el aprendizaje que confirmó el primer recorrido.
+ *
+ * Un entrenador inicializado con cfr_trainer_init usa CFR clásico. Un
+ * entrenador inicializado con cfr_trainer_init_plus usa Regret Matching+ y
+ * pondera las estrategias de la iteración t con peso t. El peso depende de
+ * training_iterations y continúa entre llamadas.
  *
  * Cada recorrido confirma sus propios cambios. Si el segundo recorrido falla,
  * los cambios del primer recorrido permanecen en store. iterations aumenta
@@ -97,7 +129,9 @@ Status cfr_trainer_get_stats(const Trainer *trainer, TrainerStats *stats_out);
  * Pone a cero los cuatro contadores de trainer.
  *
  * trainer debe ser distinto de nulo. La función conserva game, state y store.
- * La función no modifica el estado ni el aprendizaje del almacén.
+ * La función no modifica el estado, el aprendizaje del almacén, variant ni
+ * training_iterations. Por ello, reiniciar las estadísticas no reinicia los
+ * pesos lineales de CFR+.
  */
 Status cfr_trainer_reset_stats(Trainer *trainer);
 
