@@ -1,3 +1,4 @@
+#include "cfr/blackjack.h"
 #include "cfr/checkpoint.h"
 #include "cfr/evaluation.h"
 #include "cfr/game.h"
@@ -20,6 +21,7 @@ int test_public_headers(void) {
     InfoNode node = {0};
     InfoStore store = {0};
     KuhnPokerState kuhn_poker_state = {0};
+    BlackjackState blackjack_state = {0};
     EvaluationMetrics evaluation_metrics = {0};
     TrainerVariant trainer_variant = CFR_TRAINER_VARIANT_CFR_PLUS;
     Status (*checkpoint_writer)(FILE *, const Trainer *) =
@@ -29,6 +31,7 @@ int test_public_headers(void) {
             status == CFR_STATUS_SUCCESS && utility == 0.0 &&
             probability == 1.0 && node.action_count == 0 && store.size == 0 &&
             kuhn_poker_state.public_action_count == 0 &&
+            blackjack_state.player_card_count == 0 &&
             evaluation_metrics.exploitability == 0.0 &&
             trainer_variant == CFR_TRAINER_VARIANT_CFR_PLUS &&
             checkpoint_writer != NULL)

@@ -335,6 +335,7 @@ static void test_trainer_invalid_arguments_and_zero_iterations(void) {
     Trainer trainer;
     Trainer before;
     Trainer invalid;
+    Game invalid_game;
     TrainerStats stats = {.iterations = 9,
                           .traversals = 8,
                           .visited_nodes = 7,
@@ -360,6 +361,15 @@ static void test_trainer_invalid_arguments_and_zero_iterations(void) {
           CFR_STATUS_INVALID_ARGUMENT);
     CHECK(cfr_trainer_init(&trainer, game,
                            chance_game_state_as_public(&state), NULL) ==
+          CFR_STATUS_INVALID_ARGUMENT);
+    invalid_game = *game;
+    invalid_game.strategic_player_count = 0;
+    CHECK(cfr_trainer_init(&trainer, &invalid_game,
+                           chance_game_state_as_public(&state), &store) ==
+          CFR_STATUS_INVALID_ARGUMENT);
+    invalid_game.strategic_player_count = 3;
+    CHECK(cfr_trainer_init(&trainer, &invalid_game,
+                           chance_game_state_as_public(&state), &store) ==
           CFR_STATUS_INVALID_ARGUMENT);
     CHECK(same_trainer(&trainer, &before));
 
@@ -394,6 +404,11 @@ static void test_trainer_invalid_arguments_and_zero_iterations(void) {
     CHECK(cfr_trainer_run(&invalid, 1) == CFR_STATUS_INVALID_ARGUMENT);
     invalid = trainer;
     invalid.store = NULL;
+    CHECK(cfr_trainer_run(&invalid, 1) == CFR_STATUS_INVALID_ARGUMENT);
+    invalid = trainer;
+    invalid_game = *game;
+    invalid_game.strategic_player_count = 0;
+    invalid.game = &invalid_game;
     CHECK(cfr_trainer_run(&invalid, 1) == CFR_STATUS_INVALID_ARGUMENT);
     destroy_store(&store);
 }
@@ -443,6 +458,67 @@ static void test_trainer_exact_iterations_and_determinism(void) {
     CHECK(node_a->strategy_sums[1] == node_b->strategy_sums[1]);
     destroy_store(&store_a);
     destroy_store(&store_b);
+}
+
+static void test_trainer_skips_non_strategic_player(void) {
+    Game one_player_game = *chance_game_descriptor();
+    ChanceGameState state;
+    ChanceGameState snapshot;
+    InfoStore store;
+    InfoNode *node;
+    Trainer trainer;
+    TrainerStats stats;
+
+    one_player_game.strategic_player_count = 1;
+    CHECK(chance_game_state_init_coin(&state) == CFR_STATUS_SUCCESS);
+    chance_game_fail_terminal_for_player(&state, CFR_PLAYER_1,
+                                         CFR_STATUS_NUMERIC_ERROR);
+    snapshot = state;
+    initialize_store(&store);
+    CHECK(cfr_trainer_init(&trainer, &one_player_game,
+                           chance_game_state_as_public(&state), &store) ==
+          CFR_STATUS_SUCCESS);
+    CHECK(cfr_trainer_run(&trainer, 1) == CFR_STATUS_SUCCESS);
+    CHECK(cfr_trainer_get_stats(&trainer, &stats) == CFR_STATUS_SUCCESS);
+    check_stats(&stats, 1, 1, 5, 0);
+    CHECK(chance_game_state_equal(&state, &snapshot));
+    node = find_node(&store, 800);
+    CHECK(near(node->regret_sums[0], -0.5));
+    CHECK(near(node->regret_sums[1], 0.5));
+    CHECK(near(node->strategy_sums[0], 0.5));
+    CHECK(near(node->strategy_sums[1], 0.5));
+    destroy_store(&store);
+}
+
+static void test_plus_trainer_skips_non_strategic_player(void) {
+    Game one_player_game = *chance_game_descriptor();
+    ChanceGameState state;
+    ChanceGameState snapshot;
+    InfoStore store;
+    InfoNode *node;
+    Trainer trainer;
+    TrainerStats stats;
+
+    one_player_game.strategic_player_count = 1;
+    CHECK(chance_game_state_init_coin(&state) == CFR_STATUS_SUCCESS);
+    chance_game_fail_terminal_for_player(&state, CFR_PLAYER_1,
+                                         CFR_STATUS_NUMERIC_ERROR);
+    snapshot = state;
+    initialize_store(&store);
+    CHECK(cfr_trainer_init_plus(&trainer, &one_player_game,
+                                chance_game_state_as_public(&state), &store) ==
+          CFR_STATUS_SUCCESS);
+    CHECK(cfr_trainer_run(&trainer, 1) == CFR_STATUS_SUCCESS);
+    CHECK(cfr_trainer_get_stats(&trainer, &stats) == CFR_STATUS_SUCCESS);
+    check_stats(&stats, 1, 1, 5, 0);
+    CHECK(trainer.training_iterations == 1);
+    CHECK(chance_game_state_equal(&state, &snapshot));
+    node = find_node(&store, 800);
+    CHECK(near(node->regret_sums[0], 0.0));
+    CHECK(near(node->regret_sums[1], 0.5));
+    CHECK(near(node->strategy_sums[0], 0.5));
+    CHECK(near(node->strategy_sums[1], 0.5));
+    destroy_store(&store);
 }
 
 static void test_trainer_alternating_update_changes_player_1_learning(void) {
@@ -795,6 +871,8 @@ int test_chance_trainer(void) {
     test_traversal_stats_invalid_arguments();
     test_trainer_invalid_arguments_and_zero_iterations();
     test_trainer_exact_iterations_and_determinism();
+    test_trainer_skips_non_strategic_player();
+    test_plus_trainer_skips_non_strategic_player();
     test_trainer_alternating_update_changes_player_1_learning();
     test_trainer_reset_preserves_learning_and_loans();
     test_trainer_second_traversal_error_and_recovery();

@@ -13,7 +13,7 @@
  * to zero during a later run.
  */
 typedef struct {
-    /* Number of iterations in which both traversals completed. */
+    /* Iterations in which all strategic traversals completed. */
     size_t iterations;
     /* Number of traversals that completed successfully. */
     size_t traversals;
@@ -68,8 +68,9 @@ typedef struct {
  * Initializes trainer with three borrowed objects and zeroes the statistics.
  *
  * trainer, game, state, and store must not be null. The caller must provide a
- * valid game, state, and store. A null argument produces
- * CFR_STATUS_INVALID_ARGUMENT. An error preserves a non-null trainer.
+ * valid game, state, and store. The game descriptor must declare one or two
+ * strategic players. A null argument or invalid strategic player count
+ * produces CFR_STATUS_INVALID_ARGUMENT. An error preserves a non-null trainer.
  */
 Status cfr_trainer_init(Trainer *trainer, const Game *game, GameState *state,
                         InfoStore *store);
@@ -85,23 +86,24 @@ Status cfr_trainer_init_plus(Trainer *trainer, const Game *game,
                              GameState *state, InfoStore *store);
 
 /*
- * Runs amount iterations with alternating updates.
+ * Runs amount iterations with sequential per-player updates.
  *
  * trainer must be initialized. Its three borrowed objects must be valid. An
- * iteration first runs a traversal for CFR_PLAYER_0 and then a traversal for
- * CFR_PLAYER_1. The second traversal observes the learning committed by the
- * first traversal.
+ * iteration runs one traversal, in order, for each player declared strategic
+ * by game->strategic_player_count. The first traversal uses CFR_PLAYER_0. When
+ * the count is two, the second uses CFR_PLAYER_1 and observes the learning
+ * committed by the first traversal.
  *
  * A trainer initialized with cfr_trainer_init uses classic CFR. A trainer
  * initialized with cfr_trainer_init_plus uses Regret Matching+ and weights the
  * strategies from iteration t with weight t. The weight depends on
  * training_iterations and continues across calls.
  *
- * Each traversal commits its own changes. If the second traversal fails, the
- * first traversal's changes remain in store. iterations increases only after
- * two successful traversals. traversals and visited_nodes increase after each
- * successful traversal. errors increases after a failed traversal. Statistics
- * accumulate across calls. All four counters saturate at SIZE_MAX.
+ * Each traversal commits its own changes. If a later traversal fails, changes
+ * from earlier traversals remain in store. iterations increases only after all
+ * strategic traversals complete. traversals and visited_nodes increase after
+ * each successful traversal. errors increases after a failed traversal.
+ * Statistics accumulate across calls. All four counters saturate at SIZE_MAX.
  *
  * An amount of zero produces CFR_STATUS_SUCCESS and does not change the
  * trainer. The function returns the Status of a failed traversal unchanged.

@@ -134,6 +134,15 @@ struct CfrGame {
      * adapter must document and validate any additional requirements.
      */
     const void *context;
+    /*
+     * Number of decision-making players that receive a training traversal,
+     * starting with CFR_PLAYER_0.
+     *
+     * A two-participant game can have only one strategic player: the other
+     * participant can exist solely as a utility perspective while chance
+     * models its transitions. The trainer requires a value of one or two.
+     */
+    size_t strategic_player_count;
     /* Upper bound on the number of legal actions in any state. */
     size_t max_legal_actions;
     /*

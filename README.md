@@ -3,8 +3,16 @@
 This project implements a CFR and CFR+ library for finite extensive-form games.
 The first version supports two-player zero-sum games.
 
-The repository includes a complete Kuhn Poker adapter. It also includes an
-application that trains and evaluates that game.
+The repository includes complete Kuhn Poker and blackjack adapters. Two
+independent applications train the games, and both adapters are available
+through the same public library API.
+
+The blackjack adapter is declared in `include/cfr/blackjack.h` and uses a
+52-card deck without replacement, dealer stands on soft 17, a 3:2 natural
+blackjack payout, and hit or stand actions. It does not include doubling,
+splitting, insurance, or surrender. `CFR_PLAYER_0` is the player and
+`CFR_PLAYER_1` receives the dealer's opposite utility; rule-driven dealer draws
+are represented as chance nodes.
 
 ## Building
 
@@ -18,9 +26,16 @@ This target creates the following release artifacts:
 
 - `build/release/libcfr.a`
 - `build/release/cfr-kuhn`
+- `build/release/cfr-blackjack`
 
-The application is not part of the library. `app/cfr_cli.c` consumes the public
-API as an external application.
+The applications are not part of the library. `app/cfr_cli.c` and
+`app/blackjack_cli.c` consume the public API as external applications.
+
+To build only the library and the blackjack executable:
+
+```sh
+make blackjack
+```
 
 Use the following target to create the debug configuration:
 
@@ -28,7 +43,7 @@ Use the following target to create the debug configuration:
 make debug
 ```
 
-This target creates the library, the C test suite, and the debug application.
+This target creates the library, the C test suite, and both debug applications.
 The files are placed in `build/debug`.
 
 Use `make clean` to remove the `build` directory.
@@ -41,8 +56,17 @@ Run the C test suite and the application integration test:
 make test
 ```
 
-The integration test checks arguments, reports, and the average strategy. It
-also checks reproducibility and convergence.
+The Kuhn integration test checks arguments, reports, the average strategy,
+reproducibility, and convergence. The blackjack tests check its rules,
+integration with `Trainer` on a bounded subtree, and its interface without
+accidentally starting a full traversal. Run them separately with:
+
+```sh
+make test-blackjack
+```
+
+Use `make test-blackjack-cli` to check only the executable's arguments and help
+output.
 
 Run allocation fault injection:
 
@@ -67,7 +91,7 @@ UndefinedBehaviorSanitizer. `test-sanitize` combines both sanitizers.
 The targets require a compiler that supports the requested options. A compiler
 without that support produces a visible failure.
 
-## Using the application
+## Using Kuhn Poker
 
 Display help with either of these commands:
 
@@ -190,7 +214,7 @@ build/release/cfr-kuhn --iterations 1000 --cfr-plus
 ```
 
 When using the library, initialize the trainer with `cfr_trainer_init_plus`.
-CFR+ reuses the existing alternating update and adds its other two rules:
+CFR+ reuses the existing per-player update order and adds its other two rules:
 
 - Regret Matching+ truncates negative cumulative regrets to zero after each
   successful traversal.
@@ -308,3 +332,53 @@ A temporary probe measured the child process with `CLOCK_MONOTONIC` and
 
 This measurement is a reference, not a performance guarantee. The result can
 change with the compiler, hardware, and system load.
+
+## Using blackjack
+
+Display help with:
+
+```sh
+build/release/cfr-blackjack --help
+```
+
+The general form is:
+
+```text
+cfr-blackjack --iterations N [--report-every N] [--evaluate] [--cfr-plus]
+```
+
+| Option | Description |
+|---|---|
+| `--iterations N` | Runs `N` complete training iterations. |
+| `--report-every N` | Reports statistics after each block of up to `N` iterations. |
+| `--evaluate` | Evaluates the average profile after training and reports its value and exploitability. |
+| `--cfr-plus` | Uses CFR+ with Regret Matching+ and linear averaging. |
+| `--help`, `-h` | Displays help without initializing CFR. |
+
+Always start with one iteration and no evaluation:
+
+```sh
+build/release/cfr-blackjack --iterations 1 --report-every 1
+```
+
+Each iteration runs one traversal for the only strategic player and enumerates
+the complete tree. The dealer follows a deterministic policy and its draws are
+chance nodes, so it does not receive a second traversal. A full-deck blackjack
+tree is much larger than Kuhn's tree. The `--evaluate` option performs another
+complete enumeration and can require considerably more time and memory. The
+executable prints and flushes a `start` line before the first traversal, giving
+immediate confirmation of the configuration and selected variant during a long
+run.
+
+Each training report contains:
+
+| Field | Meaning |
+|---|---|
+| `iterations` | Complete iterations. |
+| `traversals` | Accumulated complete CFR traversals. |
+| `visited_nodes` | Accumulated states visited. |
+| `information_sets` | Distinct stored decisions. |
+| `seconds` | Time since process start. |
+
+With `--evaluate`, the final line contains the player's average value, the
+dealer's opposite value, exploitability, and total time.
