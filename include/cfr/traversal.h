@@ -28,10 +28,11 @@ typedef struct {
  * Every nonterminal state must have between one and game->max_legal_actions
  * legal actions. These conditions also apply to descendant states.
  *
- * The traversal enumerates every legal action at a chance node. It queries
- * chance_probability once for each action. Every probability must be finite
- * and greater than or equal to zero. A zero probability is valid, and its
- * branch is still traversed.
+ * The traversal enumerates every legal action at a chance node. It uses the
+ * optional chance_outcomes operation when available. Otherwise, it enumerates
+ * legal actions and queries chance_probability once for each action. Every
+ * probability must be finite and greater than or equal to zero. A zero
+ * probability is valid, and its branch is still traversed.
  *
  * The sum of probabilities must equal one within the module tolerances. The
  * relative tolerance is 1e-8, and the absolute tolerance is 1e-12. The

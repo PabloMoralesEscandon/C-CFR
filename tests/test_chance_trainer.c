@@ -11,6 +11,8 @@
 #include "test_suite.h"
 
 static int failures;
+static const GameOperations *batched_delegate;
+static size_t batched_outcome_calls;
 
 #define CHECK(condition)                                                       \
     do {                                                                       \
@@ -23,6 +25,38 @@ static int failures;
 
 static bool near(double left, double right) {
     return fabs(left - right) <= 1e-12;
+}
+
+static Status batch_legacy_chance_outcomes(
+    const void *context, const GameState *state, Action *actions,
+    Probability *probabilities, size_t capacity, size_t *required_count) {
+    Action temporary_actions[CFR_TRAVERSAL_MAX_ACTIONS];
+    Probability temporary_probabilities[CFR_TRAVERSAL_MAX_ACTIONS];
+    size_t count;
+    size_t index;
+
+    batched_outcome_calls += 1;
+    Status status = batched_delegate->legal_actions(
+        context, state, temporary_actions, CFR_TRAVERSAL_MAX_ACTIONS, &count);
+    if (status != CFR_STATUS_SUCCESS)
+        return status;
+    if (count > capacity) {
+        *required_count = count;
+        return CFR_STATUS_BUFFER_TOO_SMALL;
+    }
+    for (index = 0; index < count; index += 1) {
+        status = batched_delegate->chance_probability(
+            context, state, temporary_actions[index],
+            &temporary_probabilities[index]);
+        if (status != CFR_STATUS_SUCCESS)
+            return status;
+    }
+    for (index = 0; index < count; index += 1) {
+        actions[index] = temporary_actions[index];
+        probabilities[index] = temporary_probabilities[index];
+    }
+    *required_count = count;
+    return CFR_STATUS_SUCCESS;
 }
 
 static void initialize_store(InfoStore *store) {
@@ -111,6 +145,34 @@ static void test_plain_traversal_supports_chance(void) {
     CHECK(near(utility, 0.0));
     CHECK(chance_game_state_equal(&state, &snapshot));
     CHECK(store.size == 1);
+    destroy_store(&store);
+}
+
+static void test_batched_chance_outcomes_are_preferred(void) {
+    const Game *descriptor = chance_game_descriptor();
+    Game game = *descriptor;
+    GameOperations operations = *descriptor->operations;
+    ChanceGameState state;
+    ChanceGameState snapshot;
+    InfoStore store;
+    Utility utility = 71.75;
+
+    initialize_store(&store);
+    CHECK(chance_game_state_init_coin(&state) == CFR_STATUS_SUCCESS);
+    snapshot = state;
+    operations.chance_outcomes = batch_legacy_chance_outcomes;
+    game.operations = &operations;
+    batched_delegate = descriptor->operations;
+    batched_outcome_calls = 0;
+
+    CHECK(cfr_traverse(&game, chance_game_state_as_public(&state), &store,
+                       CFR_PLAYER_0, &utility) == CFR_STATUS_SUCCESS);
+    CHECK(batched_outcome_calls > 0);
+    CHECK(near(utility, 0.0));
+    CHECK(chance_game_state_equal(&state, &snapshot));
+    CHECK(store.size == 1);
+
+    batched_delegate = NULL;
     destroy_store(&store);
 }
 
@@ -861,6 +923,7 @@ int test_chance_trainer(void) {
 
     test_coin_expectation_reach_and_stats();
     test_plain_traversal_supports_chance();
+    test_batched_chance_outcomes_are_preferred();
     test_zero_probability_is_still_traversed();
     test_distribution_inside_tolerance_is_accepted();
     test_invalid_distributions_are_atomic();

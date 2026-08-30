@@ -21,6 +21,12 @@ static Status blackjack_chance_probability(const void *context,
                                            const GameState *state,
                                            Action action,
                                            Probability *result);
+static Status blackjack_chance_outcomes(const void *context,
+                                        const GameState *state,
+                                        Action *actions,
+                                        Probability *probabilities,
+                                        size_t capacity,
+                                        size_t *required_count);
 static Status blackjack_information_set_key(const void *context,
                                             const GameState *state,
                                             InfoSetKey *result);
@@ -47,6 +53,9 @@ static Status blackjack_trusted_chance_probability(const void *context,
                                                    const GameState *state,
                                                    Action action,
                                                    Probability *result);
+static Status blackjack_trusted_chance_outcomes(
+    const void *context, const GameState *state, Action *actions,
+    Probability *probabilities, size_t capacity, size_t *required_count);
 static Status blackjack_trusted_information_set_key(const void *context,
                                                     const GameState *state,
                                                     InfoSetKey *result);
@@ -60,7 +69,8 @@ static const GameOperations BLACKJACK_GAME_OPERATIONS = {
     .apply_action = blackjack_apply_action,
     .undo_action = blackjack_undo_action,
     .chance_probability = blackjack_chance_probability,
-    .information_set_key = blackjack_information_set_key};
+    .information_set_key = blackjack_information_set_key,
+    .chance_outcomes = blackjack_chance_outcomes};
 
 static const GameOperations BLACKJACK_TRUSTED_GAME_OPERATIONS = {
     .is_terminal = blackjack_trusted_is_terminal,
@@ -70,7 +80,8 @@ static const GameOperations BLACKJACK_TRUSTED_GAME_OPERATIONS = {
     .apply_action = blackjack_trusted_apply_action,
     .undo_action = blackjack_trusted_undo_action,
     .chance_probability = blackjack_trusted_chance_probability,
-    .information_set_key = blackjack_trusted_information_set_key};
+    .information_set_key = blackjack_trusted_information_set_key,
+    .chance_outcomes = blackjack_trusted_chance_outcomes};
 
 static const Game BLACKJACK_GAME = {
     .operations = &BLACKJACK_GAME_OPERATIONS,
@@ -866,6 +877,64 @@ static Status blackjack_trusted_chance_probability(const void *context,
 
     *result = (Probability)blackjack_state->remaining_cards[rank_index] /
               (Probability)blackjack_state->cards_remaining;
+    return CFR_STATUS_SUCCESS;
+}
+
+static Status blackjack_chance_outcomes(const void *context,
+                                        const GameState *state,
+                                        Action *actions,
+                                        Probability *probabilities,
+                                        size_t capacity,
+                                        size_t *required_count) {
+    Status status = blackjack_validate_state(context, state);
+
+    if (status != CFR_STATUS_SUCCESS)
+        return status;
+
+    return blackjack_trusted_chance_outcomes(
+        context, state, actions, probabilities, capacity, required_count);
+}
+
+static Status blackjack_trusted_chance_outcomes(
+    const void *context, const GameState *state, Action *actions,
+    Probability *probabilities, size_t capacity, size_t *required_count) {
+    const BlackjackState *blackjack_state = as_blackjack_const(state);
+    size_t outcome_count = 0;
+    size_t index;
+
+    (void)context;
+    if (!phase_is_chance(blackjack_state->phase) ||
+        blackjack_state->cards_remaining == 0) {
+        return CFR_STATUS_INVALID_ARGUMENT;
+    }
+
+    for (index = 0; index < CFR_BLACKJACK_NUMBER_OF_CARD_RANKS; index += 1) {
+        if (blackjack_state->remaining_cards[index] > 0)
+            outcome_count += 1;
+    }
+    if (outcome_count == 0)
+        return CFR_STATUS_INVALID_ARGUMENT;
+    if (outcome_count > capacity) {
+        *required_count = outcome_count;
+        return CFR_STATUS_BUFFER_TOO_SMALL;
+    }
+
+    outcome_count = 0;
+    for (index = 0; index < CFR_BLACKJACK_NUMBER_OF_CARD_RANKS; index += 1) {
+        const size_t card_count = blackjack_state->remaining_cards[index];
+
+        if (card_count > 0) {
+            const BlackjackCard card =
+                (BlackjackCard)(CFR_BLACKJACK_CARD_ACE + (int)index);
+
+            actions[outcome_count] = card_to_action(card);
+            probabilities[outcome_count] =
+                (Probability)card_count /
+                (Probability)blackjack_state->cards_remaining;
+            outcome_count += 1;
+        }
+    }
+    *required_count = outcome_count;
     return CFR_STATUS_SUCCESS;
 }
 

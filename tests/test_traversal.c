@@ -360,6 +360,31 @@ static void test_root_validation_precedes_traversal(void) {
     destroy_store(&store);
 }
 
+static void test_incomplete_operations_are_rejected(void) {
+    const Game *descriptor = traversal_game_descriptor();
+    Game game = *descriptor;
+    GameOperations operations = *descriptor->operations;
+    TraversalGameState state;
+    TraversalGameState snapshot;
+    InfoStore store;
+    Utility utility = 94.925;
+
+    initialize_store(&store);
+    CHECK(traversal_game_state_init_terminal(&state, 1.0) ==
+          CFR_STATUS_SUCCESS);
+    snapshot = state;
+    operations.undo_action = NULL;
+    game.operations = &operations;
+
+    CHECK(cfr_traverse(&game, traversal_game_state_as_public(&state), &store,
+                       CFR_PLAYER_0, &utility) ==
+          CFR_STATUS_INVALID_ARGUMENT);
+    CHECK(utility == 94.925);
+    CHECK(store.size == 0);
+    CHECK(same_state(&state, &snapshot));
+    destroy_store(&store);
+}
+
 static void test_trusted_operations_follow_root_validation(void) {
     const Game *descriptor = traversal_game_descriptor();
     Game game = *descriptor;
@@ -647,6 +672,7 @@ int test_traversal(void) {
     test_strategy_validation_precedes_regret_publish();
     test_excessive_action_limit_is_rejected();
     test_root_validation_precedes_traversal();
+    test_incomplete_operations_are_rejected();
     test_trusted_operations_follow_root_validation();
     test_error_after_apply_restores_state();
     test_error_after_completed_branch_restores_state();

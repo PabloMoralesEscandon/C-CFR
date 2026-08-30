@@ -130,10 +130,31 @@ struct CfrGameOperations {
      * responsible only for the inexpensive checks needed by their operation.
      * The callback must not modify state.
      *
-     * This optional extension remains last so positional initializers written
-     * for older adapters continue to initialize the original operations.
+     * This optional extension follows the original operations so positional
+     * initializers written for older adapters continue to initialize them.
      */
     Status (*validate_state)(const void *context, const GameState *state);
+
+    /*
+     * Optionally enumerates all outcomes of a chance state in one operation.
+     *
+     * capacity is the number of elements available in both arrays. The arrays
+     * are required even when capacity is zero. Matching indices identify one
+     * chance outcome and its probability.
+     *
+     * required_count receives the number of elements needed. If capacity is
+     * insufficient, the callback returns CFR_STATUS_BUFFER_TOO_SMALL. In that
+     * case, required_count receives the required capacity and both arrays
+     * remain unchanged. A player, terminal, or invalid state produces
+     * CFR_STATUS_INVALID_ARGUMENT.
+     *
+     * This callback is optional. Traversal falls back to legal_actions and
+     * chance_probability when it is null. This optional extension remains last
+     * so existing positional initializers set it to null.
+     */
+    Status (*chance_outcomes)(const void *context, const GameState *state,
+                              Action *actions, Probability *probabilities,
+                              size_t capacity, size_t *required_count);
 };
 
 /* Describes a game without storing the state of a match. */
@@ -173,16 +194,18 @@ struct CfrGame {
     /*
      * Optional operations for a state that validate_state has accepted.
      *
-     * A traversal uses this table only after the public operations successfully
-     * validate its root. The trusted callbacks can omit redundant whole-state
-     * validation, but they must preserve every other GameOperations guarantee.
-     * In particular, successful apply and undo calls must keep the state valid,
-     * and errors must preserve the state and outputs as documented above.
+     * A complete traversal or evaluation uses this table only after the public
+     * operations successfully validate its root. The trusted callbacks can
+     * omit redundant whole-state validation, but they must preserve every other
+     * GameOperations guarantee. In particular, successful apply and undo calls
+     * must keep the state valid, and errors must preserve the state and outputs
+     * as documented above.
      *
      * Public cfr_game_* wrappers never use this table. A null pointer makes a
-     * traversal use operations for every call, preserving existing adapters.
-     * This optional extension remains last so positional initializers written
-     * for older game descriptors continue to initialize the original fields.
+     * traversal or evaluation use operations for every call, preserving
+     * existing adapters. This optional extension remains last so positional
+     * initializers written for older game descriptors continue to initialize
+     * the original fields.
      */
     const GameOperations *trusted_operations;
 };
@@ -237,6 +260,11 @@ Status cfr_game_undo_action(const Game *game, GameState *state);
 /* Queries the probability of action at a chance node. */
 Status cfr_game_chance_probability(const Game *game, const GameState *state,
                                    Action action, Probability *result);
+
+/* Enumerates actions and probabilities using the optional batched operation. */
+Status cfr_game_chance_outcomes(const Game *game, const GameState *state,
+                                Action *actions, Probability *probabilities,
+                                size_t capacity, size_t *required_count);
 
 /* Queries the stable key of the current information set. */
 Status cfr_game_information_set_key(const Game *game, const GameState *state,

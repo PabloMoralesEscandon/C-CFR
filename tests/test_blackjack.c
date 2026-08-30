@@ -105,8 +105,11 @@ static void check_root_and_distribution(void) {
     BlackjackState snapshot;
     Action actions[CFR_BLACKJACK_MAX_POSSIBLE_ACTIONS] = {
         71, 72, 73, 74, 75, 76, 77, 78, 79, 80};
+    Probability probabilities[CFR_BLACKJACK_MAX_POSSIBLE_ACTIONS] = {
+        61.0, 62.0, 63.0, 64.0, 65.0, 66.0, 67.0, 68.0, 69.0, 70.0};
     size_t required_count = 81;
     Probability probability_sum = 0.0;
+    Probability batched_probability_sum = 0.0;
     Actor actor = {.kind = CFR_ACTOR_PLAYER, .player = CFR_PLAYER_1};
     Utility utility = 82.0;
     InfoSetKey key = 83;
@@ -128,6 +131,7 @@ static void check_root_and_distribution(void) {
     CHECK(game->operations->apply_action != NULL);
     CHECK(game->operations->undo_action != NULL);
     CHECK(game->operations->chance_probability != NULL);
+    CHECK(game->operations->chance_outcomes != NULL);
     CHECK(game->operations->information_set_key != NULL);
 
     initialize(&state);
@@ -156,12 +160,51 @@ static void check_root_and_distribution(void) {
           CFR_STATUS_SUCCESS);
     CHECK(actor.kind == CFR_ACTOR_CHANCE);
 
+    CHECK(cfr_game_chance_outcomes(game, NULL, actions, probabilities,
+                                   ARRAY_COUNT(actions), &required_count) ==
+          CFR_STATUS_INVALID_ARGUMENT);
+    CHECK(cfr_game_chance_outcomes(game, as_const_state(&state), NULL,
+                                   probabilities, ARRAY_COUNT(actions),
+                                   &required_count) ==
+          CFR_STATUS_INVALID_ARGUMENT);
+    CHECK(cfr_game_chance_outcomes(game, as_const_state(&state), actions, NULL,
+                                   ARRAY_COUNT(actions), &required_count) ==
+          CFR_STATUS_INVALID_ARGUMENT);
+    CHECK(cfr_game_chance_outcomes(game, as_const_state(&state), actions,
+                                   probabilities, ARRAY_COUNT(actions),
+                                   NULL) == CFR_STATUS_INVALID_ARGUMENT);
+
     CHECK(cfr_game_legal_actions(game, as_const_state(&state), actions,
                                  ARRAY_COUNT(actions) - 1, &required_count) ==
           CFR_STATUS_BUFFER_TOO_SMALL);
     CHECK(required_count == CFR_BLACKJACK_NUMBER_OF_CARD_RANKS);
     for (index = 0; index < ARRAY_COUNT(actions); index += 1)
         CHECK(actions[index] == (Action)(71 + index));
+
+    CHECK(cfr_game_chance_outcomes(
+              game, as_const_state(&state), actions, probabilities,
+              ARRAY_COUNT(actions) - 1, &required_count) ==
+          CFR_STATUS_BUFFER_TOO_SMALL);
+    CHECK(required_count == CFR_BLACKJACK_NUMBER_OF_CARD_RANKS);
+    for (index = 0; index < ARRAY_COUNT(actions); index += 1) {
+        CHECK(actions[index] == (Action)(71 + index));
+        CHECK(probabilities[index] == (Probability)(61 + index));
+    }
+
+    CHECK(cfr_game_chance_outcomes(game, as_const_state(&state), actions,
+                                   probabilities, ARRAY_COUNT(actions),
+                                   &required_count) == CFR_STATUS_SUCCESS);
+    CHECK(required_count == ARRAY_COUNT(actions));
+    for (index = 0; index < required_count; index += 1) {
+        CHECK(actions[index] ==
+              (Action)(CFR_BLACKJACK_ACTION_DEAL_ACE + (int)index));
+        if (actions[index] == CFR_BLACKJACK_ACTION_DEAL_TEN)
+            CHECK(near(probabilities[index], 16.0 / 52.0));
+        else
+            CHECK(near(probabilities[index], 4.0 / 52.0));
+        batched_probability_sum += probabilities[index];
+    }
+    CHECK(near(batched_probability_sum, 1.0));
 
     CHECK(cfr_game_legal_actions(game, as_const_state(&state), actions,
                                  ARRAY_COUNT(actions), &required_count) ==
@@ -550,6 +593,9 @@ static void check_corrupt_states_are_rejected(void) {
     const Game *game = cfr_blackjack_descriptor();
     BlackjackState valid;
     BlackjackState corrupt;
+    Action actions[2] = {91, 92};
+    Probability probabilities[2] = {93.0, 94.0};
+    size_t required_count = 95;
     bool terminal = true;
 
     initialize(&valid);
@@ -560,6 +606,13 @@ static void check_corrupt_states_are_rejected(void) {
     corrupt.remaining_cards[0] = 3;
     CHECK(cfr_game_validate_state(game, as_const_state(&corrupt)) ==
           CFR_STATUS_INVALID_ARGUMENT);
+    CHECK(cfr_game_chance_outcomes(game, as_const_state(&corrupt), actions,
+                                   probabilities, ARRAY_COUNT(actions),
+                                   &required_count) ==
+          CFR_STATUS_INVALID_ARGUMENT);
+    CHECK(actions[0] == 91 && actions[1] == 92);
+    CHECK(probabilities[0] == 93.0 && probabilities[1] == 94.0);
+    CHECK(required_count == 95);
 
     corrupt = valid;
     corrupt.player_hand.total = 11;

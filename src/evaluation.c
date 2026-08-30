@@ -635,12 +635,21 @@ static Status workspace_build_snapshot(const Game *game, GameState *state,
     Status status = cfr_game_validate_state(game, state);
     if (status != CFR_STATUS_SUCCESS)
         return status;
+    Game trusted_game;
+    const Game *evaluation_game = game;
+    if (game->trusted_operations != NULL) {
+        trusted_game = *game;
+        trusted_game.operations = game->trusted_operations;
+        trusted_game.trusted_operations = NULL;
+        evaluation_game = &trusted_game;
+    }
     status = workspace_init(&temporary, game->max_legal_actions);
     if (status != CFR_STATUS_SUCCESS)
         return status;
 
     size_t root_index;
-    status = build(game, state, store, 0, &temporary, 1.0, 1.0, &root_index);
+    status = build(evaluation_game, state, store, 0, &temporary, 1.0, 1.0,
+                   &root_index);
     if (status != CFR_STATUS_SUCCESS) {
         workspace_destroy(&temporary);
         return status;
@@ -709,24 +718,37 @@ static Status build(const Game *game, GameState *state, const InfoStore *store,
     if (status != CFR_STATUS_SUCCESS)
         return status;
     EvaluationFrame *frame = &workspace->frames[depth];
-    size_t required_amount;
-    status = cfr_game_legal_actions(game, state, frame->actions,
-                                    game->max_legal_actions, &required_amount);
-    if (status != CFR_STATUS_SUCCESS)
-        return status;
-    if (required_amount == 0 || required_amount > workspace->max_legal_actions)
-        return CFR_STATUS_INVALID_ARGUMENT;
     Actor current_actor;
     status = cfr_game_current_actor(game, state, &current_actor);
     if (status != CFR_STATUS_SUCCESS)
         return status;
+    const bool batched_chance =
+        current_actor.kind == CFR_ACTOR_CHANCE &&
+        game->operations->chance_outcomes != NULL;
+    size_t required_amount;
+    if (batched_chance) {
+        status = cfr_game_chance_outcomes(
+            game, state, frame->actions, frame->probabilities,
+            game->max_legal_actions, &required_amount);
+    } else {
+        status = cfr_game_legal_actions(game, state, frame->actions,
+                                        game->max_legal_actions,
+                                        &required_amount);
+    }
+    if (status != CFR_STATUS_SUCCESS)
+        return status;
+    if (required_amount == 0 || required_amount > workspace->max_legal_actions)
+        return CFR_STATUS_INVALID_ARGUMENT;
+
     if (current_actor.kind == CFR_ACTOR_CHANCE) {
         for (size_t i = 0; i < required_amount; i++) {
-            status = cfr_game_chance_probability(
-                game, state, workspace->frames[depth].actions[i],
-                &(frame->probabilities[i]));
-            if (status != CFR_STATUS_SUCCESS)
-                return status;
+            if (!batched_chance) {
+                status = cfr_game_chance_probability(
+                    game, state, workspace->frames[depth].actions[i],
+                    &(frame->probabilities[i]));
+                if (status != CFR_STATUS_SUCCESS)
+                    return status;
+            }
             if (!isfinite(frame->probabilities[i]) ||
                 (workspace->frames[depth].probabilities[i] > 1.0 ||
                  (workspace->frames[depth].probabilities[i] < 0.0)))

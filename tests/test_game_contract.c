@@ -424,6 +424,7 @@ static void test_public_wrapper_validation(void) {
     Action actions[2] = {52, 53};
     size_t required_count = 54;
     Probability probability = 55.0;
+    Probability probabilities[2] = {56.0, 57.0};
     InfoSetKey key = 56;
 
     initialize(&state);
@@ -447,6 +448,9 @@ static void test_public_wrapper_validation(void) {
           CFR_STATUS_INVALID_ARGUMENT);
     CHECK(cfr_game_chance_probability(NULL, const_state, FAKE_ACTION_HEADS,
                                       &probability) ==
+          CFR_STATUS_INVALID_ARGUMENT);
+    CHECK(cfr_game_chance_outcomes(NULL, const_state, actions, probabilities,
+                                   2, &required_count) ==
           CFR_STATUS_INVALID_ARGUMENT);
     CHECK(cfr_game_information_set_key(NULL, const_state, &key) ==
           CFR_STATUS_INVALID_ARGUMENT);
@@ -474,6 +478,9 @@ static void test_public_wrapper_validation(void) {
     CHECK(cfr_game_chance_probability(&no_callbacks, const_state,
                                       FAKE_ACTION_HEADS,
                                       &probability) ==
+          CFR_STATUS_INVALID_ARGUMENT);
+    CHECK(cfr_game_chance_outcomes(&no_callbacks, const_state, actions,
+                                   probabilities, 2, &required_count) ==
           CFR_STATUS_INVALID_ARGUMENT);
     CHECK(cfr_game_information_set_key(&no_callbacks, const_state, &key) ==
           CFR_STATUS_INVALID_ARGUMENT);
@@ -508,6 +515,9 @@ static void test_public_wrapper_validation(void) {
           CFR_STATUS_INVALID_ARGUMENT);
     CHECK(cfr_game_chance_probability(game, const_state, FAKE_ACTION_HEADS,
                                       NULL) == CFR_STATUS_INVALID_ARGUMENT);
+    CHECK(cfr_game_chance_outcomes(game, const_state, actions, probabilities, 2,
+                                   &required_count) ==
+          CFR_STATUS_INVALID_ARGUMENT);
     CHECK(cfr_game_information_set_key(game, NULL, &key) ==
           CFR_STATUS_INVALID_ARGUMENT);
     CHECK(cfr_game_information_set_key(game, const_state, NULL) ==

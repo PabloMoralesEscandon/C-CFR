@@ -87,6 +87,20 @@ Status cfr_game_chance_probability(const Game *game, const GameState *state,
                                                 result);
 }
 
+Status cfr_game_chance_outcomes(const Game *game, const GameState *state,
+                                Action *actions, Probability *probabilities,
+                                size_t capacity, size_t *required_count) {
+    if (game == NULL || game->operations == NULL ||
+        game->operations->chance_outcomes == NULL || state == NULL ||
+        actions == NULL || probabilities == NULL || required_count == NULL) {
+        return CFR_STATUS_INVALID_ARGUMENT;
+    }
+
+    return game->operations->chance_outcomes(
+        game->context, state, actions, probabilities, capacity,
+        required_count);
+}
+
 Status cfr_game_information_set_key(const Game *game, const GameState *state,
                                     InfoSetKey *result) {
     if (game == NULL || game->operations == NULL ||
