@@ -80,6 +80,11 @@ The general form is:
 
 ```text
 cfr-kuhn --iterations N [--report-every N] [--print-strategy] [--cfr-plus]
+         [--save FILE] [--export-strategy FILE]
+cfr-kuhn --load FILE --iterations N [--report-every N] [--print-strategy]
+         [--save FILE] [--export-strategy FILE]
+cfr-kuhn --load FILE --evaluate [--print-strategy]
+         [--export-strategy FILE]
 ```
 
 | Option | Description |
@@ -88,6 +93,10 @@ cfr-kuhn --iterations N [--report-every N] [--print-strategy] [--cfr-plus]
 | `--report-every N` | Prints a report after each block of at most `N` iterations. |
 | `--print-strategy` | Prints the average strategy after the final report. |
 | `--cfr-plus` | Uses CFR+ instead of the default classic CFR. |
+| `--load FILE` | Loads a binary checkpoint for evaluation or continued training. |
+| `--save FILE` | Saves a binary checkpoint after successful training. |
+| `--evaluate` | Exactly evaluates a loaded checkpoint without training. |
+| `--export-strategy FILE` | Writes the normalized average strategy as readable text. |
 | `--help`, `-h` | Prints help without initializing CFR. |
 
 If you omit `--report-every`, the application prints only the final report. Use
@@ -95,6 +104,81 @@ an explicit frequency during a long run.
 
 For example, use `--report-every 10000` with 100,000 iterations. The application
 will print ten reports. A lower interval increases evaluation overhead.
+
+When `--load` and `--iterations` are used together, `N` is the number of
+additional iterations. The checkpoint selects classic CFR or CFR+; do not pass
+`--cfr-plus` while loading. Reports from resumed training use the cumulative
+training iteration count.
+
+## Saving and loading strategies
+
+A binary checkpoint is the authoritative saved strategy. It contains both the
+cumulative strategy sums used for play and evaluation and the cumulative
+regrets needed to continue training. It also retains the trainer variant,
+completed training iteration count, and trainer statistics. CFR+ therefore
+continues with the correct linear averaging weight.
+
+Train and save a checkpoint with:
+
+```sh
+build/release/cfr-kuhn --iterations 100000 --cfr-plus \
+    --save kuhn-100000.cfr
+```
+
+Continue that training for another 50,000 iterations with:
+
+```sh
+build/release/cfr-kuhn --load kuhn-100000.cfr --iterations 50000 \
+    --save kuhn-150000.cfr
+```
+
+Saving to the same path that was loaded is supported. The application writes a
+temporary sibling file and replaces the destination only after the checkpoint
+has been written and closed successfully.
+
+Checkpoints use a versioned, checksummed binary format. Information sets are
+sorted by key, so equal training states produce equal files independently of
+the hash-table layout. A checkpoint also contains the adapter's stable strategy
+schema identifier. Loading rejects a checkpoint if that identifier differs
+from the current game descriptor.
+
+The serialization API is game-independent and is declared in
+`cfr/checkpoint.h`:
+
+```c
+Status cfr_checkpoint_write(FILE *stream, const Trainer *trainer);
+Status cfr_checkpoint_read(FILE *stream, const Game *game, GameState *state,
+                           InfoStore *store_out, Trainer *trainer_out);
+Status cfr_strategy_write_text(FILE *stream, const Trainer *trainer);
+```
+
+Every serializable adapter supplies `Game.strategy_schema_id`. The identifier
+must change when game rules, information-set keys, or the meaning or order of
+action indices becomes incompatible. Serialization stores generic keys and
+indexed arrays; it does not contain Kuhn-specific actions or labels.
+
+### Exact evaluation of a saved strategy
+
+Run the complete-tree evaluator directly on a checkpoint with:
+
+```sh
+build/release/cfr-kuhn --load kuhn-150000.cfr --evaluate
+```
+
+The command reports both profile values, both best-response values, both
+unilateral improvements, NashConv, and exploitability. It enumerates chance and
+player branches exactly and does not use random simulation.
+
+For inspection or external tooling, export only the normalized average policy:
+
+```sh
+build/release/cfr-kuhn --load kuhn-150000.cfr --evaluate \
+    --export-strategy kuhn-150000.txt
+```
+
+The text file is deterministic and ordered by information-set key and action
+index. It intentionally omits cumulative regrets and cannot be loaded or used
+to resume training.
 
 ## Training variants
 

@@ -42,6 +42,7 @@ static const GameOperations KP_GAME_OPERATIONS = {
 static const Game KP_GAME = {.context = NULL,
                              .max_legal_actions =
                                  CFR_KUHN_POKER_MAX_POSSIBLE_ACTIONS,
+                             .strategy_schema_id = "cfr.kuhn-poker/v1",
                              .operations = &KP_GAME_OPERATIONS};
 
 Status cfr_kuhn_poker_state_init(KuhnPokerState *state) {

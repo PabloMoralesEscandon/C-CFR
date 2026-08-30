@@ -37,7 +37,13 @@ typedef enum {
     /* The module could not complete an internal allocation. */
     CFR_STATUS_OUT_OF_MEMORY,
     /* A valid lookup did not find the requested key. */
-    CFR_STATUS_NOT_FOUND
+    CFR_STATUS_NOT_FOUND,
+    /* A stream read or write operation failed. */
+    CFR_STATUS_IO_ERROR,
+    /* Serialized input is malformed, corrupt, or unsupported. */
+    CFR_STATUS_FORMAT_ERROR,
+    /* Serialized learning data belongs to another game schema. */
+    CFR_STATUS_INCOMPATIBLE_GAME
 } Status;
 
 /* Represents the utility of a terminal state for one player. */

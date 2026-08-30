@@ -4,6 +4,7 @@
 #include <stdlib.h>
 
 #include "cfr/info_store.h"
+#include "info_store_internal.h"
 
 static const size_t INITIAL_STORE_CAPACITY = 8;
 
@@ -15,10 +16,6 @@ typedef enum {
     LOCATE_EMPTY_SLOT_FOUND,
     LOCATE_STORE_FULL
 } LocateResult;
-
-struct CfrInfoStoreEntry {
-    InfoNode *node;
-};
 
 static uint64_t disperse(InfoSetKey key) {
     uint64_t value = (uint64_t)key;

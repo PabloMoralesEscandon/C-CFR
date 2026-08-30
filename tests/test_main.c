@@ -14,6 +14,7 @@ int main(void) {
     failures += test_cfr_plus();
     failures += test_kuhn_poker();
     failures += test_evaluation();
+    failures += test_checkpoint();
 
     if (failures != 0) {
         fprintf(stderr, "%d checks failed.\n", failures);

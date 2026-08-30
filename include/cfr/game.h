@@ -136,6 +136,18 @@ struct CfrGame {
     const void *context;
     /* Upper bound on the number of legal actions in any state. */
     size_t max_legal_actions;
+    /*
+     * Stable identifier for serialized learning data.
+     *
+     * The adapter owns this null-terminated string. It must have static or
+     * otherwise sufficient lifetime. Checkpoint operations require a nonempty
+     * printable ASCII token of at most 255 bytes. The adapter must change the
+     * identifier whenever rules, information-set keys, or action-index
+     * meanings become incompatible with an earlier checkpoint.
+     *
+     * Game and traversal operations do not require this field.
+     */
+    const char *strategy_schema_id;
 };
 
 /*

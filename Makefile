@@ -14,6 +14,7 @@ RELEASE_DIR := $(BUILD_DIR)/release
 DEBUG_DIR := $(BUILD_DIR)/debug
 
 LIB_SOURCES := \
+	src/checkpoint.c \
 	src/evaluation.c \
 	src/game.c \
 	src/info_node.c \
@@ -33,6 +34,7 @@ TEST_SOURCES := \
 	tests/test_info_store.c \
 	tests/test_traversal.c \
 	tests/test_chance_trainer.c \
+	tests/test_checkpoint.c \
 	tests/test_cfr_plus.c \
 	tests/test_kuhn_poker.c \
 	tests/test_evaluation.c \

@@ -11,3 +11,9 @@ The application is not part of the public library. See the main
 
 The example uses classic CFR by default. Pass `--cfr-plus` to use Regret
 Matching+ and linear strategy averaging.
+
+The application can save and resume the complete generic trainer state with
+`--save FILE` and `--load FILE`. Use `--load FILE --evaluate` to run the exact
+full-tree evaluator on a checkpoint, or `--export-strategy FILE` to write a
+readable, export-only average policy. See the main README for compatibility
+rules and complete commands.

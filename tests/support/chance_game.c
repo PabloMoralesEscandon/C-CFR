@@ -37,6 +37,7 @@ static const Game CHANCE_GAME = {
     .operations = &CHANCE_GAME_OPERATIONS,
     .context = NULL,
     .max_legal_actions = 2,
+    .strategy_schema_id = "cfr.test.chance-game/v1",
 };
 
 static const ChanceGameState *as_chance_const(const GameState *state) {

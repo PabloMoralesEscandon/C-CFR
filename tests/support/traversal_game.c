@@ -39,6 +39,7 @@ static const Game TRAVERSAL_GAME = {
     .operations = &TRAVERSAL_OPERATIONS,
     .context = NULL,
     .max_legal_actions = 2,
+    .strategy_schema_id = "cfr.test.traversal-game/v1",
 };
 
 static Status initialize_phase(TraversalGameState *state,

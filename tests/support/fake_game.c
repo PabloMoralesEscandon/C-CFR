@@ -44,6 +44,7 @@ static const GameOperations FAKE_GAME_OPERATIONS = {
 
 static const Game FAKE_GAME = {.context = &FAKE_GAME_CONFIG,
                                .max_legal_actions = 2,
+                               .strategy_schema_id = "cfr.test.fake-game/v1",
                                .operations = &FAKE_GAME_OPERATIONS};
 
 Status fake_game_state_init(FakeGameState *state) {
