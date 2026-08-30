@@ -37,6 +37,7 @@ TEST_SOURCES := \
 	tests/test_info_store.c \
 	tests/test_traversal.c \
 	tests/test_chance_trainer.c \
+	tests/test_cfr_plus.c \
 	tests/test_kuhn_poker.c \
 	tests/test_evaluation.c \
 	tests/support/test_allocator.c \
@@ -99,7 +100,7 @@ test-alloc:
 		LDFLAGS='$(LDFLAGS) -Wl,--wrap=malloc -Wl,--wrap=realloc -Wl,--wrap=free' \
 		test-alloc-run
 
-# El asignador envuelto pertenece a la suite C y no se enlaza con la CLI.
+# The wrapped allocator belongs to the C test suite and is not linked into the CLI.
 test-alloc-run: $(TEST_BINARY)
 	$(TEST_ENV) ./$(TEST_BINARY)
 

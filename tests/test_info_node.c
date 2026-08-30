@@ -15,7 +15,7 @@ static int failures;
 #define CHECK(condition)                                                       \
     do {                                                                       \
         if (!(condition)) {                                                     \
-            fprintf(stderr, "%s:%d: no se cumple: %s\n", __FILE__, __LINE__, \
+            fprintf(stderr, "%s:%d: assertion failed: %s\n", __FILE__, __LINE__, \
                     #condition);                                                \
             failures += 1;                                                      \
         }                                                                      \
@@ -405,7 +405,9 @@ static void check_composition_for_size(size_t action_count) {
         CHECK(strategy[index] <= 1.0);
         sum += (long double)strategy[index];
     }
-    CHECK(fabsl(sum - 1.0L) <= 1e-12L);
+    /* On platforms where long double equals double, 100,000 addends accumulate
+     * more than 1e-12 of rounding error. Use the module tolerance. */
+    CHECK(fabsl(sum - 1.0L) <= 1e-8L);
     CHECK(cfr_info_node_accumulate_strategy(&node, strategy, action_count,
                                             1.0) == CFR_STATUS_SUCCESS);
 
@@ -584,11 +586,11 @@ int main(void) {
     const int result = test_info_node();
 
     if (result != 0) {
-        fprintf(stderr, "Fallaron %d comprobaciones de InfoNode.\n", result);
+        fprintf(stderr, "%d InfoNode checks failed.\n", result);
         return 1;
     }
 
-    puts("Todas las pruebas de InfoNode terminaron correctamente.");
+    puts("All InfoNode tests completed successfully.");
     return 0;
 }
 #endif

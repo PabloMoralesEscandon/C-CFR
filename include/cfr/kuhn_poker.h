@@ -5,23 +5,23 @@
 
 #include "cfr/game.h"
 
-/* Número máximo de acciones que contiene la historia pública. */
+/* Maximum number of actions in the public history. */
 #define CFR_KUHN_POKER_PUBLIC_HISTORY_CAPACITY 3
-/* Número máximo de transiciones que se pueden deshacer. */
+/* Maximum number of transitions that can be undone. */
 #define CFR_KUHN_POKER_UNDO_HISTORY_CAPACITY 4
-/* Número de jugadores de Kuhn Poker. */
+/* Number of Kuhn Poker players. */
 #define CFR_KUHN_POKER_NUMBER_OF_PLAYERS 2
 /*
- * Número máximo de acciones legales. El nodo de reparto tiene seis acciones.
- * Cada nodo de jugador tiene dos acciones.
+ * Maximum number of legal actions. The deal node has six actions. Each player
+ * node has two actions.
  */
 #define CFR_KUHN_POKER_MAX_POSSIBLE_ACTIONS 6
 
 /*
- * Identifica una carta privada.
+ * Identifies a private card.
  *
- * El orden de las cartas reales representa su rango. La jota es la carta más
- * baja. El rey es la carta más alta.
+ * The order of the real cards represents their rank. The jack is the lowest
+ * card, and the king is the highest.
  */
 typedef enum {
     CFR_KUHN_POKER_CARD_NOT_DEALT,
@@ -30,7 +30,7 @@ typedef enum {
     CFR_KUHN_POKER_CARD_KING
 } KuhnPokerCard;
 
-/* Identifica la fase actual y determina el actor y las acciones legales. */
+/* Identifies the current phase and determines the actor and legal actions. */
 typedef enum {
     CFR_KUHN_POKER_PHASE_CHANCE,
     CFR_KUHN_POKER_PHASE_PLAYER_0_OPEN,
@@ -41,12 +41,12 @@ typedef enum {
 } KuhnPokerPhase;
 
 /*
- * Identifica un reparto o una acción pública.
+ * Identifies a deal or a public action.
  *
- * El nodo de azar enumera JQ, JK, QJ, QK, KJ y KQ en este orden. Un nodo sin
- * una apuesta pendiente enumera CHECK y BET. Un nodo con una apuesta pendiente
- * enumera FOLD y CALL. El orden es estable para conservar el significado de
- * cada índice de estrategia.
+ * The chance node enumerates JQ, JK, QJ, QK, KJ, and KQ in that order. A node
+ * without a pending bet enumerates CHECK and BET. A node with a pending bet
+ * enumerates FOLD and CALL. The order is stable to preserve the meaning of each
+ * strategy index.
  */
 typedef enum {
     CFR_KUHN_POKER_ACTION_NONE,
@@ -62,79 +62,78 @@ typedef enum {
     CFR_KUHN_POKER_ACTION_CHECK
 } KuhnPokerAction;
 
-/* Contiene una instantánea anterior a una transición. */
+/* Contains a snapshot from before a transition. */
 typedef struct {
-    /* Fase anterior a la acción aplicada. */
+    /* Phase before the applied action. */
     KuhnPokerPhase previous_phase;
-    /* Cartas anteriores a la acción aplicada. */
+    /* Cards before the applied action. */
     KuhnPokerCard previous_cards[CFR_KUHN_POKER_NUMBER_OF_PLAYERS];
-    /* Número anterior de acciones públicas. */
+    /* Number of public actions before the applied action. */
     size_t previous_public_action_count;
-    /* Acción que creó esta entrada. */
+    /* Action that created this entry. */
     KuhnPokerAction applied_action;
 } KuhnPokerUndoEntry;
 
 /*
- * Contiene el estado completo de una partida de Kuhn Poker.
+ * Contains the complete state of a Kuhn Poker game.
  *
- * El llamador posee la estructura y la reserva sin asignación dinámica. El
- * adaptador no reserva memoria durante sus operaciones.
+ * The caller owns and allocates the structure without dynamic allocation. The
+ * adapter does not allocate memory during its operations.
  *
- * El llamador debe inicializar la estructura con cfr_kuhn_poker_state_init. El
- * llamador debe cambiar el estado mediante las operaciones del descriptor. El
- * llamador no debe modificar los campos directamente. Una modificación directa
- * invalida el contrato del estado. Las operaciones devuelven
- * CFR_STATUS_INVALID_ARGUMENT cuando detectan un estado incoherente.
+ * The caller must initialize the structure with cfr_kuhn_poker_state_init and
+ * change the state through the descriptor operations. The caller must not
+ * modify fields directly. Direct modification invalidates the state contract.
+ * Operations return CFR_STATUS_INVALID_ARGUMENT when they detect an
+ * inconsistent state.
  *
- * public_actions contiene solamente las acciones que observan los dos
- * jugadores. Las claves de información pueden usar esta historia.
- * undo_history contiene instantáneas que pueden incluir cartas privadas. Las
- * claves de información nunca usan undo_history.
+ * public_actions contains only the actions observed by both players.
+ * Information-set keys can use this history. undo_history contains snapshots
+ * that can include private cards. Information-set keys never use undo_history.
  */
 typedef struct {
-    /* Fase actual de la partida. */
+    /* Current phase of the game. */
     KuhnPokerPhase phase;
-    /* Carta privada del jugador cero y del jugador uno. */
+    /* Private cards for player zero and player one. */
     KuhnPokerCard cards[CFR_KUHN_POKER_NUMBER_OF_PLAYERS];
-    /* Acciones públicas en el orden en que se aplicaron. */
+    /* Public actions in the order in which they were applied. */
     KuhnPokerAction public_actions[CFR_KUHN_POKER_PUBLIC_HISTORY_CAPACITY];
-    /* Número de posiciones usadas en public_actions. */
+    /* Number of used positions in public_actions. */
     size_t public_action_count;
-    /* Instantáneas privadas de las transiciones aplicadas. */
+    /* Private snapshots of applied transitions. */
     KuhnPokerUndoEntry undo_history[CFR_KUHN_POKER_UNDO_HISTORY_CAPACITY];
-    /* Número de posiciones usadas en undo_history. */
+    /* Number of used positions in undo_history. */
     size_t undo_count;
 } KuhnPokerState;
 
 /*
- * Inicializa state como una raíz de azar sin cartas ni acciones.
+ * Initializes state as a chance root without cards or actions.
  *
- * La función limpia los dos historiales. Un puntero nulo produce
+ * The function clears both histories. A null pointer produces
  * CFR_STATUS_INVALID_ARGUMENT.
  */
 Status cfr_kuhn_poker_state_init(KuhnPokerState *state);
 
 /*
- * Devuelve el descriptor constante de Kuhn Poker.
+ * Returns the const Kuhn Poker descriptor.
  *
- * El adaptador posee el descriptor. El préstamo tiene vida estática. El
- * llamador no debe modificar ni liberar el descriptor.
+ * The adapter owns the descriptor. The borrowed pointer has static lifetime.
+ * The caller must not modify or free the descriptor.
  */
 const Game *cfr_kuhn_poker_descriptor(void);
 
 /*
- * Presenta kuhn_poker_state como un estado opaco modificable.
+ * Views kuhn_poker_state as a mutable opaque state.
  *
- * La función devuelve el mismo préstamo. La función no copia ni reserva
- * memoria. La función no transfiere la propiedad.
+ * The function returns the same borrowed pointer. It does not copy or allocate
+ * memory, and it does not transfer ownership.
  */
 GameState *cfr_kuhn_poker_state_as_game_state(KuhnPokerState *kuhn_poker_state);
 
 /*
- * Presenta kuhn_poker_state como un estado opaco constante.
+ * Views kuhn_poker_state as a const opaque state.
  *
- * La función devuelve el mismo préstamo. La función no copia ni reserva
- * memoria. La función no transfiere la propiedad.
+ * The function returns the same borrowed pointer. It does not copy or allocate
+ * memory, and it does not transfer ownership.
  */
 const GameState *cfr_kuhn_poker_state_as_game_state_const(
     const KuhnPokerState *kuhn_poker_state);

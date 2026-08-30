@@ -29,6 +29,7 @@ typedef struct {
     size_t iterations;
     size_t report_every;
     bool evaluate;
+    bool cfr_plus;
 } CliOptions;
 
 static bool print_usage(FILE *stream, const char *program_name) {
@@ -36,27 +37,30 @@ static bool print_usage(FILE *stream, const char *program_name) {
         return false;
 
     if (fprintf(stream,
-                "Uso: %s --iterations N [--report-every N] [--evaluate]\n"
+                "Usage: %s --iterations N [--report-every N] [--evaluate] "
+                "[--cfr-plus]\n"
                 "       %s --help\n"
                 "\n"
-                "Opciones:\n"
-                "  --iterations N     Iteraciones de entrenamiento; N debe "
-                "ser positivo.\n"
-                "  --report-every N   Iteraciones entre informes; si se "
-                "omite, solo se informa al final.\n"
-                "  --evaluate         Evalúa el perfil medio después del "
-                "entrenamiento.\n"
-                "  --help, -h         Muestra esta ayuda.\n"
+                "Options:\n"
+                "  --iterations N     Training iterations; N must be "
+                "positive.\n"
+                "  --report-every N   Iterations between reports; if omitted, "
+                "only the final report is printed.\n"
+                "  --evaluate         Evaluate the average profile after "
+                "training.\n"
+                "  --cfr-plus         Use CFR+ with Regret Matching+ and "
+                "linear averaging.\n"
+                "  --help, -h         Display this help.\n"
                 "\n"
-                "Aviso: cada recorrido enumera el árbol completo de "
-                "blackjack. Empiece con --iterations 1.\n"
-                "La evaluación también enumera el árbol y puede necesitar "
-                "mucho tiempo y memoria.\n"
+                "Warning: each traversal enumerates the complete blackjack "
+                "tree. Start with --iterations 1.\n"
+                "Evaluation also enumerates the tree and can require "
+                "considerable time and memory.\n"
                 "\n"
-                "Códigos de salida:\n"
-                "  0  Ejecución correcta o ayuda.\n"
-                "  1  Fallo operativo, de biblioteca, reloj o escritura.\n"
-                "  2  Argumentos inválidos.\n",
+                "Exit codes:\n"
+                "  0  Successful execution or help.\n"
+                "  1  Operation, library, clock, or write failure.\n"
+                "  2  Invalid arguments.\n",
                 program_name, program_name) < 0) {
         return false;
     }
@@ -97,6 +101,7 @@ static CliParseResult parse_options(int argc, char *const argv[],
     bool iterations_seen = false;
     bool report_every_seen = false;
     bool evaluate_seen = false;
+    bool cfr_plus_seen = false;
     int index;
 
     if (argv == NULL || diagnostic == NULL || options_out == NULL)
@@ -111,26 +116,27 @@ static CliParseResult parse_options(int argc, char *const argv[],
         const char *argument = argv[index];
 
         if (argument == NULL) {
-            (void)fprintf(diagnostic, "error: argumento nulo\n");
+            (void)fprintf(diagnostic, "error: null argument\n");
             return CLI_PARSE_ERROR;
         }
 
         if (strcmp(argument, "--iterations") == 0) {
             if (iterations_seen) {
-                (void)fprintf(diagnostic,
-                              "error: --iterations está repetida\n");
+                (void)fprintf(
+                    diagnostic,
+                    "error: --iterations was specified more than once\n");
                 return CLI_PARSE_ERROR;
             }
             if (index + 1 >= argc || argv[index + 1] == NULL) {
                 (void)fprintf(diagnostic,
-                              "error: falta el valor de --iterations\n");
+                              "error: missing value for --iterations\n");
                 return CLI_PARSE_ERROR;
             }
             index += 1;
             if (!parse_positive_size(argv[index], &options.iterations)) {
                 (void)fprintf(diagnostic,
-                              "error: --iterations requiere un entero decimal "
-                              "positivo representable\n");
+                              "error: --iterations requires a representable "
+                              "positive decimal integer\n");
                 return CLI_PARSE_ERROR;
             }
             iterations_seen = true;
@@ -139,21 +145,22 @@ static CliParseResult parse_options(int argc, char *const argv[],
 
         if (strcmp(argument, "--report-every") == 0) {
             if (report_every_seen) {
-                (void)fprintf(diagnostic,
-                              "error: --report-every está repetida\n");
+                (void)fprintf(
+                    diagnostic,
+                    "error: --report-every was specified more than once\n");
                 return CLI_PARSE_ERROR;
             }
             if (index + 1 >= argc || argv[index + 1] == NULL) {
                 (void)fprintf(diagnostic,
-                              "error: falta el valor de --report-every\n");
+                              "error: missing value for --report-every\n");
                 return CLI_PARSE_ERROR;
             }
             index += 1;
             if (!parse_positive_size(argv[index], &options.report_every)) {
                 (void)fprintf(
                     diagnostic,
-                    "error: --report-every requiere un entero decimal "
-                    "positivo representable\n");
+                    "error: --report-every requires a representable positive "
+                    "decimal integer\n");
                 return CLI_PARSE_ERROR;
             }
             report_every_seen = true;
@@ -162,8 +169,9 @@ static CliParseResult parse_options(int argc, char *const argv[],
 
         if (strcmp(argument, "--evaluate") == 0) {
             if (evaluate_seen) {
-                (void)fprintf(diagnostic,
-                              "error: --evaluate está repetida\n");
+                (void)fprintf(
+                    diagnostic,
+                    "error: --evaluate was specified more than once\n");
                 return CLI_PARSE_ERROR;
             }
             options.evaluate = true;
@@ -171,20 +179,32 @@ static CliParseResult parse_options(int argc, char *const argv[],
             continue;
         }
 
+        if (strcmp(argument, "--cfr-plus") == 0) {
+            if (cfr_plus_seen) {
+                (void)fprintf(
+                    diagnostic,
+                    "error: --cfr-plus was specified more than once\n");
+                return CLI_PARSE_ERROR;
+            }
+            options.cfr_plus = true;
+            cfr_plus_seen = true;
+            continue;
+        }
+
         if (strcmp(argument, "--help") == 0 || strcmp(argument, "-h") == 0) {
             (void)fprintf(
                 diagnostic,
-                "error: la ayuda solo puede solicitarse sin otras opciones\n");
+                "error: help can only be requested without other options\n");
             return CLI_PARSE_ERROR;
         }
 
-        (void)fprintf(diagnostic, "error: opción desconocida: %s\n", argument);
+        (void)fprintf(diagnostic, "error: unknown option: %s\n", argument);
         return CLI_PARSE_ERROR;
     }
 
     if (!iterations_seen) {
         (void)fprintf(diagnostic,
-                      "error: falta la opción obligatoria --iterations\n");
+                      "error: missing required option --iterations\n");
         return CLI_PARSE_ERROR;
     }
 
@@ -221,7 +241,7 @@ static bool print_status_error(FILE *stream, const char *operation,
     if (stream == NULL || operation == NULL)
         return false;
 
-    return fprintf(stream, "error: %s falló: %s\n", operation,
+    return fprintf(stream, "error: %s failed: %s\n", operation,
                    status_name(status)) >= 0;
 }
 
@@ -255,9 +275,8 @@ static bool print_training_report(FILE *stream, const TrainerStats *trainer,
     }
 
     if (fprintf(stream,
-                "informe iteraciones=%zu recorridos=%zu "
-                "nodos_visitados=%zu conjuntos_informacion=%zu "
-                "segundos=%.6f\n",
+                "report iterations=%zu traversals=%zu "
+                "visited_nodes=%zu information_sets=%zu seconds=%.6f\n",
                 trainer->iterations, trainer->traversals,
                 trainer->visited_nodes, store->size, seconds) < 0) {
         return false;
@@ -271,10 +290,11 @@ static bool print_start(FILE *stream, const CliOptions *options) {
         return false;
 
     if (fprintf(stream,
-                "inicio juego=blackjack iteraciones_solicitadas=%zu "
-                "informe_cada=%zu evaluacion=%s\n",
+                "start game=blackjack requested_iterations=%zu "
+                "report_every=%zu evaluation=%s variant=%s\n",
                 options->iterations, options->report_every,
-                options->evaluate ? "si" : "no") < 0) {
+                options->evaluate ? "yes" : "no",
+                options->cfr_plus ? "cfr+" : "cfr") < 0) {
         return false;
     }
 
@@ -289,9 +309,9 @@ static bool print_evaluation(FILE *stream, const EvaluationMetrics *metrics,
     }
 
     if (fprintf(stream,
-                "evaluacion valor_medio_jugador_0=%.17g "
-                "valor_medio_banca=%.17g explotabilidad=%.17g "
-                "segundos=%.6f\n",
+                "evaluation average_value_player_0=%.17g "
+                "average_value_dealer=%.17g exploitability=%.17g "
+                "seconds=%.6f\n",
                 metrics->profile_value_player_0,
                 metrics->profile_value_player_1, metrics->exploitability,
                 seconds) < 0) {
@@ -319,8 +339,8 @@ static int run_training(const CliOptions *options, FILE *output,
 
     status = cfr_blackjack_state_init(&state);
     if (status != CFR_STATUS_SUCCESS) {
-        (void)print_status_error(diagnostic,
-                                 "inicializar el estado de blackjack", status);
+        (void)print_status_error(diagnostic, "initialize the blackjack state",
+                                 status);
         goto cleanup;
     }
 
@@ -328,32 +348,34 @@ static int run_training(const CliOptions *options, FILE *output,
     game_state = cfr_blackjack_state_as_game_state(&state);
     if (game == NULL || game_state == NULL) {
         (void)fprintf(diagnostic,
-                      "error: el adaptador de blackjack no está disponible\n");
+                      "error: the blackjack adapter is unavailable\n");
         goto cleanup;
     }
 
     status = cfr_info_store_init(&store);
     if (status != CFR_STATUS_SUCCESS) {
-        (void)print_status_error(diagnostic, "inicializar el almacén", status);
+        (void)print_status_error(diagnostic, "initialize the store", status);
         goto cleanup;
     }
     store_initialized = true;
 
-    status = cfr_trainer_init(&trainer, game, game_state, &store);
+    if (options->cfr_plus)
+        status = cfr_trainer_init_plus(&trainer, game, game_state, &store);
+    else
+        status = cfr_trainer_init(&trainer, game, game_state, &store);
     if (status != CFR_STATUS_SUCCESS) {
-        (void)print_status_error(diagnostic, "inicializar el entrenador",
-                                 status);
+        (void)print_status_error(diagnostic, "initialize the trainer", status);
         goto cleanup;
     }
 
     if (timespec_get(&start, TIME_UTC) != TIME_UTC) {
         (void)fprintf(diagnostic,
-                      "error: no se pudo obtener la marca de tiempo inicial\n");
+                      "error: could not obtain the initial timestamp\n");
         goto cleanup;
     }
     if (!print_start(output, options)) {
         (void)fprintf(diagnostic,
-                      "error: no se pudo escribir el inicio\n");
+                      "error: could not write the start report\n");
         goto cleanup;
     }
 
@@ -369,21 +391,19 @@ static int run_training(const CliOptions *options, FILE *output,
 
         status = cfr_trainer_run(&trainer, block);
         if (status != CFR_STATUS_SUCCESS) {
-            (void)print_status_error(diagnostic, "entrenar", status);
+            (void)print_status_error(diagnostic, "train", status);
             goto cleanup;
         }
         completed += block;
 
         status = cfr_trainer_get_stats(&trainer, &trainer_stats);
         if (status != CFR_STATUS_SUCCESS) {
-            (void)print_status_error(diagnostic,
-                                     "consultar el entrenador", status);
+            (void)print_status_error(diagnostic, "query the trainer", status);
             goto cleanup;
         }
         status = cfr_info_store_get_stats(&store, &store_stats);
         if (status != CFR_STATUS_SUCCESS) {
-            (void)print_status_error(diagnostic, "consultar el almacén",
-                                     status);
+            (void)print_status_error(diagnostic, "query the store", status);
             goto cleanup;
         }
 
@@ -391,13 +411,13 @@ static int run_training(const CliOptions *options, FILE *output,
             !elapsed_seconds(&start, &current, &seconds)) {
             (void)fprintf(
                 diagnostic,
-                "error: no se pudo calcular el tiempo transcurrido\n");
+                "error: could not calculate elapsed time\n");
             goto cleanup;
         }
         if (!print_training_report(output, &trainer_stats, &store_stats,
                                    seconds)) {
             (void)fprintf(diagnostic,
-                          "error: no se pudo escribir el informe\n");
+                          "error: could not write the training report\n");
             goto cleanup;
         }
     }
@@ -409,7 +429,7 @@ static int run_training(const CliOptions *options, FILE *output,
 
         status = cfr_evaluation_metrics(game, game_state, &store, &metrics);
         if (status != CFR_STATUS_SUCCESS) {
-            (void)print_status_error(diagnostic, "evaluar el perfil medio",
+            (void)print_status_error(diagnostic, "evaluate the average profile",
                                      status);
             goto cleanup;
         }
@@ -417,12 +437,12 @@ static int run_training(const CliOptions *options, FILE *output,
             !elapsed_seconds(&start, &current, &seconds)) {
             (void)fprintf(
                 diagnostic,
-                "error: no se pudo calcular el tiempo transcurrido\n");
+                "error: could not calculate elapsed time\n");
             goto cleanup;
         }
         if (!print_evaluation(output, &metrics, seconds)) {
             (void)fprintf(diagnostic,
-                          "error: no se pudo escribir la evaluación\n");
+                          "error: could not write the evaluation\n");
             goto cleanup;
         }
     }
@@ -433,7 +453,7 @@ cleanup:
     if (store_initialized) {
         status = cfr_info_store_destroy(&store);
         if (status != CFR_STATUS_SUCCESS) {
-            (void)print_status_error(diagnostic, "destruir el almacén", status);
+            (void)print_status_error(diagnostic, "destroy the store", status);
             result = CLI_EXIT_RUNTIME_ERROR;
         }
     }

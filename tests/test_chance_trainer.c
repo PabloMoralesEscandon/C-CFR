@@ -15,7 +15,7 @@ static int failures;
 #define CHECK(condition)                                                       \
     do {                                                                       \
         if (!(condition)) {                                                     \
-            fprintf(stderr, "%s:%d: no se cumple: %s\n", __FILE__, __LINE__, \
+            fprintf(stderr, "%s:%d: assertion failed: %s\n", __FILE__, __LINE__, \
                     #condition);                                                \
             failures += 1;                                                      \
         }                                                                      \
@@ -60,7 +60,8 @@ static void check_coin_node_after_two_iterations(const InfoNode *node) {
 
 static bool same_trainer(const Trainer *left, const Trainer *right) {
     return left->game == right->game && left->state == right->state &&
-           left->store == right->store &&
+           left->store == right->store && left->variant == right->variant &&
+           left->training_iterations == right->training_iterations &&
            left->stats.iterations == right->stats.iterations &&
            left->stats.traversals == right->stats.traversals &&
            left->stats.visited_nodes == right->stats.visited_nodes &&
@@ -346,6 +347,8 @@ static void test_trainer_invalid_arguments_and_zero_iterations(void) {
     trainer.game = game;
     trainer.state = chance_game_state_as_public(&state);
     trainer.store = &store;
+    trainer.variant = CFR_TRAINER_VARIANT_CFR_PLUS;
+    trainer.training_iterations = 5;
     trainer.stats = stats;
     before = trainer;
 
@@ -373,6 +376,8 @@ static void test_trainer_invalid_arguments_and_zero_iterations(void) {
     CHECK(cfr_trainer_init(&trainer, game,
                            chance_game_state_as_public(&state), &store) ==
           CFR_STATUS_SUCCESS);
+    CHECK(trainer.variant == CFR_TRAINER_VARIANT_CFR);
+    CHECK(trainer.training_iterations == 0);
     CHECK(cfr_trainer_run(NULL, 0) == CFR_STATUS_INVALID_ARGUMENT);
     CHECK(cfr_trainer_run(&trainer, 0) == CFR_STATUS_SUCCESS);
     CHECK(cfr_trainer_get_stats(&trainer, &stats) == CFR_STATUS_SUCCESS);
@@ -479,6 +484,37 @@ static void test_trainer_skips_non_strategic_player(void) {
     CHECK(chance_game_state_equal(&state, &snapshot));
     node = find_node(&store, 800);
     CHECK(near(node->regret_sums[0], -0.5));
+    CHECK(near(node->regret_sums[1], 0.5));
+    CHECK(near(node->strategy_sums[0], 0.5));
+    CHECK(near(node->strategy_sums[1], 0.5));
+    destroy_store(&store);
+}
+
+static void test_plus_trainer_skips_non_strategic_player(void) {
+    Game one_player_game = *chance_game_descriptor();
+    ChanceGameState state;
+    ChanceGameState snapshot;
+    InfoStore store;
+    InfoNode *node;
+    Trainer trainer;
+    TrainerStats stats;
+
+    one_player_game.strategic_player_count = 1;
+    CHECK(chance_game_state_init_coin(&state) == CFR_STATUS_SUCCESS);
+    chance_game_fail_terminal_for_player(&state, CFR_PLAYER_1,
+                                         CFR_STATUS_NUMERIC_ERROR);
+    snapshot = state;
+    initialize_store(&store);
+    CHECK(cfr_trainer_init_plus(&trainer, &one_player_game,
+                                chance_game_state_as_public(&state), &store) ==
+          CFR_STATUS_SUCCESS);
+    CHECK(cfr_trainer_run(&trainer, 1) == CFR_STATUS_SUCCESS);
+    CHECK(cfr_trainer_get_stats(&trainer, &stats) == CFR_STATUS_SUCCESS);
+    check_stats(&stats, 1, 1, 5, 0);
+    CHECK(trainer.training_iterations == 1);
+    CHECK(chance_game_state_equal(&state, &snapshot));
+    node = find_node(&store, 800);
+    CHECK(near(node->regret_sums[0], 0.0));
     CHECK(near(node->regret_sums[1], 0.5));
     CHECK(near(node->strategy_sums[0], 0.5));
     CHECK(near(node->strategy_sums[1], 0.5));
@@ -836,6 +872,7 @@ int test_chance_trainer(void) {
     test_trainer_invalid_arguments_and_zero_iterations();
     test_trainer_exact_iterations_and_determinism();
     test_trainer_skips_non_strategic_player();
+    test_plus_trainer_skips_non_strategic_player();
     test_trainer_alternating_update_changes_player_1_learning();
     test_trainer_reset_preserves_learning_and_loans();
     test_trainer_second_traversal_error_and_recovery();

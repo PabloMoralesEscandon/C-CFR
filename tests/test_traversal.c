@@ -13,7 +13,7 @@ static int failures;
 #define CHECK(condition)                                                       \
     do {                                                                       \
         if (!(condition)) {                                                     \
-            fprintf(stderr, "%s:%d: no se cumple: %s\n", __FILE__, __LINE__, \
+            fprintf(stderr, "%s:%d: assertion failed: %s\n", __FILE__, __LINE__, \
                     #condition);                                                \
             failures += 1;                                                      \
         }                                                                      \
@@ -576,10 +576,10 @@ int main(void) {
     const int result = test_traversal();
 
     if (result != 0) {
-        fprintf(stderr, "Fallaron %d comprobaciones de recorrido.\n", result);
+        fprintf(stderr, "%d traversal checks failed.\n", result);
         return 1;
     }
-    puts("Todas las pruebas de recorrido terminaron correctamente.");
+    puts("All traversal tests completed successfully.");
     return 0;
 }
 #endif

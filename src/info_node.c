@@ -5,7 +5,7 @@
 
 #include "cfr/info_node.h"
 
-/* Tolerancias para validar que una distribución suma uno. */
+/* Tolerances for validating that a distribution sums to one. */
 #define REL_EPSILON 1e-8
 #define ABS_EPSILON 1e-12
 

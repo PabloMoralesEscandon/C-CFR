@@ -297,7 +297,7 @@ static Status deal_card(BlackjackState *state, Action action) {
     return CFR_STATUS_SUCCESS;
 }
 
-/* Aplica una transición sin añadirla al historial de deshacer. */
+/* Applies a transition without appending it to the undo history. */
 static Status advance_state(BlackjackState *state, Action action) {
     const BlackjackPhase previous_phase = state->phase;
     Status status;
@@ -741,11 +741,10 @@ static Status blackjack_information_set_key(const void *context,
     }
 
     /*
-     * Base once: cero queda reservado y los diez valores de carta ocupan los
-     * dígitos uno a diez. La carta visible inicia la clave y después se añade
-     * la secuencia observable completa del jugador. La carta tapada de la
-     * banca nunca participa, por lo que sus posibles repartos comparten el
-     * mismo conjunto de información.
+     * Base eleven: zero remains reserved and the ten card ranks occupy digits
+     * one through ten. The up card starts the key, followed by the player's
+     * complete observable sequence. The dealer's hole card never participates,
+     * so all of its possible deals share the same information set.
      */
     key = (InfoSetKey)blackjack_state->dealer_cards[0];
     for (index = 0; index < blackjack_state->player_card_count; index += 1) {

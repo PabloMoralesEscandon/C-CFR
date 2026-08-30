@@ -3,12 +3,12 @@
 set -eu
 
 fail() {
-    printf 'Fallo en la prueba integral de la CLI: %s\n' "$1" >&2
+    printf 'CLI integration test failure: %s\n' "$1" >&2
     exit 1
 }
 
 if [ "$#" -ne 1 ]; then
-    fail "se esperaba la ruta del ejecutable"
+    fail "expected the executable path"
 fi
 
 cli_binary=$1
@@ -18,11 +18,11 @@ case "$cli_binary" in
 esac
 
 if [ ! -x "$cli_binary" ]; then
-    fail "el ejecutable no existe o no tiene permiso de ejecución: $cli_binary"
+    fail "the executable does not exist or is not executable: $cli_binary"
 fi
 
 temporary_directory=$(mktemp -d "${TMPDIR:-/tmp}/cfr-cli-tests.XXXXXX") ||
-    fail "no se pudo crear el directorio temporal"
+    fail "could not create the temporary directory"
 trap 'rm -rf -- "$temporary_directory"' EXIT HUP INT TERM
 
 run_case() {
@@ -40,13 +40,13 @@ run_case() {
 require_status() {
     expected_status=$1
     if [ "$case_status" -ne "$expected_status" ]; then
-        fail "$case_name terminó con $case_status; se esperaba $expected_status"
+        fail "$case_name exited with $case_status; expected $expected_status"
     fi
 }
 
 require_empty() {
     if [ -s "$1" ]; then
-        fail "$case_name escribió contenido inesperado en $1"
+        fail "$case_name wrote unexpected content to $1"
     fi
 }
 
@@ -54,7 +54,7 @@ require_text() {
     required_file=$1
     required_text=$2
     if ! grep -F -- "$required_text" "$required_file" >/dev/null; then
-        fail "$case_name no contiene el texto esperado: $required_text"
+        fail "$case_name does not contain the expected text: $required_text"
     fi
 }
 
@@ -68,8 +68,8 @@ check_usage_error() {
     require_empty "$case_output"
     require_text "$case_error" "error:"
     require_text "$case_error" "$usage_message"
-    require_text "$case_error" "Uso:"
-    require_text "$case_error" "Argumentos inválidos."
+    require_text "$case_error" "Usage:"
+    require_text "$case_error" "Invalid arguments."
 }
 
 validate_reports() {
@@ -81,13 +81,13 @@ validate_reports() {
             return text ~ /^[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)([eE][+-]?[0-9]+)?$/
         }
 
-        /^informe / {
+        /^report / {
             count += 1
-            if (NF != 6 || $2 !~ /^iteraciones=/ ||
-                $3 !~ /^valor_medio_jugador_0=/ ||
-                $4 !~ /^explotabilidad=/ ||
-                $5 !~ /^conjuntos_informacion=/ ||
-                $6 !~ /^segundos=/) {
+            if (NF != 6 || $2 !~ /^iterations=/ ||
+                $3 !~ /^average_value_player_0=/ ||
+                $4 !~ /^exploitability=/ ||
+                $5 !~ /^information_sets=/ ||
+                $6 !~ /^seconds=/) {
                 exit 1
             }
             iteration_parts = split($2, iterations, "=")
@@ -116,13 +116,13 @@ validate_reports() {
             print sequence
         }
     ' "$reports_file" >"$temporary_directory/report-sequence"; then
-        fail "$case_name contiene un informe inválido"
+        fail "$case_name contains an invalid report"
     fi
 
     actual_iterations=$(sed -n '1p' "$temporary_directory/report-sequence")
     if [ "$actual_iterations" != "$expected_iterations" ]; then
-        sequence_error="$case_name informó en '$actual_iterations'"
-        fail "$sequence_error; se esperaba '$expected_iterations'"
+        sequence_error="$case_name reported at '$actual_iterations'"
+        fail "$sequence_error; expected '$expected_iterations'"
     fi
 }
 
@@ -131,98 +131,104 @@ validate_only_reports() {
 
     require_status 0
     require_empty "$case_error"
-    if grep -v '^informe ' "$case_output" | grep -q .; then
-        fail "$case_name escribió líneas ajenas al informe"
+    if grep -v '^report ' "$case_output" | grep -q .; then
+        fail "$case_name wrote lines other than reports"
     fi
     validate_reports "$case_output" "$expected_iterations"
 }
 
-run_case ayuda_larga --help
+run_case long_help --help
 require_status 0
 require_empty "$case_error"
-require_text "$case_output" "Uso:"
+require_text "$case_output" "Usage:"
 require_text "$case_output" "--iterations N"
 require_text "$case_output" "--report-every N"
 require_text "$case_output" "--print-strategy"
-require_text "$case_output" "0  Ejecución correcta o ayuda."
+require_text "$case_output" "--cfr-plus"
+require_text "$case_output" "0  Successful execution or help."
 require_text "$case_output" \
-    "1  Fallo operativo, de biblioteca, reloj o escritura."
-require_text "$case_output" "2  Argumentos inválidos."
+    "1  Operation, library, clock, or write failure."
+require_text "$case_output" "2  Invalid arguments."
 
-run_case ayuda_corta -h
+run_case short_help -h
 require_status 0
 require_empty "$case_error"
-if ! cmp -s "$temporary_directory/ayuda_larga.out" "$case_output"; then
-    fail "--help y -h no muestran la misma ayuda"
+if ! cmp -s "$temporary_directory/long_help.out" "$case_output"; then
+    fail "--help and -h do not display the same help"
 fi
 
-check_usage_error sin_argumentos "falta la opción obligatoria --iterations"
-check_usage_error opcion_desconocida "opción desconocida" --desconocida
-check_usage_error iteraciones_sin_valor "falta el valor de --iterations" \
+check_usage_error no_arguments "missing required option --iterations"
+check_usage_error unknown_option "unknown option" --unknown
+check_usage_error iterations_without_value "missing value for --iterations" \
     --iterations
-check_usage_error informe_sin_valor "falta el valor de --report-every" \
+check_usage_error report_without_value "missing value for --report-every" \
     --iterations 1 --report-every
-check_usage_error falta_iteraciones "falta la opción obligatoria --iterations" \
+check_usage_error missing_iterations "missing required option --iterations" \
     --report-every 1
-check_usage_error iteraciones_cero "entero decimal positivo representable" \
+check_usage_error zero_iterations "representable positive decimal integer" \
     --iterations 0
-check_usage_error informe_cero "entero decimal positivo representable" \
+check_usage_error zero_report "representable positive decimal integer" \
     --iterations 1 --report-every 0
-check_usage_error signo_negativo "entero decimal positivo representable" \
+check_usage_error negative_sign "representable positive decimal integer" \
     --iterations -1
-check_usage_error signo_positivo "entero decimal positivo representable" \
+check_usage_error positive_sign "representable positive decimal integer" \
     --iterations +1
-check_usage_error sufijo_invalido "entero decimal positivo representable" \
+check_usage_error invalid_suffix "representable positive decimal integer" \
     --iterations 100abc
-check_usage_error fuera_de_rango "entero decimal positivo representable" \
+check_usage_error out_of_range "representable positive decimal integer" \
     --iterations 9999999999999999999999999999999999999999
-check_usage_error iteraciones_repetidas "--iterations está repetida" \
+check_usage_error duplicate_iterations "--iterations was specified more than once" \
     --iterations 1 --iterations 2
-check_usage_error informe_repetido "--report-every está repetida" \
+check_usage_error duplicate_report "--report-every was specified more than once" \
     --iterations 1 --report-every 1 --report-every 1
-check_usage_error estrategia_repetida "--print-strategy está repetida" \
+check_usage_error duplicate_strategy "--print-strategy was specified more than once" \
     --iterations 1 --print-strategy --print-strategy
-check_usage_error ayuda_combinada "la ayuda solo puede solicitarse" \
+check_usage_error duplicate_cfr_plus "--cfr-plus was specified more than once" \
+    --iterations 1 --cfr-plus --cfr-plus
+check_usage_error combined_help "help can only be requested" \
     --iterations 1 --help
 
-run_case informe_predeterminado --iterations 5
+run_case default_report --iterations 5
 validate_only_reports "5"
 
-run_case frecuencia_mayor --iterations 5 --report-every 10
+run_case larger_interval --iterations 5 --report-every 10
 validate_only_reports "5"
 
-run_case frecuencia_igual --iterations 5 --report-every 5
+run_case equal_interval --iterations 5 --report-every 5
 validate_only_reports "5"
 
-run_case frecuencia_menor_divisora --iterations 6 --report-every 2
+run_case smaller_divisor_interval --iterations 6 --report-every 2
 validate_only_reports "2 4 6"
 
-run_case frecuencia_no_divisora --iterations 5 --report-every 2
+run_case nondivisor_interval --iterations 5 --report-every 2
+validate_only_reports "2 4 5"
+
+run_case short_cfr_plus --iterations 5 --report-every 2 --cfr-plus
 validate_only_reports "2 4 5"
 
 if [ -c /dev/full ] && [ -w /dev/full ]; then
-    case_name=fallo_de_escritura
+    case_name=write_failure
     case_error=$temporary_directory/$case_name.err
     set +e
     "$cli_binary" --iterations 1 >/dev/full 2>"$case_error"
     case_status=$?
     set -e
     require_status 1
-    require_text "$case_error" "no se pudo escribir el informe"
+    require_text "$case_error" "could not write the report"
 fi
 
-run_case estrategia_primera --iterations 37 --report-every 10 --print-strategy
+run_case first_strategy --iterations 37 --report-every 10 --print-strategy
 require_status 0
 require_empty "$case_error"
-grep '^informe ' "$case_output" >"$temporary_directory/estrategia-informes"
-validate_reports "$temporary_directory/estrategia-informes" "10 20 30 37"
+grep '^report ' "$case_output" >"$temporary_directory/strategy-reports"
+validate_reports "$temporary_directory/strategy-reports" "10 20 30 37"
 
 if ! awk '
     function is_decimal(text) {
         return text ~ /^[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)([eE][+-]?[0-9]+)?$/
     }
 
-    /^estrategia / {
+    /^strategy / {
         count += 1
         if (NF != 4) {
             exit 1
@@ -234,9 +240,9 @@ if ! awk '
             exit 1
         }
         if (count <= 6) {
-            if (first[1] != "pasar" || second[1] != "apostar")
+            if (first[1] != "check" || second[1] != "bet")
                 exit 1
-        } else if (first[1] != "retirarse" || second[1] != "igualar") {
+        } else if (first[1] != "fold" || second[1] != "call") {
             exit 1
         }
         if (first[2] + 0 < 0 || first[2] + 0 > 1 ||
@@ -257,47 +263,47 @@ if ! awk '
             exit 1
     }
 ' "$case_output" >"$temporary_directory/strategy-labels"; then
-    fail "la estrategia final no contiene doce filas válidas"
+    fail "the final strategy does not contain twelve valid rows"
 fi
 
 cat >"$temporary_directory/expected-labels" <<'EOF'
-jugador_0_apertura_carta_J
-jugador_0_apertura_carta_Q
-jugador_0_apertura_carta_K
-jugador_1_despues_de_pasar_carta_J
-jugador_1_despues_de_pasar_carta_Q
-jugador_1_despues_de_pasar_carta_K
-jugador_1_ante_apuesta_inicial_carta_J
-jugador_1_ante_apuesta_inicial_carta_Q
-jugador_1_ante_apuesta_inicial_carta_K
-jugador_0_ante_pasar_apostar_carta_J
-jugador_0_ante_pasar_apostar_carta_Q
-jugador_0_ante_pasar_apostar_carta_K
+player_0_open_card_J
+player_0_open_card_Q
+player_0_open_card_K
+player_1_after_check_card_J
+player_1_after_check_card_Q
+player_1_after_check_card_K
+player_1_facing_open_bet_card_J
+player_1_facing_open_bet_card_Q
+player_1_facing_open_bet_card_K
+player_0_facing_check_bet_card_J
+player_0_facing_check_bet_card_Q
+player_0_facing_check_bet_card_K
 EOF
 
 if ! cmp -s "$temporary_directory/expected-labels" \
     "$temporary_directory/strategy-labels"; then
-    fail "las filas de estrategia no conservan el orden esperado"
+    fail "the strategy rows do not retain the expected order"
 fi
 
 first_strategy_output=$case_output
-run_case estrategia_segunda --iterations 37 --report-every 10 --print-strategy
+run_case second_strategy --iterations 37 --report-every 10 --print-strategy
 require_status 0
 require_empty "$case_error"
 
-sed 's/ segundos=[^ ]*$/ segundos=<tiempo>/' "$first_strategy_output" \
+sed 's/ seconds=[^ ]*$/ seconds=<time>/' "$first_strategy_output" \
     >"$temporary_directory/strategy-first-normalized"
-sed 's/ segundos=[^ ]*$/ segundos=<tiempo>/' "$case_output" \
+sed 's/ seconds=[^ ]*$/ seconds=<time>/' "$case_output" \
     >"$temporary_directory/strategy-second-normalized"
 if ! cmp -s "$temporary_directory/strategy-first-normalized" \
     "$temporary_directory/strategy-second-normalized"; then
-    fail "dos ejecuciones iguales difieren fuera del campo de tiempo"
+    fail "identical runs differ outside the time field"
 fi
 
-run_case validacion_larga --iterations 100000 --report-every 100000
+run_case long_validation --iterations 100000 --report-every 100000
 validate_only_reports "100000"
 if ! awk '
-    /^informe / {
+    /^report / {
         split($3, value, "=")
         split($4, exploitability, "=")
         difference = value[2] - (-1 / 18)
@@ -312,7 +318,7 @@ if ! awk '
             exit 1
     }
 ' "$case_output"; then
-    fail "la ejecución larga no alcanza los umbrales documentados"
+    fail "the long run does not meet the documented thresholds"
 fi
 
-printf 'Todas las pruebas integrales de la CLI terminaron correctamente.\n'
+printf 'All CLI integration tests completed successfully.\n'

@@ -520,11 +520,11 @@ int main(void) {
     const int result = test_blackjack();
 
     if (result != 0) {
-        fprintf(stderr, "Fallaron %d comprobaciones de blackjack.\n", result);
+        fprintf(stderr, "%d blackjack checks failed.\n", result);
         return 1;
     }
 
-    puts("Las pruebas de blackjack terminaron correctamente.");
+    puts("All blackjack tests passed.");
     return 0;
 }
 #endif

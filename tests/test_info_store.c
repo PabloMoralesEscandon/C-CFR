@@ -12,7 +12,7 @@ static int failures;
 #define CHECK(condition)                                                       \
     do {                                                                       \
         if (!(condition)) {                                                     \
-            fprintf(stderr, "%s:%d: no se cumple: %s\n", __FILE__, __LINE__, \
+            fprintf(stderr, "%s:%d: assertion failed: %s\n", __FILE__, __LINE__, \
                     #condition);                                                \
             failures += 1;                                                      \
         }                                                                      \
@@ -359,8 +359,8 @@ static void test_high_bit_hash_quality(void) {
     CHECK(insertion_stats.size == NODE_COUNT);
     if (insertion_stats.collision_count >= COLLISION_LIMIT) {
         fprintf(stderr,
-                "%s:%d: demasiadas colisiones para claves con bits altos: "
-                "%zu (límite: %d)\n",
+                "%s:%d: too many collisions for keys with high bits: "
+                "%zu (limit: %d)\n",
                 __FILE__, __LINE__, insertion_stats.collision_count,
                 COLLISION_LIMIT);
     }
@@ -516,11 +516,11 @@ int main(void) {
     const int result = test_info_store();
 
     if (result != 0) {
-        fprintf(stderr, "Fallaron %d comprobaciones de InfoStore.\n", result);
+        fprintf(stderr, "%d InfoStore checks failed.\n", result);
         return 1;
     }
 
-    puts("Todas las pruebas de InfoStore terminaron correctamente.");
+    puts("All InfoStore tests completed successfully.");
     return 0;
 }
 #endif

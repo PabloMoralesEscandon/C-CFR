@@ -11,15 +11,16 @@ int main(void) {
     failures += test_info_store();
     failures += test_traversal();
     failures += test_chance_trainer();
+    failures += test_cfr_plus();
     failures += test_kuhn_poker();
     failures += test_blackjack();
     failures += test_evaluation();
 
     if (failures != 0) {
-        fprintf(stderr, "Fallaron %d comprobaciones.\n", failures);
+        fprintf(stderr, "%d checks failed.\n", failures);
         return 1;
     }
 
-    puts("Todas las pruebas terminaron correctamente.");
+    puts("All tests completed successfully.");
     return 0;
 }
