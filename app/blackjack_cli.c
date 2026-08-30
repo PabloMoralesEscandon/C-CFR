@@ -25,11 +25,20 @@ typedef enum {
     CLI_EXIT_USAGE_ERROR = 2
 } CliExitCode;
 
+/* The player's two cards and the observable dealer up card. */
+#define BLACKJACK_VISIBLE_DEAL_LENGTH 3
+
 typedef struct {
     size_t iterations;
     size_t report_every;
     bool evaluate;
     bool cfr_plus;
+    /* Trains the complete undealt tree; see the --full-tree warning. */
+    bool full_tree;
+    bool deal_given;
+    /* Ranks one to ten, where one is an ace and ten covers every ten-card. */
+    unsigned int deal_ranks[BLACKJACK_VISIBLE_DEAL_LENGTH];
+    Action deal_actions[BLACKJACK_VISIBLE_DEAL_LENGTH];
 } CliOptions;
 
 static bool print_usage(FILE *stream, const char *program_name) {
@@ -37,11 +46,24 @@ static bool print_usage(FILE *stream, const char *program_name) {
         return false;
 
     if (fprintf(stream,
-                "Usage: %s --iterations N [--report-every N] [--evaluate] "
-                "[--cfr-plus]\n"
+                "Usage: %s --deal R,R,R --iterations N [--report-every N] "
+                "[--evaluate] [--cfr-plus]\n"
+                "       %s --full-tree --iterations N [--report-every N] "
+                "[--evaluate] [--cfr-plus]\n"
                 "       %s --help\n"
                 "\n"
                 "Options:\n"
+                "  --deal R,R,R       Solve the hand defined by its visible "
+                "initial cards.\n"
+                "                     Three ranks in deal order: player, "
+                "dealer up card,\n"
+                "                     player. The hidden dealer hole card "
+                "remains a chance\n"
+                "                     event. Each rank is 1 to 10, where 1\n"
+                "                     is an ace and 10 is any ten, jack, "
+                "queen, or king.\n"
+                "  --full-tree        Train from the undealt deck instead. "
+                "See the warning.\n"
                 "  --iterations N     Training iterations; N must be "
                 "positive.\n"
                 "  --report-every N   Iterations between reports; if omitted, "
@@ -52,16 +74,25 @@ static bool print_usage(FILE *stream, const char *program_name) {
                 "linear averaging.\n"
                 "  --help, -h         Display this help.\n"
                 "\n"
-                "Warning: each traversal enumerates the complete blackjack "
-                "tree. Start with --iterations 1.\n"
-                "Evaluation also enumerates the tree and can require "
-                "considerable time and memory.\n"
+                "Exactly one of --deal and --full-tree is required.\n"
+                "\n"
+                "Warning: --full-tree enumerates every deal of a 52-card deck "
+                "on every\n"
+                "traversal. A measured single iteration exceeds a billion "
+                "states and does not\n"
+                "finish in any practical time, and --evaluate enumerates the "
+                "same tree while\n"
+                "materializing it in memory. --full-tree is provided for "
+                "experiments only; it\n"
+                "is not a supported workflow. Use --deal, which solves one "
+                "initial deal in\n"
+                "seconds. Start with --iterations 1.\n"
                 "\n"
                 "Exit codes:\n"
                 "  0  Successful execution or help.\n"
                 "  1  Operation, library, clock, or write failure.\n"
                 "  2  Invalid arguments.\n",
-                program_name, program_name) < 0) {
+                program_name, program_name, program_name) < 0) {
         return false;
     }
 
@@ -95,6 +126,46 @@ static bool parse_positive_size(const char *text, size_t *value_out) {
     return true;
 }
 
+/*
+ * Parses three comma-separated visible ranks into deal actions.
+ *
+ * The text must contain exactly BLACKJACK_VISIBLE_DEAL_LENGTH ranks, each a
+ * decimal integer from one to ten with no sign, padding, or trailing text. The
+ * adapter rejects a deal that exhausts a rank when the actions are applied.
+ */
+static bool parse_deal(const char *text, unsigned int *ranks_out,
+                       Action *actions_out) {
+    size_t position = 0;
+
+    if (text == NULL || ranks_out == NULL || actions_out == NULL)
+        return false;
+
+    for (size_t card = 0; card < BLACKJACK_VISIBLE_DEAL_LENGTH; card += 1) {
+        unsigned int rank = 0;
+        size_t digits = 0;
+
+        if (card > 0) {
+            if (text[position] != ',')
+                return false;
+            position += 1;
+        }
+        while (text[position] >= '0' && text[position] <= '9') {
+            rank = rank * 10u + (unsigned int)(text[position] - '0');
+            if (rank > CFR_BLACKJACK_NUMBER_OF_CARD_RANKS)
+                return false;
+            digits += 1;
+            position += 1;
+        }
+        if (digits == 0 || rank == 0)
+            return false;
+        ranks_out[card] = rank;
+        actions_out[card] =
+            (Action)(CFR_BLACKJACK_ACTION_DEAL_ACE + (int)rank - 1);
+    }
+
+    return text[position] == '\0';
+}
+
 static CliParseResult parse_options(int argc, char *const argv[],
                                     FILE *diagnostic, CliOptions *options_out) {
     CliOptions options = {0};
@@ -102,6 +173,8 @@ static CliParseResult parse_options(int argc, char *const argv[],
     bool report_every_seen = false;
     bool evaluate_seen = false;
     bool cfr_plus_seen = false;
+    bool deal_seen = false;
+    bool full_tree_seen = false;
     int index;
 
     if (argv == NULL || diagnostic == NULL || options_out == NULL)
@@ -167,6 +240,42 @@ static CliParseResult parse_options(int argc, char *const argv[],
             continue;
         }
 
+        if (strcmp(argument, "--deal") == 0) {
+            if (deal_seen) {
+                (void)fprintf(diagnostic,
+                              "error: --deal was specified more than once\n");
+                return CLI_PARSE_ERROR;
+            }
+            if (index + 1 >= argc || argv[index + 1] == NULL) {
+                (void)fprintf(diagnostic,
+                              "error: missing value for --deal\n");
+                return CLI_PARSE_ERROR;
+            }
+            index += 1;
+            if (!parse_deal(argv[index], options.deal_ranks,
+                            options.deal_actions)) {
+                (void)fprintf(diagnostic,
+                              "error: --deal requires three comma-separated "
+                              "ranks from 1 to 10\n");
+                return CLI_PARSE_ERROR;
+            }
+            options.deal_given = true;
+            deal_seen = true;
+            continue;
+        }
+
+        if (strcmp(argument, "--full-tree") == 0) {
+            if (full_tree_seen) {
+                (void)fprintf(
+                    diagnostic,
+                    "error: --full-tree was specified more than once\n");
+                return CLI_PARSE_ERROR;
+            }
+            options.full_tree = true;
+            full_tree_seen = true;
+            continue;
+        }
+
         if (strcmp(argument, "--evaluate") == 0) {
             if (evaluate_seen) {
                 (void)fprintf(
@@ -205,6 +314,23 @@ static CliParseResult parse_options(int argc, char *const argv[],
     if (!iterations_seen) {
         (void)fprintf(diagnostic,
                       "error: missing required option --iterations\n");
+        return CLI_PARSE_ERROR;
+    }
+    if (deal_seen && full_tree_seen) {
+        (void)fprintf(diagnostic,
+                      "error: --deal cannot be combined with --full-tree\n");
+        return CLI_PARSE_ERROR;
+    }
+    /*
+     * Training from the undealt deck enumerates every deal of a 52-card deck
+     * and does not finish in any practical time. Requiring an explicit choice
+     * keeps that cost from looking like a hang.
+     */
+    if (!deal_seen && !full_tree_seen) {
+        (void)fprintf(diagnostic,
+                      "error: missing required option --deal RANKS; pass "
+                      "--full-tree to train the complete undealt tree "
+                      "instead, which is not practically computable\n");
         return CLI_PARSE_ERROR;
     }
 
@@ -286,13 +412,25 @@ static bool print_training_report(FILE *stream, const TrainerStats *trainer,
 }
 
 static bool print_start(FILE *stream, const CliOptions *options) {
+    char deal_scope[32];
+    const char *scope = "full-tree";
+
     if (stream == NULL || options == NULL)
         return false;
 
+    if (options->deal_given) {
+        if (snprintf(deal_scope, sizeof(deal_scope), "deal:%u,%u,%u",
+                     options->deal_ranks[0], options->deal_ranks[1],
+                     options->deal_ranks[2]) < 0) {
+            return false;
+        }
+        scope = deal_scope;
+    }
+
     if (fprintf(stream,
-                "start game=blackjack requested_iterations=%zu "
+                "start game=blackjack scope=%s requested_iterations=%zu "
                 "report_every=%zu evaluation=%s variant=%s\n",
-                options->iterations, options->report_every,
+                scope, options->iterations, options->report_every,
                 options->evaluate ? "yes" : "no",
                 options->cfr_plus ? "cfr+" : "cfr") < 0) {
         return false;
@@ -350,6 +488,24 @@ static int run_training(const CliOptions *options, FILE *output,
         (void)fprintf(diagnostic,
                       "error: the blackjack adapter is unavailable\n");
         goto cleanup;
+    }
+
+    /*
+     * The visible dealt state becomes the traversal root. The hidden dealer
+     * hole card remains the next chance event, so all states in the player's
+     * information set participate in training.
+     */
+    if (options->deal_given) {
+        for (size_t card = 0; card < BLACKJACK_VISIBLE_DEAL_LENGTH;
+             card += 1) {
+            status = cfr_game_apply_action(game, game_state,
+                                           options->deal_actions[card]);
+            if (status != CFR_STATUS_SUCCESS) {
+                (void)print_status_error(diagnostic, "apply the initial deal",
+                                         status);
+                goto cleanup;
+            }
+        }
     }
 
     status = cfr_info_store_init(&store);

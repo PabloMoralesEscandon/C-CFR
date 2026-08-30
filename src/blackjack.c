@@ -38,7 +38,8 @@ static const Game BLACKJACK_GAME = {
     .operations = &BLACKJACK_GAME_OPERATIONS,
     .context = NULL,
     .strategic_player_count = 1,
-    .max_legal_actions = CFR_BLACKJACK_MAX_POSSIBLE_ACTIONS};
+    .max_legal_actions = CFR_BLACKJACK_MAX_POSSIBLE_ACTIONS,
+    .strategy_schema_id = "cfr.blackjack/v1"};
 
 static BlackjackState *as_blackjack(GameState *state) {
     return (BlackjackState *)state;

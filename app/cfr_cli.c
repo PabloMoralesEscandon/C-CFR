@@ -75,7 +75,8 @@ static bool print_usage(FILE *stream, const char *program_name) {
                 "  --evaluate         Evaluate a loaded checkpoint without "
                 "training.\n"
                 "  --export-strategy FILE\n"
-                "                     Export the average strategy as text.\n"
+                "                     Export the average strategy as text; "
+                "FILE must not exist.\n"
                 "  --help, -h         Display this help.\n"
                 "\n"
                 "Exit codes:\n"
@@ -318,6 +319,20 @@ static CliParseResult parse_options(int argc, char *const argv[],
                       "paths\n");
         return CLI_PARSE_ERROR;
     }
+    /*
+     * --save may replace the loaded checkpoint: that is how training resumes.
+     * --export-strategy writes text that cannot be loaded, so it must never
+     * name the checkpoint. run_training also checks the target before training
+     * and claims it exclusively, which catches aliases this comparison cannot
+     * detect.
+     */
+    if (load_seen && export_seen &&
+        strcmp(options.load_path, options.export_path) == 0) {
+        (void)fprintf(diagnostic,
+                      "error: --export-strategy cannot write to the "
+                      "--load checkpoint\n");
+        return CLI_PARSE_ERROR;
+    }
     if (!options.evaluate && !iterations_seen) {
         (void)fprintf(diagnostic,
                       "error: missing required option --iterations\n");
@@ -521,6 +536,37 @@ static Status load_checkpoint_file(const char *path, const Game *game,
     return status;
 }
 
+/* Fails early when an export cannot claim a new destination safely. */
+static bool export_target_is_available(const char *path, FILE *diagnostic) {
+    FILE *stream;
+
+    if (diagnostic == NULL)
+        return false;
+    if (path == NULL)
+        return true;
+
+    errno = 0;
+    stream = fopen(path, "rb");
+    if (stream != NULL) {
+        if (fclose(stream) != 0) {
+            (void)print_status_error(diagnostic, "inspect the export target",
+                                     CFR_STATUS_IO_ERROR);
+            return false;
+        }
+        (void)fprintf(diagnostic,
+                      "error: --export-strategy target '%s' already exists; "
+                      "choose a new path or remove it first\n",
+                      path);
+        return false;
+    }
+    if (errno != ENOENT) {
+        (void)print_status_error(diagnostic, "inspect the export target",
+                                 CFR_STATUS_IO_ERROR);
+        return false;
+    }
+    return true;
+}
+
 static Status print_strategy_row(FILE *stream, const Game *game,
                                  const InfoStore *store,
                                  const StrategyRow *row) {
@@ -692,6 +738,9 @@ static int run_training(const CliOptions *options, FILE *output,
     if (options == NULL || output == NULL || diagnostic == NULL)
         return CLI_EXIT_RUNTIME_ERROR;
 
+    if (!export_target_is_available(options->export_path, diagnostic))
+        goto cleanup;
+
     status = cfr_kuhn_poker_state_init(&state);
     if (status != CFR_STATUS_SUCCESS) {
         (void)print_status_error(diagnostic, "initialize the Kuhn Poker state",
@@ -831,8 +880,31 @@ static int run_training(const CliOptions *options, FILE *output,
     }
 
     if (options->export_path != NULL) {
-        status = write_trainer_file(options->export_path, &trainer,
-                                    cfr_strategy_write_text);
+        FILE *export_stream;
+
+        /*
+         * Exclusive creation is the replacement guard. It is atomic with
+         * respect to every spelling of an existing path, including symbolic
+         * links and files created while training was running.
+         */
+        errno = 0;
+        export_stream = fopen(options->export_path, "wbx");
+        if (export_stream == NULL) {
+            if (errno == EEXIST) {
+                (void)fprintf(diagnostic,
+                              "error: --export-strategy target '%s' already "
+                              "exists; choose a new path or remove it first\n",
+                              options->export_path);
+            } else {
+                (void)print_status_error(diagnostic,
+                                         "create the strategy export",
+                                         CFR_STATUS_IO_ERROR);
+            }
+            goto cleanup;
+        }
+        status = cfr_strategy_write_text(export_stream, &trainer);
+        if (fclose(export_stream) != 0 && status == CFR_STATUS_SUCCESS)
+            status = CFR_STATUS_IO_ERROR;
         if (status != CFR_STATUS_SUCCESS) {
             (void)print_status_error(diagnostic, "export the average strategy",
                                      status);

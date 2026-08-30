@@ -124,7 +124,15 @@ typedef struct {
  */
 Status cfr_blackjack_state_init(BlackjackState *state);
 
-/* Returns the const, static-lifetime blackjack descriptor. */
+/*
+ * Returns the const, static-lifetime blackjack descriptor.
+ *
+ * The descriptor supplies strategy_schema_id "cfr.blackjack/v1", so trainers
+ * bound to it work with cfr_checkpoint_write, cfr_checkpoint_read, and
+ * cfr_strategy_write_text. The identifier must change whenever the rules, the
+ * information-set keys, or the meaning of the action indices become
+ * incompatible with an earlier checkpoint.
+ */
 const Game *cfr_blackjack_descriptor(void);
 
 /* Views blackjack_state as a mutable opaque game state without copying it. */
