@@ -1,3 +1,4 @@
+#include "cfr/blackjack.h"
 #include "cfr/evaluation.h"
 #include "cfr/game.h"
 #include "cfr/info_node.h"
@@ -19,12 +20,14 @@ int test_public_headers(void) {
     InfoNode node = {0};
     InfoStore store = {0};
     KuhnPokerState kuhn_poker_state = {0};
+    BlackjackState blackjack_state = {0};
     EvaluationMetrics evaluation_metrics = {0};
 
     return (actor.player == CFR_PLAYER_0 && action == key &&
             status == CFR_STATUS_SUCCESS && utility == 0.0 &&
             probability == 1.0 && node.action_count == 0 && store.size == 0 &&
             kuhn_poker_state.public_action_count == 0 &&
+            blackjack_state.player_card_count == 0 &&
             evaluation_metrics.exploitability == 0.0)
                ? 0
                : 1;

@@ -135,6 +135,7 @@ static void check_root_and_descriptor(void) {
     CHECK(game != NULL);
     CHECK(game->operations != NULL);
     CHECK(game->context == NULL);
+    CHECK(game->strategic_player_count == 2);
     CHECK(game->max_legal_actions == CFR_KUHN_POKER_MAX_POSSIBLE_ACTIONS);
     CHECK(game->operations->is_terminal != NULL);
     CHECK(game->operations->terminal_utility != NULL);

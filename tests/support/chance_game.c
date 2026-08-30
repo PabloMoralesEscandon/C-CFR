@@ -36,6 +36,7 @@ static const GameOperations CHANCE_GAME_OPERATIONS = {
 static const Game CHANCE_GAME = {
     .operations = &CHANCE_GAME_OPERATIONS,
     .context = NULL,
+    .strategic_player_count = 2,
     .max_legal_actions = 2,
 };
 

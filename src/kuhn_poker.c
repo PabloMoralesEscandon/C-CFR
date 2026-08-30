@@ -40,6 +40,7 @@ static const GameOperations KP_GAME_OPERATIONS = {
     .information_set_key = kuhn_poker_information_set_key};
 
 static const Game KP_GAME = {.context = NULL,
+                             .strategic_player_count = 2,
                              .max_legal_actions =
                                  CFR_KUHN_POKER_MAX_POSSIBLE_ACTIONS,
                              .operations = &KP_GAME_OPERATIONS};

@@ -3,8 +3,16 @@
 Este proyecto implementa una biblioteca de CFR para juegos extensivos finitos.
 La primera versión admite dos jugadores y juegos de suma cero.
 
-El repositorio incluye un adaptador completo de Kuhn Poker. También incluye una
-aplicación que entrena y evalúa ese juego.
+El repositorio incluye adaptadores completos de Kuhn Poker y blackjack. Dos
+aplicaciones independientes permiten entrenar cada juego; los dos adaptadores
+también se pueden usar desde la misma API pública de la biblioteca.
+
+El adaptador de blackjack está declarado en `include/cfr/blackjack.h` y sigue
+estas reglas: una baraja de 52 cartas sin reposición, banca plantada en 17
+suave, blackjack natural pagado 3:2 y acciones de pedir o plantarse. No incluye
+doblaje, separación, seguro ni rendición. `CFR_PLAYER_0` es el jugador y la
+banca recibe como `CFR_PLAYER_1` la utilidad opuesta; las extracciones regladas
+de la banca se representan como nodos de azar.
 
 ## Construcción
 
@@ -18,9 +26,16 @@ Este objetivo crea los siguientes archivos de entrega:
 
 - `build/release/libcfr.a`
 - `build/release/cfr-kuhn`
+- `build/release/cfr-blackjack`
 
-La biblioteca no contiene la aplicación. El archivo `app/cfr_cli.c` consume la
-API pública como una aplicación externa.
+La biblioteca no contiene las aplicaciones. Los archivos `app/cfr_cli.c` y
+`app/blackjack_cli.c` consumen la API pública como aplicaciones externas.
+
+Para construir únicamente la biblioteca y el ejecutable de blackjack:
+
+```sh
+make blackjack
+```
 
 Use el siguiente objetivo para crear la configuración de depuración:
 
@@ -28,8 +43,8 @@ Use el siguiente objetivo para crear la configuración de depuración:
 make debug
 ```
 
-Este objetivo crea la biblioteca, la suite C y la aplicación de depuración.
-Los archivos quedan en `build/debug`.
+Este objetivo crea la biblioteca, la suite C y las dos aplicaciones de
+depuración. Los archivos quedan en `build/debug`.
 
 Use `make clean` para eliminar el directorio `build`.
 
@@ -41,8 +56,18 @@ Ejecute la suite C y la prueba integral de la aplicación:
 make test
 ```
 
-La prueba integral comprueba los argumentos, los informes y la estrategia
-media. También comprueba la reproducibilidad y la convergencia.
+La prueba integral de Kuhn comprueba los argumentos, los informes, la
+estrategia media, la reproducibilidad y la convergencia. Las pruebas de
+blackjack comprueban sus reglas, su integración con `Trainer` sobre un subárbol
+acotado y su interfaz sin lanzar involuntariamente un recorrido completo. Se
+pueden ejecutar de forma aislada:
+
+```sh
+make test-blackjack
+```
+
+Use `make test-blackjack-cli` si solo quiere comprobar los argumentos y la
+ayuda del ejecutable.
 
 Ejecute la inyección de fallos de reserva:
 
@@ -67,7 +92,7 @@ UndefinedBehaviorSanitizer. `test-sanitize` combina los dos sanitizadores.
 Los objetivos necesitan un compilador que admita las opciones solicitadas. Un
 compilador sin ese soporte produce un fallo visible.
 
-## Uso de la aplicación
+## Uso de Kuhn Poker
 
 Muestre la ayuda con uno de estos comandos:
 
@@ -197,3 +222,52 @@ Linux, `ru_maxrss` publica la memoria residente máxima en KiB.
 
 Esta medición es una referencia. No es una promesa de rendimiento. El resultado
 puede cambiar con el compilador, el equipo y la carga del sistema.
+
+## Uso de blackjack
+
+Muestre la ayuda mediante:
+
+```sh
+build/release/cfr-blackjack --help
+```
+
+La forma general es:
+
+```text
+cfr-blackjack --iterations N [--report-every N] [--evaluate]
+```
+
+| Opción | Descripción |
+|---|---|
+| `--iterations N` | Ejecuta `N` iteraciones completas de entrenamiento. |
+| `--report-every N` | Publica estadísticas después de cada bloque de hasta `N` iteraciones. |
+| `--evaluate` | Evalúa el perfil medio al terminar y publica su valor y explotabilidad. |
+| `--help`, `-h` | Publica la ayuda sin inicializar CFR. |
+
+Empiece siempre con una sola iteración y sin evaluación:
+
+```sh
+build/release/cfr-blackjack --iterations 1 --report-every 1
+```
+
+Cada iteración ejecuta un recorrido para el único jugador estratégico y
+enumera el árbol completo. La banca sigue una política determinista y sus
+extracciones son nodos de azar, por lo que no recibe un segundo recorrido. El
+árbol de una baraja de blackjack es mucho mayor que el de Kuhn.
+La opción `--evaluate` realiza otra enumeración completa y puede necesitar
+considerablemente más tiempo y memoria. El ejecutable publica y vacía una
+línea `inicio` antes de comenzar el primer recorrido, de modo que una ejecución
+larga ofrece confirmación inmediata de su configuración.
+
+Cada informe de entrenamiento contiene:
+
+| Campo | Significado |
+|---|---|
+| `iteraciones` | Iteraciones completas. |
+| `recorridos` | Recorridos CFR completos acumulados. |
+| `nodos_visitados` | Estados visitados acumulados. |
+| `conjuntos_informacion` | Decisiones distintas almacenadas. |
+| `segundos` | Tiempo desde el inicio del proceso. |
+
+Con `--evaluate`, la última línea contiene el valor medio del jugador, el valor
+opuesto de la banca, la explotabilidad y el tiempo total.

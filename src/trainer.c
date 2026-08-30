@@ -3,9 +3,37 @@
 #include "cfr/trainer.h"
 #include "cfr/traversal.h"
 
+static bool strategic_player_count_is_valid(size_t count) {
+    return count == 1 || count == 2;
+}
+
+static Status run_player_traversal(Trainer *trainer, Player player) {
+    TraversalStats traverse_stats = {0};
+    Utility utility = 0.0;
+    Status status = cfr_traverse_with_stats(
+        trainer->game, trainer->state, trainer->store, player, &utility,
+        &traverse_stats);
+
+    if (status != CFR_STATUS_SUCCESS) {
+        if (trainer->stats.errors != SIZE_MAX)
+            trainer->stats.errors += 1;
+        return status;
+    }
+    if (trainer->stats.traversals != SIZE_MAX)
+        trainer->stats.traversals += 1;
+    if (trainer->stats.visited_nodes >
+        (SIZE_MAX - traverse_stats.visited_nodes)) {
+        trainer->stats.visited_nodes = SIZE_MAX;
+    } else {
+        trainer->stats.visited_nodes += traverse_stats.visited_nodes;
+    }
+    return CFR_STATUS_SUCCESS;
+}
+
 Status cfr_trainer_init(Trainer *trainer, const Game *game, GameState *state,
                         InfoStore *store) {
-    if (trainer == NULL || game == NULL || state == NULL || store == NULL)
+    if (trainer == NULL || game == NULL || state == NULL || store == NULL ||
+        !strategic_player_count_is_valid(game->strategic_player_count))
         return CFR_STATUS_INVALID_ARGUMENT;
     trainer->game = game;
     trainer->state = state;
@@ -16,42 +44,19 @@ Status cfr_trainer_init(Trainer *trainer, const Game *game, GameState *state,
 
 Status cfr_trainer_run(Trainer *trainer, size_t amount) {
     if (trainer == NULL || trainer->game == NULL || trainer->state == NULL ||
-        trainer->store == NULL)
+        trainer->store == NULL || !strategic_player_count_is_valid(
+                                      trainer->game->strategic_player_count))
         return CFR_STATUS_INVALID_ARGUMENT;
-    Status status;
     for (size_t i = 0; i < amount; i++) {
-        TraversalStats traverse_stats = {0};
-        Utility utility = 0.0;
-        status = cfr_traverse_with_stats(trainer->game, trainer->state,
-                                         trainer->store, CFR_PLAYER_0, &utility,
-                                         &traverse_stats);
-        if (status != CFR_STATUS_SUCCESS) {
-            if (!(trainer->stats.errors == SIZE_MAX))
-                trainer->stats.errors += 1;
-            return status;
+        for (size_t player_index = 0;
+             player_index < trainer->game->strategic_player_count;
+             player_index++) {
+            const Status status = run_player_traversal(
+                trainer, (Player)player_index);
+
+            if (status != CFR_STATUS_SUCCESS)
+                return status;
         }
-        if (!(trainer->stats.traversals == SIZE_MAX))
-            trainer->stats.traversals += 1;
-        if (trainer->stats.visited_nodes >
-            (SIZE_MAX - traverse_stats.visited_nodes))
-            trainer->stats.visited_nodes = SIZE_MAX;
-        else
-            trainer->stats.visited_nodes += traverse_stats.visited_nodes;
-        status = cfr_traverse_with_stats(trainer->game, trainer->state,
-                                         trainer->store, CFR_PLAYER_1, &utility,
-                                         &traverse_stats);
-        if (status != CFR_STATUS_SUCCESS) {
-            if (!(trainer->stats.errors == SIZE_MAX))
-                trainer->stats.errors += 1;
-            return status;
-        }
-        if (!(trainer->stats.traversals == SIZE_MAX))
-            trainer->stats.traversals += 1;
-        if (trainer->stats.visited_nodes >
-            (SIZE_MAX - traverse_stats.visited_nodes))
-            trainer->stats.visited_nodes = SIZE_MAX;
-        else
-            trainer->stats.visited_nodes += traverse_stats.visited_nodes;
         if (!(trainer->stats.iterations == SIZE_MAX))
             trainer->stats.iterations += 1;
     }

@@ -13,7 +13,7 @@
  * a cero durante una ejecución posterior.
  */
 typedef struct {
-    /* Número de iteraciones que completaron los dos recorridos. */
+    /* Iteraciones que completaron todos los recorridos estratégicos. */
     size_t iterations;
     /* Número de recorridos que terminaron correctamente. */
     size_t traversals;
@@ -52,8 +52,10 @@ typedef struct {
  * Inicializa trainer con tres préstamos y pone las estadísticas a cero.
  *
  * trainer, game, state y store deben ser distintos de nulo. El llamador debe
- * proporcionar un juego, un estado y un almacén válidos. Un argumento nulo
- * produce CFR_STATUS_INVALID_ARGUMENT. Un error conserva un trainer no nulo.
+ * proporcionar un juego, un estado y un almacén válidos. El descriptor debe
+ * declarar uno o dos jugadores estratégicos. Un argumento nulo o una cantidad
+ * estratégica inválida produce CFR_STATUS_INVALID_ARGUMENT. Un error conserva
+ * un trainer no nulo.
  */
 Status cfr_trainer_init(Trainer *trainer, const Game *game, GameState *state,
                         InfoStore *store);
@@ -62,16 +64,17 @@ Status cfr_trainer_init(Trainer *trainer, const Game *game, GameState *state,
  * Ejecuta amount iteraciones con actualización alterna.
  *
  * trainer debe estar inicializado. Los tres préstamos de trainer deben ser
- * válidos. Una iteración ejecuta primero un recorrido para CFR_PLAYER_0. La
- * iteración ejecuta después un recorrido para CFR_PLAYER_1. El segundo recorrido
- * observa el aprendizaje que confirmó el primer recorrido.
+ * válidos. Una iteración ejecuta, en orden, un recorrido para cada jugador
+ * declarado estratégico por game->strategic_player_count. El primer recorrido
+ * usa CFR_PLAYER_0 y, cuando la cantidad es dos, el segundo usa CFR_PLAYER_1 y
+ * observa el aprendizaje que confirmó el primero.
  *
- * Cada recorrido confirma sus propios cambios. Si el segundo recorrido falla,
- * los cambios del primer recorrido permanecen en store. iterations aumenta
- * solo después de dos recorridos correctos. traversals y visited_nodes aumentan
- * después de cada recorrido correcto. errors aumenta después de un recorrido
- * fallido. Las estadísticas se acumulan entre llamadas. Los cuatro contadores
- * se saturan en SIZE_MAX.
+ * Cada recorrido confirma sus propios cambios. Si un recorrido posterior
+ * falla, los cambios de los anteriores permanecen en store. iterations aumenta
+ * solo después de todos los recorridos estratégicos de la iteración.
+ * traversals y visited_nodes aumentan después de cada recorrido correcto.
+ * errors aumenta después de un recorrido fallido. Las estadísticas se
+ * acumulan entre llamadas. Los cuatro contadores se saturan en SIZE_MAX.
  *
  * Un valor amount igual a cero produce CFR_STATUS_SUCCESS y no cambia el
  * entrenador. La función devuelve sin cambios el Status de un recorrido

@@ -43,6 +43,7 @@ static const GameOperations FAKE_GAME_OPERATIONS = {
     .information_set_key = fake_game_information_set_key};
 
 static const Game FAKE_GAME = {.context = &FAKE_GAME_CONFIG,
+                               .strategic_player_count = 2,
                                .max_legal_actions = 2,
                                .operations = &FAKE_GAME_OPERATIONS};
 

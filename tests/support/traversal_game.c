@@ -38,6 +38,7 @@ static const GameOperations TRAVERSAL_OPERATIONS = {
 static const Game TRAVERSAL_GAME = {
     .operations = &TRAVERSAL_OPERATIONS,
     .context = NULL,
+    .strategic_player_count = 2,
     .max_legal_actions = 2,
 };
 

@@ -132,6 +132,16 @@ struct CfrGame {
      * adaptador debe documentar y validar cualquier requisito adicional.
      */
     const void *context;
+    /*
+     * Número de jugadores que toman decisiones y deben recibir un recorrido
+     * de entrenamiento, empezando por CFR_PLAYER_0.
+     *
+     * Un juego de dos participantes puede tener un solo jugador estratégico:
+     * el otro participante puede existir únicamente como perspectiva de
+     * utilidad y sus transiciones pueden estar modeladas como azar.
+     * El entrenador requiere un valor uno o dos.
+     */
+    size_t strategic_player_count;
     /* Límite superior de acciones legales en cualquier estado. */
     size_t max_legal_actions;
 };
