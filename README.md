@@ -345,6 +345,9 @@ The general form is:
 
 ```text
 cfr-blackjack --iterations N [--report-every N] [--evaluate] [--cfr-plus]
+              [--save FILE] [--export-strategy FILE]
+cfr-blackjack --load FILE --iterations N [--report-every N] [--evaluate]
+              [--save FILE] [--export-strategy FILE]
 ```
 
 | Option | Description |
@@ -353,6 +356,9 @@ cfr-blackjack --iterations N [--report-every N] [--evaluate] [--cfr-plus]
 | `--report-every N` | Reports statistics after each block of up to `N` iterations. |
 | `--evaluate` | Evaluates the average profile after training and reports its value and exploitability. |
 | `--cfr-plus` | Uses CFR+ with Regret Matching+ and linear averaging. |
+| `--load FILE` | Loads a binary checkpoint before additional training. |
+| `--save FILE` | Saves a resumable binary checkpoint after training. |
+| `--export-strategy FILE` | Exports the average strategy as deterministic, human-readable text. |
 | `--help`, `-h` | Displays help without initializing CFR. |
 
 Always start with one iteration and no evaluation:
@@ -360,6 +366,17 @@ Always start with one iteration and no evaluation:
 ```sh
 build/release/cfr-blackjack --iterations 1 --report-every 1
 ```
+
+To retain both the resumable data and a readable snapshot, use distinct paths:
+
+```sh
+build/release/cfr-blackjack --iterations 1 --report-every 1 \
+    --save blackjack.cfr --export-strategy blackjack-strategy.txt
+```
+
+Checkpoint and text exports are written through temporary sibling files and
+atomically replace their destinations only after successful training and
+serialization. A loaded checkpoint selects classic CFR or CFR+ automatically.
 
 Each iteration runs one traversal for the only strategic player and enumerates
 the complete tree. The dealer follows a deterministic policy and its draws are

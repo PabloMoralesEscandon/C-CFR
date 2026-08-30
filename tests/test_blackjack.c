@@ -1,6 +1,7 @@
 #include <math.h>
 #include <stdbool.h>
 #include <stdio.h>
+#include <string.h>
 
 #include "cfr/blackjack.h"
 #include "cfr/info_store.h"
@@ -115,6 +116,8 @@ static void check_root_and_distribution(void) {
     CHECK(game->context == NULL);
     CHECK(game->strategic_player_count == 1);
     CHECK(game->max_legal_actions == CFR_BLACKJACK_MAX_POSSIBLE_ACTIONS);
+    CHECK(game->strategy_schema_id != NULL);
+    CHECK(strcmp(game->strategy_schema_id, "cfr.blackjack/v1") == 0);
     CHECK(game->operations->is_terminal != NULL);
     CHECK(game->operations->terminal_utility != NULL);
     CHECK(game->operations->current_actor != NULL);

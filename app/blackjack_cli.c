@@ -9,6 +9,7 @@
 #include <time.h>
 
 #include "cfr/blackjack.h"
+#include "cfr/checkpoint.h"
 #include "cfr/evaluation.h"
 #include "cfr/info_store.h"
 #include "cfr/trainer.h"
@@ -30,6 +31,9 @@ typedef struct {
     size_t report_every;
     bool evaluate;
     bool cfr_plus;
+    const char *load_path;
+    const char *save_path;
+    const char *export_path;
 } CliOptions;
 
 static bool print_usage(FILE *stream, const char *program_name) {
@@ -38,7 +42,9 @@ static bool print_usage(FILE *stream, const char *program_name) {
 
     if (fprintf(stream,
                 "Usage: %s --iterations N [--report-every N] [--evaluate] "
-                "[--cfr-plus]\n"
+                "[--cfr-plus] [--save FILE] [--export-strategy FILE]\n"
+                "       %s --load FILE --iterations N [--report-every N] "
+                "[--evaluate] [--save FILE] [--export-strategy FILE]\n"
                 "       %s --help\n"
                 "\n"
                 "Options:\n"
@@ -50,6 +56,12 @@ static bool print_usage(FILE *stream, const char *program_name) {
                 "training.\n"
                 "  --cfr-plus         Use CFR+ with Regret Matching+ and "
                 "linear averaging.\n"
+                "  --load FILE        Load a binary checkpoint before "
+                "training.\n"
+                "  --save FILE        Save a binary checkpoint after "
+                "training.\n"
+                "  --export-strategy FILE\n"
+                "                     Export the average strategy as text.\n"
                 "  --help, -h         Display this help.\n"
                 "\n"
                 "Warning: each traversal enumerates the complete blackjack "
@@ -61,7 +73,7 @@ static bool print_usage(FILE *stream, const char *program_name) {
                 "  0  Successful execution or help.\n"
                 "  1  Operation, library, clock, or write failure.\n"
                 "  2  Invalid arguments.\n",
-                program_name, program_name) < 0) {
+                program_name, program_name, program_name) < 0) {
         return false;
     }
 
@@ -102,6 +114,9 @@ static CliParseResult parse_options(int argc, char *const argv[],
     bool report_every_seen = false;
     bool evaluate_seen = false;
     bool cfr_plus_seen = false;
+    bool load_seen = false;
+    bool save_seen = false;
+    bool export_seen = false;
     int index;
 
     if (argv == NULL || diagnostic == NULL || options_out == NULL)
@@ -191,6 +206,45 @@ static CliParseResult parse_options(int argc, char *const argv[],
             continue;
         }
 
+        if (strcmp(argument, "--load") == 0 ||
+            strcmp(argument, "--save") == 0 ||
+            strcmp(argument, "--export-strategy") == 0) {
+            bool *seen;
+            const char **path;
+
+            if (strcmp(argument, "--load") == 0) {
+                seen = &load_seen;
+                path = &options.load_path;
+            } else if (strcmp(argument, "--save") == 0) {
+                seen = &save_seen;
+                path = &options.save_path;
+            } else {
+                seen = &export_seen;
+                path = &options.export_path;
+            }
+            if (*seen) {
+                (void)fprintf(diagnostic,
+                              "error: %s was specified more than once\n",
+                              argument);
+                return CLI_PARSE_ERROR;
+            }
+            if (index + 1 >= argc || argv[index + 1] == NULL) {
+                (void)fprintf(diagnostic, "error: missing value for %s\n",
+                              argument);
+                return CLI_PARSE_ERROR;
+            }
+            index += 1;
+            if (argv[index][0] == '\0') {
+                (void)fprintf(diagnostic,
+                              "error: %s requires a nonempty path\n",
+                              argument);
+                return CLI_PARSE_ERROR;
+            }
+            *seen = true;
+            *path = argv[index];
+            continue;
+        }
+
         if (strcmp(argument, "--help") == 0 || strcmp(argument, "-h") == 0) {
             (void)fprintf(
                 diagnostic,
@@ -202,6 +256,19 @@ static CliParseResult parse_options(int argc, char *const argv[],
         return CLI_PARSE_ERROR;
     }
 
+    if (load_seen && cfr_plus_seen) {
+        (void)fprintf(diagnostic,
+                      "error: --cfr-plus cannot be combined with --load; "
+                      "the checkpoint selects the variant\n");
+        return CLI_PARSE_ERROR;
+    }
+    if (save_seen && export_seen &&
+        strcmp(options.save_path, options.export_path) == 0) {
+        (void)fprintf(diagnostic,
+                      "error: --save and --export-strategy require different "
+                      "paths\n");
+        return CLI_PARSE_ERROR;
+    }
     if (!iterations_seen) {
         (void)fprintf(diagnostic,
                       "error: missing required option --iterations\n");
@@ -231,6 +298,12 @@ static const char *status_name(Status status) {
         return "CFR_STATUS_OUT_OF_MEMORY";
     case CFR_STATUS_NOT_FOUND:
         return "CFR_STATUS_NOT_FOUND";
+    case CFR_STATUS_IO_ERROR:
+        return "CFR_STATUS_IO_ERROR";
+    case CFR_STATUS_FORMAT_ERROR:
+        return "CFR_STATUS_FORMAT_ERROR";
+    case CFR_STATUS_INCOMPATIBLE_GAME:
+        return "CFR_STATUS_INCOMPATIBLE_GAME";
     default:
         return "CFR_STATUS_UNKNOWN";
     }
@@ -243,6 +316,70 @@ static bool print_status_error(FILE *stream, const char *operation,
 
     return fprintf(stream, "error: %s failed: %s\n", operation,
                    status_name(status)) >= 0;
+}
+
+typedef Status (*TrainerStreamWriter)(FILE *stream, const Trainer *trainer);
+
+static Status write_trainer_file(const char *path, const Trainer *trainer,
+                                 TrainerStreamWriter writer) {
+    enum { TEMPORARY_ATTEMPTS = 1000, TEMPORARY_SUFFIX_CAPACITY = 16 };
+    const size_t path_length = path == NULL ? 0 : strlen(path);
+    char *temporary_path;
+    FILE *stream = NULL;
+    Status status;
+
+    if (path == NULL || path_length == 0 || trainer == NULL || writer == NULL)
+        return CFR_STATUS_INVALID_ARGUMENT;
+    if (path_length > SIZE_MAX - TEMPORARY_SUFFIX_CAPACITY)
+        return CFR_STATUS_OUT_OF_MEMORY;
+    temporary_path = malloc(path_length + TEMPORARY_SUFFIX_CAPACITY);
+    if (temporary_path == NULL)
+        return CFR_STATUS_OUT_OF_MEMORY;
+    for (unsigned int attempt = 0; attempt < TEMPORARY_ATTEMPTS; attempt += 1) {
+        const int printed = snprintf(temporary_path,
+                                     path_length + TEMPORARY_SUFFIX_CAPACITY,
+                                     "%s.tmp.%u", path, attempt);
+
+        if (printed < 0 || (size_t)printed >=
+                               path_length + TEMPORARY_SUFFIX_CAPACITY) {
+            free(temporary_path);
+            return CFR_STATUS_OUT_OF_MEMORY;
+        }
+        errno = 0;
+        stream = fopen(temporary_path, "wbx");
+        if (stream != NULL || errno != EEXIST)
+            break;
+    }
+    if (stream == NULL) {
+        free(temporary_path);
+        return CFR_STATUS_IO_ERROR;
+    }
+    status = writer(stream, trainer);
+    if (fclose(stream) != 0 && status == CFR_STATUS_SUCCESS)
+        status = CFR_STATUS_IO_ERROR;
+    if (status == CFR_STATUS_SUCCESS && rename(temporary_path, path) != 0)
+        status = CFR_STATUS_IO_ERROR;
+    if (status != CFR_STATUS_SUCCESS)
+        (void)remove(temporary_path);
+    free(temporary_path);
+    return status;
+}
+
+static Status load_checkpoint_file(const char *path, const Game *game,
+                                   GameState *state, InfoStore *store,
+                                   Trainer *trainer) {
+    FILE *stream;
+    Status status;
+
+    if (path == NULL)
+        return CFR_STATUS_INVALID_ARGUMENT;
+    stream = fopen(path, "rb");
+    if (stream == NULL)
+        return CFR_STATUS_IO_ERROR;
+    status = cfr_checkpoint_read(stream, game, state, store, trainer);
+    if (fclose(stream) != 0 && status == CFR_STATUS_SUCCESS)
+        status = CFR_STATUS_IO_ERROR;
+    return status;
 }
 
 static bool elapsed_seconds(const struct timespec *start,
@@ -285,16 +422,26 @@ static bool print_training_report(FILE *stream, const TrainerStats *trainer,
     return fflush(stream) == 0 && !ferror(stream);
 }
 
-static bool print_start(FILE *stream, const CliOptions *options) {
-    if (stream == NULL || options == NULL)
+static bool print_start(FILE *stream, const CliOptions *options,
+                        const Trainer *trainer) {
+    const char *variant;
+
+    if (stream == NULL || options == NULL || trainer == NULL)
+        return false;
+    if (trainer->variant == CFR_TRAINER_VARIANT_CFR)
+        variant = "cfr";
+    else if (trainer->variant == CFR_TRAINER_VARIANT_CFR_PLUS)
+        variant = "cfr+";
+    else
         return false;
 
     if (fprintf(stream,
                 "start game=blackjack requested_iterations=%zu "
-                "report_every=%zu evaluation=%s variant=%s\n",
-                options->iterations, options->report_every,
-                options->evaluate ? "yes" : "no",
-                options->cfr_plus ? "cfr+" : "cfr") < 0) {
+                "starting_iterations=%zu report_every=%zu evaluation=%s "
+                "variant=%s\n",
+                options->iterations, trainer->training_iterations,
+                options->report_every,
+                options->evaluate ? "yes" : "no", variant) < 0) {
         return false;
     }
 
@@ -352,20 +499,32 @@ static int run_training(const CliOptions *options, FILE *output,
         goto cleanup;
     }
 
-    status = cfr_info_store_init(&store);
-    if (status != CFR_STATUS_SUCCESS) {
-        (void)print_status_error(diagnostic, "initialize the store", status);
-        goto cleanup;
-    }
-    store_initialized = true;
+    if (options->load_path != NULL) {
+        status = load_checkpoint_file(options->load_path, game, game_state,
+                                      &store, &trainer);
+        if (status != CFR_STATUS_SUCCESS) {
+            (void)print_status_error(diagnostic, "load the checkpoint", status);
+            goto cleanup;
+        }
+        store_initialized = true;
+    } else {
+        status = cfr_info_store_init(&store);
+        if (status != CFR_STATUS_SUCCESS) {
+            (void)print_status_error(diagnostic, "initialize the store", status);
+            goto cleanup;
+        }
+        store_initialized = true;
 
-    if (options->cfr_plus)
-        status = cfr_trainer_init_plus(&trainer, game, game_state, &store);
-    else
-        status = cfr_trainer_init(&trainer, game, game_state, &store);
-    if (status != CFR_STATUS_SUCCESS) {
-        (void)print_status_error(diagnostic, "initialize the trainer", status);
-        goto cleanup;
+        if (options->cfr_plus)
+            status =
+                cfr_trainer_init_plus(&trainer, game, game_state, &store);
+        else
+            status = cfr_trainer_init(&trainer, game, game_state, &store);
+        if (status != CFR_STATUS_SUCCESS) {
+            (void)print_status_error(diagnostic, "initialize the trainer",
+                                     status);
+            goto cleanup;
+        }
     }
 
     if (timespec_get(&start, TIME_UTC) != TIME_UTC) {
@@ -373,7 +532,7 @@ static int run_training(const CliOptions *options, FILE *output,
                       "error: could not obtain the initial timestamp\n");
         goto cleanup;
     }
-    if (!print_start(output, options)) {
+    if (!print_start(output, options, &trainer)) {
         (void)fprintf(diagnostic,
                       "error: could not write the start report\n");
         goto cleanup;
@@ -443,6 +602,25 @@ static int run_training(const CliOptions *options, FILE *output,
         if (!print_evaluation(output, &metrics, seconds)) {
             (void)fprintf(diagnostic,
                           "error: could not write the evaluation\n");
+            goto cleanup;
+        }
+    }
+
+    if (options->save_path != NULL) {
+        status = write_trainer_file(options->save_path, &trainer,
+                                    cfr_checkpoint_write);
+        if (status != CFR_STATUS_SUCCESS) {
+            (void)print_status_error(diagnostic, "save the checkpoint", status);
+            goto cleanup;
+        }
+    }
+
+    if (options->export_path != NULL) {
+        status = write_trainer_file(options->export_path, &trainer,
+                                    cfr_strategy_write_text);
+        if (status != CFR_STATUS_SUCCESS) {
+            (void)print_status_error(diagnostic, "export the average strategy",
+                                     status);
             goto cleanup;
         }
     }

@@ -80,6 +80,9 @@ require_text "$case_output" "--iterations N"
 require_text "$case_output" "--report-every N"
 require_text "$case_output" "--evaluate"
 require_text "$case_output" "--cfr-plus"
+require_text "$case_output" "--load FILE"
+require_text "$case_output" "--save FILE"
+require_text "$case_output" "--export-strategy FILE"
 require_text "$case_output" "Start with --iterations 1."
 require_text "$case_output" "0  Successful execution or help."
 require_text "$case_output" \
@@ -125,8 +128,33 @@ check_usage_error duplicate_evaluation \
 check_usage_error duplicate_cfr_plus \
     "--cfr-plus was specified more than once" \
     --iterations 1 --cfr-plus --cfr-plus
+check_usage_error load_without_value "missing value for --load" \
+    --iterations 1 --load
+check_usage_error save_without_value "missing value for --save" \
+    --iterations 1 --save
+check_usage_error export_without_value "missing value for --export-strategy" \
+    --iterations 1 --export-strategy
+check_usage_error duplicate_load "--load was specified more than once" \
+    --iterations 1 --load first --load second
+check_usage_error duplicate_save "--save was specified more than once" \
+    --iterations 1 --save first --save second
+check_usage_error duplicate_export \
+    "--export-strategy was specified more than once" \
+    --iterations 1 --export-strategy first --export-strategy second
+check_usage_error load_with_cfr_plus \
+    "--cfr-plus cannot be combined with --load" \
+    --load checkpoint --iterations 1 --cfr-plus
+check_usage_error overlapping_outputs \
+    "--save and --export-strategy require different paths" \
+    --iterations 1 --save output --export-strategy output
 check_usage_error combined_help "help can only be requested" \
     --iterations 1 --help
+
+run_case missing_checkpoint --load "$temporary_directory/missing.cfr" \
+    --iterations 1
+require_status 1
+require_empty "$case_output"
+require_text "$case_error" "load the checkpoint failed: CFR_STATUS_IO_ERROR"
 
 if [ -c /dev/full ] && [ -w /dev/full ]; then
     case_name=initial_write_failure
@@ -142,6 +170,18 @@ if [ -c /dev/full ] && [ -w /dev/full ]; then
     case_error=$temporary_directory/$case_name.err
     set +e
     "$cli_binary" --iterations 1 --cfr-plus >/dev/full 2>"$case_error"
+    case_status=$?
+    set -e
+    require_status 1
+    require_text "$case_error" "could not write the start report"
+
+    case_name=checkpoint_options_write_failure
+    case_error=$temporary_directory/$case_name.err
+    set +e
+    "$cli_binary" --iterations 1 \
+        --save "$temporary_directory/model.cfr" \
+        --export-strategy "$temporary_directory/strategy.txt" \
+        >/dev/full 2>"$case_error"
     case_status=$?
     set -e
     require_status 1
