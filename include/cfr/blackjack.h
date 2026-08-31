@@ -14,13 +14,16 @@
 #define CFR_BLACKJACK_NUMBER_OF_PLAYERS 2
 /* A hand can never contain more cards than the complete deck. */
 #define CFR_BLACKJACK_HAND_CAPACITY CFR_BLACKJACK_DECK_SIZE
+/* Standard table play limits a split round to four player hands. */
+#define CFR_BLACKJACK_MAX_PLAYER_HANDS 4
 /*
- * A card can require a preceding HIT action. One additional position is kept
- * for STAND. This bound is deliberately conservative.
+ * A card can require a preceding player action. Extra positions are kept for
+ * the decisions that finish or split each player hand. This bound is
+ * deliberately conservative.
  */
 #define CFR_BLACKJACK_UNDO_HISTORY_CAPACITY                                  \
-    (2 * CFR_BLACKJACK_DECK_SIZE + 1)
-/* All ten rank classes can be available at a chance node. */
+    (2 * CFR_BLACKJACK_DECK_SIZE + 2 * CFR_BLACKJACK_MAX_PLAYER_HANDS)
+/* All ten rank classes can be available at chance; player nodes use at most 4. */
 #define CFR_BLACKJACK_MAX_POSSIBLE_ACTIONS CFR_BLACKJACK_NUMBER_OF_CARD_RANKS
 
 /*
@@ -52,7 +55,9 @@ typedef enum {
     CFR_BLACKJACK_PHASE_PLAYER_TURN,
     CFR_BLACKJACK_PHASE_DEAL_PLAYER_HIT,
     CFR_BLACKJACK_PHASE_DEAL_DEALER_HIT,
-    CFR_BLACKJACK_PHASE_TERMINAL
+    CFR_BLACKJACK_PHASE_TERMINAL,
+    CFR_BLACKJACK_PHASE_DEAL_PLAYER_DOUBLE,
+    CFR_BLACKJACK_PHASE_DEAL_SPLIT_HAND
 } BlackjackPhase;
 
 /*
@@ -74,30 +79,39 @@ typedef enum {
     CFR_BLACKJACK_ACTION_DEAL_NINE,
     CFR_BLACKJACK_ACTION_DEAL_TEN,
     CFR_BLACKJACK_ACTION_HIT,
-    CFR_BLACKJACK_ACTION_STAND
+    CFR_BLACKJACK_ACTION_STAND,
+    CFR_BLACKJACK_ACTION_DOUBLE_DOWN,
+    CFR_BLACKJACK_ACTION_SPLIT
 } BlackjackAction;
-
-/* Stores the information required to undo one transition exactly. */
-typedef struct {
-    BlackjackPhase previous_phase;
-    BlackjackAction applied_action;
-} BlackjackUndoEntry;
 
 /*
  * Stores the decision-relevant value of one hand.
  *
  * total is the best current blackjack total: an ace counts as eleven exactly
  * when doing so does not bust the hand. is_soft records whether total currently
- * includes such an ace. ace_count is the minimal extra information needed to
- * update and undo soft-hand transitions. The individual card sequence is
- * deliberately not retained.
+ * includes such an ace. The first two ranks are retained because they determine
+ * whether SPLIT is legal. stake_multiplier is one normally and two after a
+ * double down. A two-card hand marked from_split is not a natural blackjack.
  */
 typedef struct {
     int total;
     size_t card_count;
     size_t ace_count;
     bool is_soft;
+    BlackjackCard first_card;
+    BlackjackCard second_card;
+    size_t stake_multiplier;
+    bool from_split;
 } BlackjackHand;
+
+/* Stores the information required to undo one transition exactly. */
+typedef struct {
+    BlackjackPhase previous_phase;
+    BlackjackAction applied_action;
+    size_t previous_active_hand;
+    size_t previous_hand_count;
+    BlackjackHand previous_active_hand_state;
+} BlackjackUndoEntry;
 
 /*
  * Contains the complete state of a blackjack hand.
@@ -107,8 +121,11 @@ typedef struct {
  * - one 52-card deck without replacement;
  * - the dealer stands on every 17, including soft 17;
  * - a natural blackjack pays 3:2 and a push returns the stake;
- * - the player can hit or stand;
- * - no doubling, splitting, insurance, or surrender.
+ * - the player can hit, stand, double down, or split equal rank classes;
+ * - doubling is available on any two-card hand, including after a split;
+ * - non-ace pairs can be resplit to at most four hands;
+ * - split aces receive one card each and cannot be resplit;
+ * - no insurance or surrender.
  *
  * CFR_PLAYER_0 represents the player. CFR_PLAYER_1 represents the dealer and
  * always receives the opposite utility. The dealer's forced decisions are
@@ -120,14 +137,20 @@ typedef struct {
  * not modify fields directly; operations reject inconsistent states that they
  * can detect.
  *
- * Player and dealer hands retain only their total, card count, and softness.
- * dealer_up_card is kept separately because it is the dealer information
- * visible to the player. remaining_cards still records rank-class depletion so
- * chance probabilities continue to model a finite deck without replacement.
+ * player_hand is a compatibility alias for player_hands[0]. player_hand_count
+ * gives the number of live entries and active_player_hand identifies the hand
+ * currently being played. dealer_up_card is kept separately because it is the
+ * dealer information visible to the player. remaining_cards records rank-class
+ * depletion so chance probabilities model a finite deck without replacement.
  */
 typedef struct {
     BlackjackPhase phase;
-    BlackjackHand player_hand;
+    union {
+        BlackjackHand player_hand;
+        BlackjackHand player_hands[CFR_BLACKJACK_MAX_PLAYER_HANDS];
+    };
+    size_t player_hand_count;
+    size_t active_player_hand;
     BlackjackHand dealer_hand;
     BlackjackCard dealer_up_card;
     /* Undealt count for each rank, in ace-to-ten order. */
@@ -147,7 +170,7 @@ Status cfr_blackjack_state_init(BlackjackState *state);
 /*
  * Returns the const, static-lifetime blackjack descriptor.
  *
- * The descriptor supplies strategy_schema_id "cfr.blackjack/v2", so trainers
+ * The descriptor supplies strategy_schema_id "cfr.blackjack/v3", so trainers
  * bound to it work with cfr_checkpoint_write, cfr_checkpoint_read, and
  * cfr_strategy_write_text. The identifier must change whenever the rules, the
  * information-set keys, or the meaning of the action indices become
