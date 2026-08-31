@@ -12,10 +12,12 @@
 #define CFR_BLACKJACK_NUMBER_OF_PLAYERS 2
 /* Even with replacement, a live hand reaches 21 within this many cards. */
 #define CFR_BLACKJACK_HAND_CAPACITY 21
-/* Resplitting is represented by at most four equivalent hands. */
-#define CFR_BLACKJACK_MAX_SPLIT_HANDS 4
+/* Standard table play limits a split round to four player hands. */
+#define CFR_BLACKJACK_MAX_PLAYER_HANDS 4
 /* Conservative bound for every deal and decision along one traversal path. */
-#define CFR_BLACKJACK_UNDO_HISTORY_CAPACITY 64
+#define CFR_BLACKJACK_UNDO_HISTORY_CAPACITY                                  \
+    (2 * CFR_BLACKJACK_HAND_CAPACITY * CFR_BLACKJACK_MAX_PLAYER_HANDS +      \
+     CFR_BLACKJACK_HAND_CAPACITY + 2 * CFR_BLACKJACK_MAX_PLAYER_HANDS)
 /* All ten rank classes can be available at chance; player nodes use at most 4. */
 #define CFR_BLACKJACK_MAX_POSSIBLE_ACTIONS CFR_BLACKJACK_NUMBER_OF_CARD_RANKS
 
@@ -100,10 +102,11 @@ typedef struct {
 typedef struct {
     BlackjackPhase previous_phase;
     BlackjackAction applied_action;
-    BlackjackHand previous_player_hand;
+    size_t previous_active_hand;
+    size_t previous_hand_count;
+    BlackjackHand previous_active_hand_state;
     BlackjackHand previous_dealer_hand;
     BlackjackCard previous_dealer_up_card;
-    size_t previous_split_hand_count;
 } BlackjackUndoEntry;
 
 /*
@@ -117,7 +120,7 @@ typedef struct {
  * - a natural blackjack pays 3:2 and a push returns the stake;
  * - the player can hit, stand, double down, or split equal rank classes;
  * - doubling is available on any two-card hand, including after a split;
- * - non-ace pairs can be resplit to at most four equivalent hands;
+ * - non-ace pairs can be resplit to at most four hands;
  * - split aces receive one card each and cannot be resplit;
  * - no insurance or surrender.
  *
@@ -131,16 +134,21 @@ typedef struct {
  * not modify fields directly; operations reject inconsistent states that they
  * can detect.
  *
- * Split hands are independent under the fixed draw distribution and their
- * utilities are additive. The state therefore traverses one representative
- * hand and scales its terminal utility by split_hand_count instead of retaining
- * sibling hands. dealer_up_card is kept separately because it is the dealer
- * information visible to the player.
+ * player_hand is a compatibility alias for player_hands[0]. player_hand_count
+ * gives the number of live entries and active_player_hand identifies the hand
+ * currently being played. Retaining every physical hand makes the shared
+ * four-hand resplit limit exact, including the intermediate three-hand state.
+ * dealer_up_card is kept separately because it is the dealer information
+ * visible to the player.
  */
 typedef struct {
     BlackjackPhase phase;
-    BlackjackHand player_hand;
-    size_t split_hand_count;
+    union {
+        BlackjackHand player_hand;
+        BlackjackHand player_hands[CFR_BLACKJACK_MAX_PLAYER_HANDS];
+    };
+    size_t player_hand_count;
+    size_t active_player_hand;
     BlackjackHand dealer_hand;
     BlackjackCard dealer_up_card;
     BlackjackUndoEntry undo_history[CFR_BLACKJACK_UNDO_HISTORY_CAPACITY];
@@ -156,7 +164,7 @@ Status cfr_blackjack_state_init(BlackjackState *state);
 /*
  * Returns the const, static-lifetime blackjack descriptor.
  *
- * The descriptor supplies strategy_schema_id "cfr.blackjack/v4", so trainers
+ * The descriptor supplies strategy_schema_id "cfr.blackjack/v5", so trainers
  * bound to it work with cfr_checkpoint_write, cfr_checkpoint_read, and
  * cfr_strategy_write_text. The identifier must change whenever the rules, the
  * information-set keys, or the meaning of the action indices become

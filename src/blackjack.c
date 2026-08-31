@@ -88,7 +88,7 @@ static const Game BLACKJACK_GAME = {
     .context = NULL,
     .strategic_player_count = 1,
     .max_legal_actions = CFR_BLACKJACK_MAX_POSSIBLE_ACTIONS,
-    .strategy_schema_id = "cfr.blackjack/v4",
+    .strategy_schema_id = "cfr.blackjack/v5",
     .trusted_operations = &BLACKJACK_TRUSTED_GAME_OPERATIONS};
 
 static BlackjackState *as_blackjack(GameState *state) {
@@ -286,8 +286,11 @@ static void initialize_unchecked(BlackjackState *state) {
     size_t index;
 
     state->phase = CFR_BLACKJACK_PHASE_DEAL_PLAYER_FIRST;
-    state->player_hand = (BlackjackHand){.stake_multiplier = 1};
-    state->split_hand_count = 1;
+    for (index = 0; index < CFR_BLACKJACK_MAX_PLAYER_HANDS; index += 1)
+        state->player_hands[index] = (BlackjackHand){0};
+    state->player_hands[0].stake_multiplier = 1;
+    state->player_hand_count = 1;
+    state->active_player_hand = 0;
     state->dealer_hand = (BlackjackHand){0};
     state->dealer_up_card = CFR_BLACKJACK_CARD_NOT_DEALT;
     state->undo_count = 0;
@@ -317,7 +320,9 @@ static Status deal_card(BlackjackState *state, Action action) {
         return status;
 
     if (phase_deals_to_player(state->phase)) {
-        hand = &state->player_hand;
+        if (state->active_player_hand >= state->player_hand_count)
+            return CFR_STATUS_INVALID_ARGUMENT;
+        hand = &state->player_hands[state->active_player_hand];
     } else {
         hand = &state->dealer_hand;
     }
@@ -331,8 +336,27 @@ static Status deal_card(BlackjackState *state, Action action) {
     return CFR_STATUS_SUCCESS;
 }
 
-static void finish_player_hand(BlackjackState *state) {
-    if (state->player_hand.total > 21) {
+static bool all_player_hands_bust(const BlackjackState *state) {
+    size_t index;
+
+    for (index = 0; index < state->player_hand_count; index += 1) {
+        if (state->player_hands[index].total <= 21)
+            return false;
+    }
+    return true;
+}
+
+static void finish_active_hand(BlackjackState *state) {
+    if (state->active_player_hand + 1 < state->player_hand_count) {
+        state->active_player_hand += 1;
+        if (state->player_hands[state->active_player_hand].card_count == 1)
+            state->phase = CFR_BLACKJACK_PHASE_DEAL_SPLIT_HAND;
+        else
+            state->phase = CFR_BLACKJACK_PHASE_PLAYER_TURN;
+        return;
+    }
+
+    if (all_player_hands_bust(state)) {
         state->phase = CFR_BLACKJACK_PHASE_TERMINAL;
     } else if (state->dealer_hand.total < 17) {
         state->phase = CFR_BLACKJACK_PHASE_DEAL_DEALER_HIT;
@@ -342,29 +366,37 @@ static void finish_player_hand(BlackjackState *state) {
 }
 
 static bool active_hand_can_double(const BlackjackState *state) {
-    const BlackjackHand *hand = &state->player_hand;
+    const BlackjackHand *hand =
+        &state->player_hands[state->active_player_hand];
 
     return hand->card_count == 2 && hand->stake_multiplier == 1;
 }
 
 static bool active_hand_can_split(const BlackjackState *state) {
-    const BlackjackHand *hand = &state->player_hand;
+    const BlackjackHand *hand =
+        &state->player_hands[state->active_player_hand];
 
-    return state->split_hand_count < CFR_BLACKJACK_MAX_SPLIT_HANDS &&
+    return state->player_hand_count < CFR_BLACKJACK_MAX_PLAYER_HANDS &&
            hand->stake_multiplier == 1 && hand_is_pair(hand) &&
            !(hand->from_split && hand->is_soft);
 }
 
 static void split_active_hand(BlackjackState *state) {
-    const BlackjackCard pair_card = state->player_hand.is_soft
+    const size_t active = state->active_player_hand;
+    const BlackjackCard pair_card = state->player_hands[active].is_soft
                                         ? CFR_BLACKJACK_CARD_ACE
                                         : (BlackjackCard)(
-                                              state->player_hand.total / 2);
+                                              state->player_hands[active].total /
+                                              2);
     BlackjackHand split_hand = {.stake_multiplier = 1, .from_split = true};
+    size_t index;
 
     hand_add_card(&split_hand, pair_card);
-    state->player_hand = split_hand;
-    state->split_hand_count *= 2;
+    for (index = state->player_hand_count; index > active + 1; index -= 1)
+        state->player_hands[index] = state->player_hands[index - 1];
+    state->player_hands[active] = split_hand;
+    state->player_hands[active + 1] = split_hand;
+    state->player_hand_count += 1;
     state->phase = CFR_BLACKJACK_PHASE_DEAL_SPLIT_HAND;
 }
 
@@ -400,7 +432,7 @@ static Status advance_state(BlackjackState *state, Action action) {
         status = deal_card(state, action);
         if (status != CFR_STATUS_SUCCESS)
             return status;
-        if (hand_is_blackjack(&state->player_hand) ||
+        if (hand_is_blackjack(&state->player_hands[0]) ||
             hand_is_blackjack(&state->dealer_hand)) {
             state->phase = CFR_BLACKJACK_PHASE_TERMINAL;
         } else {
@@ -409,11 +441,11 @@ static Status advance_state(BlackjackState *state, Action action) {
         return CFR_STATUS_SUCCESS;
 
     case CFR_BLACKJACK_PHASE_PLAYER_TURN:
-        active_hand = &state->player_hand;
+        active_hand = &state->player_hands[state->active_player_hand];
         if (action == CFR_BLACKJACK_ACTION_HIT) {
             state->phase = CFR_BLACKJACK_PHASE_DEAL_PLAYER_HIT;
         } else if (action == CFR_BLACKJACK_ACTION_STAND) {
-            finish_player_hand(state);
+            finish_active_hand(state);
         } else if (action == CFR_BLACKJACK_ACTION_DOUBLE_DOWN) {
             if (!active_hand_can_double(state))
                 return CFR_STATUS_ILLEGAL_ACTION;
@@ -432,9 +464,9 @@ static Status advance_state(BlackjackState *state, Action action) {
         status = deal_card(state, action);
         if (status != CFR_STATUS_SUCCESS)
             return status;
-        active_hand = &state->player_hand;
+        active_hand = &state->player_hands[state->active_player_hand];
         if (active_hand->total >= 21)
-            finish_player_hand(state);
+            finish_active_hand(state);
         else
             state->phase = CFR_BLACKJACK_PHASE_PLAYER_TURN;
         return CFR_STATUS_SUCCESS;
@@ -443,18 +475,18 @@ static Status advance_state(BlackjackState *state, Action action) {
         status = deal_card(state, action);
         if (status != CFR_STATUS_SUCCESS)
             return status;
-        finish_player_hand(state);
+        finish_active_hand(state);
         return CFR_STATUS_SUCCESS;
 
     case CFR_BLACKJACK_PHASE_DEAL_SPLIT_HAND:
-        active_hand = &state->player_hand;
+        active_hand = &state->player_hands[state->active_player_hand];
         const bool split_aces = active_hand->is_soft &&
                                 active_hand->total == 11;
         status = deal_card(state, action);
         if (status != CFR_STATUS_SUCCESS)
             return status;
         if (split_aces || active_hand->total == 21) {
-            finish_player_hand(state);
+            finish_active_hand(state);
         } else {
             state->phase = CFR_BLACKJACK_PHASE_PLAYER_TURN;
         }
@@ -483,10 +515,11 @@ static bool undo_entry_is_empty(const BlackjackUndoEntry *entry) {
 
     return entry->previous_phase == CFR_BLACKJACK_PHASE_DEAL_PLAYER_FIRST &&
            entry->applied_action == CFR_BLACKJACK_ACTION_NONE &&
-           hands_equal(&entry->previous_player_hand, &empty_hand) &&
+           entry->previous_active_hand == 0 &&
+           entry->previous_hand_count == 0 &&
+           hands_equal(&entry->previous_active_hand_state, &empty_hand) &&
            hands_equal(&entry->previous_dealer_hand, &empty_hand) &&
-           entry->previous_dealer_up_card == CFR_BLACKJACK_CARD_NOT_DEALT &&
-           entry->previous_split_hand_count == 0;
+           entry->previous_dealer_up_card == CFR_BLACKJACK_CARD_NOT_DEALT;
 }
 
 static bool hand_has_valid_shape(const BlackjackHand *hand) {
@@ -512,20 +545,37 @@ static bool hand_has_valid_shape(const BlackjackHand *hand) {
     return true;
 }
 
+static bool hand_is_unused(const BlackjackHand *hand) {
+    const BlackjackHand empty_hand = {0};
+
+    return hands_equal(hand, &empty_hand);
+}
+
 static bool state_has_valid_shape(const BlackjackState *state) {
+    size_t index;
+
     if (state == NULL || !phase_is_known(state->phase) ||
-        !hand_has_valid_shape(&state->player_hand) ||
         !hand_has_valid_shape(&state->dealer_hand) ||
-        (state->player_hand.stake_multiplier != 1 &&
-         state->player_hand.stake_multiplier != 2) ||
         state->dealer_hand.stake_multiplier != 0 ||
-        state->dealer_hand.from_split || state->split_hand_count == 0 ||
-        state->split_hand_count > CFR_BLACKJACK_MAX_SPLIT_HANDS ||
-        (state->split_hand_count & (state->split_hand_count - 1)) != 0 ||
-        (state->split_hand_count == 1 && state->player_hand.from_split) ||
-        (state->split_hand_count > 1 && !state->player_hand.from_split) ||
+        state->dealer_hand.from_split || state->player_hand_count == 0 ||
+        state->player_hand_count > CFR_BLACKJACK_MAX_PLAYER_HANDS ||
+        state->active_player_hand >= state->player_hand_count ||
         state->undo_count > CFR_BLACKJACK_UNDO_HISTORY_CAPACITY) {
         return false;
+    }
+
+    for (index = 0; index < state->player_hand_count; index += 1) {
+        const BlackjackHand *hand = &state->player_hands[index];
+
+        if (!hand_has_valid_shape(hand) ||
+            (hand->stake_multiplier != 1 && hand->stake_multiplier != 2)) {
+            return false;
+        }
+    }
+    for (index = state->player_hand_count;
+         index < CFR_BLACKJACK_MAX_PLAYER_HANDS; index += 1) {
+        if (!hand_is_unused(&state->player_hands[index]))
+            return false;
     }
 
     if ((state->dealer_hand.card_count == 0 &&
@@ -539,46 +589,52 @@ static bool state_has_valid_shape(const BlackjackState *state) {
 
     switch (state->phase) {
     case CFR_BLACKJACK_PHASE_DEAL_PLAYER_FIRST:
-        return state->split_hand_count == 1 &&
-               state->player_hand.card_count == 0 &&
-               state->player_hand.stake_multiplier == 1 &&
-               !state->player_hand.from_split &&
+        return state->player_hand_count == 1 &&
+               state->active_player_hand == 0 &&
+               state->player_hands[0].card_count == 0 &&
+               state->player_hands[0].stake_multiplier == 1 &&
+               !state->player_hands[0].from_split &&
                state->dealer_hand.card_count == 0 && state->undo_count == 0;
     case CFR_BLACKJACK_PHASE_DEAL_DEALER_UP_CARD:
-        return state->split_hand_count == 1 &&
-               state->player_hand.card_count == 1 &&
+        return state->player_hand_count == 1 &&
+               state->active_player_hand == 0 &&
+               state->player_hands[0].card_count == 1 &&
                state->dealer_hand.card_count == 0;
     case CFR_BLACKJACK_PHASE_DEAL_PLAYER_SECOND:
-        return state->split_hand_count == 1 &&
-               state->player_hand.card_count == 1 &&
+        return state->player_hand_count == 1 &&
+               state->active_player_hand == 0 &&
+               state->player_hands[0].card_count == 1 &&
                state->dealer_hand.card_count == 1;
     case CFR_BLACKJACK_PHASE_DEAL_DEALER_HOLE_CARD:
-        return state->split_hand_count == 1 &&
-               state->player_hand.card_count == 2 &&
+        return state->player_hand_count == 1 &&
+               state->active_player_hand == 0 &&
+               state->player_hands[0].card_count == 2 &&
                state->dealer_hand.card_count == 1;
     case CFR_BLACKJACK_PHASE_PLAYER_TURN:
     case CFR_BLACKJACK_PHASE_DEAL_PLAYER_HIT:
-        return state->player_hand.card_count >= 2 &&
+        return state->player_hands[state->active_player_hand].card_count >= 2 &&
                state->dealer_hand.card_count >= 2 &&
-               state->player_hand.total <= 21 &&
-               !hand_is_blackjack(&state->player_hand) &&
+               state->player_hands[state->active_player_hand].total <= 21 &&
+               !hand_is_blackjack(
+                   &state->player_hands[state->active_player_hand]) &&
                !hand_is_blackjack(&state->dealer_hand);
     case CFR_BLACKJACK_PHASE_DEAL_PLAYER_DOUBLE:
-        return state->player_hand.card_count == 2 &&
-               state->player_hand.stake_multiplier == 2 &&
-               state->player_hand.total <= 21 &&
+        return state->player_hands[state->active_player_hand].card_count == 2 &&
+               state->player_hands[state->active_player_hand]
+                       .stake_multiplier == 2 &&
+               state->player_hands[state->active_player_hand].total <= 21 &&
                state->dealer_hand.card_count >= 2;
     case CFR_BLACKJACK_PHASE_DEAL_SPLIT_HAND:
-        return state->split_hand_count >= 2 &&
-               state->player_hand.card_count == 1 &&
-               state->player_hand.from_split &&
+        return state->player_hand_count >= 2 &&
+               state->player_hands[state->active_player_hand].card_count == 1 &&
+               state->player_hands[state->active_player_hand].from_split &&
                state->dealer_hand.card_count >= 2;
     case CFR_BLACKJACK_PHASE_DEAL_DEALER_HIT:
         return state->dealer_hand.card_count >= 2 &&
-               state->player_hand.total <= 21 &&
+               !all_player_hands_bust(state) &&
                state->dealer_hand.total < 17;
     case CFR_BLACKJACK_PHASE_TERMINAL:
-        return state->player_hand.card_count >= 2 &&
+        return state->player_hands[0].card_count >= 2 &&
                state->dealer_hand.card_count >= 2;
     default:
         return false;
@@ -607,12 +663,13 @@ static Status blackjack_validate_state(const void *context,
 
         if (entry->previous_phase != expected.phase ||
             entry->applied_action == CFR_BLACKJACK_ACTION_NONE ||
-            !hands_equal(&entry->previous_player_hand,
-                         &expected.player_hand) ||
+            entry->previous_active_hand != expected.active_player_hand ||
+            entry->previous_hand_count != expected.player_hand_count ||
+            !hands_equal(&entry->previous_active_hand_state,
+                         &expected.player_hands[expected.active_player_hand]) ||
             !hands_equal(&entry->previous_dealer_hand,
                          &expected.dealer_hand) ||
             entry->previous_dealer_up_card != expected.dealer_up_card ||
-            entry->previous_split_hand_count != expected.split_hand_count ||
             advance_state(&expected, entry->applied_action) !=
                 CFR_STATUS_SUCCESS) {
             return CFR_STATUS_INVALID_ARGUMENT;
@@ -620,11 +677,17 @@ static Status blackjack_validate_state(const void *context,
     }
 
     if (state->phase != expected.phase ||
-        !hands_equal(&state->player_hand, &expected.player_hand) ||
+        state->player_hand_count != expected.player_hand_count ||
+        state->active_player_hand != expected.active_player_hand ||
         !hands_equal(&state->dealer_hand, &expected.dealer_hand) ||
-        state->dealer_up_card != expected.dealer_up_card ||
-        state->split_hand_count != expected.split_hand_count) {
+        state->dealer_up_card != expected.dealer_up_card) {
         return CFR_STATUS_INVALID_ARGUMENT;
+    }
+    for (index = 0; index < CFR_BLACKJACK_MAX_PLAYER_HANDS; index += 1) {
+        if (!hands_equal(&state->player_hands[index],
+                         &expected.player_hands[index])) {
+            return CFR_STATUS_INVALID_ARGUMENT;
+        }
     }
 
     return CFR_STATUS_SUCCESS;
@@ -662,23 +725,28 @@ static Status blackjack_trusted_is_terminal(const void *context,
 }
 
 static Utility player_utility(const BlackjackState *state) {
-    const BlackjackHand *hand = &state->player_hand;
     const bool dealer_blackjack = hand_is_blackjack(&state->dealer_hand);
     const int dealer_total = state->dealer_hand.total;
-    const Utility stake = (Utility)(hand->stake_multiplier *
-                                    state->split_hand_count);
+    Utility utility = 0.0;
+    size_t index;
 
-    if (hand_is_blackjack(hand) && dealer_blackjack)
-        return 0.0;
-    if (hand_is_blackjack(hand))
-        return 1.5 * stake;
-    if (dealer_blackjack || hand->total > 21)
-        return -stake;
-    if (dealer_total > 21 || hand->total > dealer_total)
-        return stake;
-    if (hand->total < dealer_total)
-        return -stake;
-    return 0.0;
+    for (index = 0; index < state->player_hand_count; index += 1) {
+        const BlackjackHand *hand = &state->player_hands[index];
+        const Utility stake = (Utility)hand->stake_multiplier;
+
+        if (hand_is_blackjack(hand) && dealer_blackjack)
+            continue;
+        if (hand_is_blackjack(hand)) {
+            utility += 1.5 * stake;
+        } else if (dealer_blackjack || hand->total > 21) {
+            utility -= stake;
+        } else if (dealer_total > 21 || hand->total > dealer_total) {
+            utility += stake;
+        } else if (hand->total < dealer_total) {
+            utility -= stake;
+        }
+    }
+    return utility;
 }
 
 static Status blackjack_terminal_utility(const void *context,
@@ -829,10 +897,13 @@ static Status blackjack_trusted_apply_action(const void *context,
     entry = (BlackjackUndoEntry){
         .previous_phase = blackjack_state->phase,
         .applied_action = (BlackjackAction)action,
-        .previous_player_hand = blackjack_state->player_hand,
+        .previous_active_hand = blackjack_state->active_player_hand,
+        .previous_hand_count = blackjack_state->player_hand_count,
+        .previous_active_hand_state =
+            blackjack_state
+                ->player_hands[blackjack_state->active_player_hand],
         .previous_dealer_hand = blackjack_state->dealer_hand,
-        .previous_dealer_up_card = blackjack_state->dealer_up_card,
-        .previous_split_hand_count = blackjack_state->split_hand_count};
+        .previous_dealer_up_card = blackjack_state->dealer_up_card};
     status = advance_state(blackjack_state, action);
     if (status != CFR_STATUS_SUCCESS)
         return status;
@@ -855,6 +926,7 @@ static Status blackjack_trusted_undo_action(const void *context,
                                             GameState *state) {
     BlackjackState *blackjack_state = as_blackjack(state);
     BlackjackUndoEntry entry;
+    size_t index;
 
     (void)context;
     if (blackjack_state->undo_count == 0)
@@ -863,16 +935,34 @@ static Status blackjack_trusted_undo_action(const void *context,
     entry = blackjack_state->undo_history[blackjack_state->undo_count - 1];
     if (entry.applied_action == CFR_BLACKJACK_ACTION_NONE ||
         !phase_is_known(entry.previous_phase) ||
-        entry.previous_split_hand_count == 0 ||
-        entry.previous_split_hand_count > CFR_BLACKJACK_MAX_SPLIT_HANDS) {
+        entry.previous_hand_count == 0 ||
+        entry.previous_hand_count > CFR_BLACKJACK_MAX_PLAYER_HANDS ||
+        entry.previous_active_hand >= entry.previous_hand_count) {
         return CFR_STATUS_INVALID_ARGUMENT;
     }
 
+    if (entry.previous_phase == CFR_BLACKJACK_PHASE_PLAYER_TURN &&
+        entry.applied_action == CFR_BLACKJACK_ACTION_SPLIT) {
+        if (blackjack_state->player_hand_count !=
+            entry.previous_hand_count + 1) {
+            return CFR_STATUS_INVALID_ARGUMENT;
+        }
+        for (index = entry.previous_active_hand + 1;
+             index < entry.previous_hand_count; index += 1) {
+            blackjack_state->player_hands[index] =
+                blackjack_state->player_hands[index + 1];
+        }
+        blackjack_state->player_hands[entry.previous_hand_count] =
+            (BlackjackHand){0};
+    }
+
     blackjack_state->phase = entry.previous_phase;
-    blackjack_state->player_hand = entry.previous_player_hand;
+    blackjack_state->player_hands[entry.previous_active_hand] =
+        entry.previous_active_hand_state;
+    blackjack_state->player_hand_count = entry.previous_hand_count;
+    blackjack_state->active_player_hand = entry.previous_active_hand;
     blackjack_state->dealer_hand = entry.previous_dealer_hand;
     blackjack_state->dealer_up_card = entry.previous_dealer_up_card;
-    blackjack_state->split_hand_count = entry.previous_split_hand_count;
     blackjack_state->undo_count -= 1;
     blackjack_state->undo_history[blackjack_state->undo_count] =
         (BlackjackUndoEntry){
@@ -978,12 +1068,14 @@ static Status blackjack_trusted_information_set_key(const void *context,
     (void)context;
     if (blackjack_state->phase != CFR_BLACKJACK_PHASE_PLAYER_TURN ||
         blackjack_state->dealer_hand.card_count < 1 ||
-        blackjack_state->player_hand.card_count < 2 ||
+        blackjack_state->player_hands[blackjack_state->active_player_hand]
+                .card_count < 2 ||
         !card_is_real(blackjack_state->dealer_up_card)) {
         return CFR_STATUS_INVALID_ARGUMENT;
     }
 
-    active_hand = &blackjack_state->player_hand;
+    active_hand =
+        &blackjack_state->player_hands[blackjack_state->active_player_hand];
     player_total = active_hand->total;
     player_is_soft = active_hand->is_soft;
     if (player_total < 0 || player_total > 21)
@@ -999,9 +1091,9 @@ static Status blackjack_trusted_information_set_key(const void *context,
     /*
      * A decision depends on the dealer's visible value, the active hand's
      * total and softness, and whether double or split is currently available.
-     * The split multiplier, split history, dealer hole card, and particular
-     * ranks that produced a nonsplittable hard total do not participate in the
-     * key. A pair reached after a split therefore reuses the original pair's
+     * The sibling hands, split history, dealer hole card, and particular ranks
+     * that produced a nonsplittable hard total do not participate in the key.
+     * A pair reached after a split therefore reuses the original pair's
      * information set while another split remains legal.
      *
      * There are ten dealer values. Each owns two blocks (hard and soft), with

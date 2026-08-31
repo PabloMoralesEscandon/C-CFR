@@ -12,7 +12,7 @@ fixed rank distribution assumed by basic strategy: ace through nine each have
 probability 1/13 and ten-valued cards have probability 4/13 on every draw. The
 dealer stands on soft 17, natural blackjack pays 3:2, and the player can hit,
 stand, double down, or split. A player can double any two-card hand, including
-after a split. Equal rank classes can be split to four equivalent hands; split
+after a split. Equal rank classes can be split to at most four hands; split
 aces receive one card, and a split 21 pays even money. The adapter does not
 include insurance or surrender. `CFR_PLAYER_0` is the player and `CFR_PLAYER_1`
 receives the dealer's opposite utility; rule-driven dealer draws are represented
@@ -186,7 +186,7 @@ action indices becomes incompatible. Serialization stores generic keys and
 indexed arrays; it does not contain Kuhn-specific actions or labels.
 
 Both bundled adapters are serializable: Kuhn Poker declares
-`cfr.kuhn-poker/v1` and blackjack declares `cfr.blackjack/v4`.
+`cfr.kuhn-poker/v1` and blackjack declares `cfr.blackjack/v5`.
 
 ### Exact evaluation of a saved strategy
 
@@ -397,7 +397,7 @@ training includes every state in the player's information set.
 The strategy can choose hit, stand, and double down on an eligible two-card
 hand. When the two player ranks are equal, it can also split. Ten-valued cards
 share one rank class in this adapter. Non-ace pairs can be resplit to the
-four-equivalent-hand limit; split aces receive exactly one additional card.
+four-hand limit; split aces receive exactly one additional card.
 
 ```sh
 build/release/cfr-blackjack --deal 5,10,6 --iterations 10 \
@@ -440,19 +440,18 @@ Every chance node has the same ten rank-class outcomes. No deck-composition
 state is retained. Strategy keys merge hands with the same dealer up card, hard
 or soft total, and available action class.
 
-Split utility is additive under independent draws. Instead of carrying several
-sibling hands and enumerating their cross-product, the adapter traverses one
-representative split hand and scales its payoff by two or four. A resplit pair
-therefore reuses the same information key as the original pair while another
-split is legal. This keeps both bounded-deal and full-tree traversals finite and
-substantially smaller than the former without-replacement, multi-hand model.
+Split hands are retained and played individually. A resplit increases the hand
+count by one, so the adapter represents the exact `1 -> 2 -> 3 -> 4` sequence
+and shares the four-hand cap across siblings. A resplit pair still reuses the
+same information key as the original pair while another split is legal.
 
 The generic `--evaluate` path materializes the reachable tree in memory and is
 therefore more demanding than training. The executable still requires an
 explicit choice between `--deal` and `--full-tree` so the intended scope is
 unambiguous.
 
-For compact analysis of a bounded deal, build the blackjack-specific helper:
+For compact analysis of a complete tree or bounded deal, build the
+blackjack-specific helper:
 
 ```sh
 make blackjack-compact-eval
@@ -461,7 +460,7 @@ build/release/blackjack-compact-eval CHECKPOINT
 
 The helper merges future-equivalent hand states into a DAG and supports hit,
 stand, double, and split decisions. It reports the learned policy value, the
-value of the matching multi-deck S17, double-after-split, no-surrender basic
+value of the matching infinite-deck S17, double-after-split, no-surrender basic
 strategy, and a deterministic policy-improvement candidate. Because a resplit
 can encounter the same abstract information set more than once along a
 trajectory, the candidate improvement is a convergence proxy rather than a
@@ -476,9 +475,16 @@ build/release/blackjack-compact-eval INPUT.cfr 150 OUTPUT.cfr 1 6 1
 ```
 
 Omit the three ranks to use the root before the initial draw. `OUTPUT.cfr` must
-not already exist. The compact update preserves raw visited-node statistics and
-can differ from a raw checkpoint at the last few floating-point bits because
-equivalent contributions are summed in a different order.
+not already exist. Raw visited-node statistics saturate at `SIZE_MAX`; the exact
+split tree exceeds that count in one full traversal. Compact updates can differ
+from a raw checkpoint at the last few floating-point bits because equivalent
+contributions are summed in a different order.
+
+In an August 2026 release-build measurement, the full compact graph contained
+16,220,814 states and 114,470,680 edges. One CFR+ iteration completed in 28.2
+seconds with an 8.4 GB peak resident set; ten iterations completed in 45.5
+seconds with a 9.3 GB peak. These are example measurements, not performance
+guarantees.
 
 Each training report contains:
 

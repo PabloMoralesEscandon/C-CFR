@@ -37,11 +37,11 @@ typedef struct {
 
 typedef struct {
     uint8_t phase;
-    CompactHand player_hand;
-    uint8_t split_hand_count;
+    CompactHand player_hands[CFR_BLACKJACK_MAX_PLAYER_HANDS];
+    uint8_t player_hand_count;
+    uint8_t active_player_hand;
     CompactHand dealer_hand;
     uint8_t dealer_up_card;
-    uint8_t depth;
 } CompactState;
 
 typedef struct {
@@ -58,7 +58,7 @@ typedef struct {
     size_t edge_offset;
     size_t edge_count;
     size_t next_in_group;
-    size_t next_at_depth;
+    size_t depth;
     double counterfactual_reach;
     double own_reach;
     size_t raw_occurrences;
@@ -81,9 +81,10 @@ typedef struct {
     size_t table_used;
     size_t table_capacity;
     size_t group_heads[BLACKJACK_INFOSET_COUNT];
-    size_t depth_heads[CFR_BLACKJACK_UNDO_HISTORY_CAPACITY + 1];
+    size_t *topological_order;
     size_t maximum_depth;
     size_t raw_visit_count;
+    bool raw_visit_count_saturated;
     const Game *game;
     const GameOperations *operations;
 } CompactGraph;
@@ -111,6 +112,7 @@ enum {
 static void graph_destroy(CompactGraph *graph) {
     if (graph == NULL)
         return;
+    free(graph->topological_order);
     free(graph->table);
     free(graph->edges);
     free(graph->nodes);
@@ -152,10 +154,6 @@ static Status graph_init(CompactGraph *graph, const Game *game) {
         temporary.table[index] = EMPTY_INDEX;
     for (size_t index = 0; index < BLACKJACK_INFOSET_COUNT; index++)
         temporary.group_heads[index] = EMPTY_INDEX;
-    for (size_t index = 0;
-         index <= CFR_BLACKJACK_UNDO_HISTORY_CAPACITY; index++)
-        temporary.depth_heads[index] = EMPTY_INDEX;
-
     *graph = temporary;
     return CFR_STATUS_SUCCESS;
 }
@@ -178,29 +176,148 @@ static Status compact_hand_from_blackjack(const BlackjackHand *hand,
     return CFR_STATUS_SUCCESS;
 }
 
+static void compact_normalize_finished_hand(CompactHand *hand) {
+    const bool natural = hand->card_count == 2 && hand->total == 21 &&
+                         hand->from_split == 0;
+
+    hand->card_count = natural ? 2 : 0;
+    if (hand->total > 21)
+        hand->total = 22;
+    else if (hand->total < 17)
+        hand->total = 16;
+    hand->is_soft = 0;
+    hand->can_split = 0;
+    hand->from_split = 0;
+}
+
+static int compact_hand_compare(const CompactHand *left,
+                                const CompactHand *right) {
+    const uint8_t left_fields[] = {
+        left->total, left->card_count, left->is_soft, left->can_split,
+        left->stake_multiplier, left->from_split};
+    const uint8_t right_fields[] = {
+        right->total, right->card_count, right->is_soft, right->can_split,
+        right->stake_multiplier, right->from_split};
+
+    for (size_t index = 0; index < sizeof(left_fields); index++) {
+        if (left_fields[index] < right_fields[index])
+            return -1;
+        if (left_fields[index] > right_fields[index])
+            return 1;
+    }
+    return 0;
+}
+
+static void compact_sort_hands(CompactHand *hands, size_t count) {
+    for (size_t index = 1; index < count; index++) {
+        CompactHand hand = hands[index];
+        size_t position = index;
+        while (position > 0 &&
+               compact_hand_compare(&hand, &hands[position - 1]) < 0) {
+            hands[position] = hands[position - 1];
+            position--;
+        }
+        hands[position] = hand;
+    }
+}
+
+static bool phase_has_live_player_hands(BlackjackPhase phase) {
+    switch (phase) {
+    case CFR_BLACKJACK_PHASE_DEAL_PLAYER_FIRST:
+    case CFR_BLACKJACK_PHASE_DEAL_DEALER_UP_CARD:
+    case CFR_BLACKJACK_PHASE_DEAL_PLAYER_SECOND:
+    case CFR_BLACKJACK_PHASE_DEAL_DEALER_HOLE_CARD:
+    case CFR_BLACKJACK_PHASE_PLAYER_TURN:
+    case CFR_BLACKJACK_PHASE_DEAL_PLAYER_HIT:
+    case CFR_BLACKJACK_PHASE_DEAL_PLAYER_DOUBLE:
+    case CFR_BLACKJACK_PHASE_DEAL_SPLIT_HAND:
+        return true;
+    case CFR_BLACKJACK_PHASE_DEAL_DEALER_HIT:
+    case CFR_BLACKJACK_PHASE_TERMINAL:
+    default:
+        return false;
+    }
+}
+
+static bool compact_active_hand_can_split(const BlackjackState *state) {
+    const BlackjackHand *hand =
+        &state->player_hands[state->active_player_hand];
+
+    return state->phase == CFR_BLACKJACK_PHASE_PLAYER_TURN &&
+           state->player_hand_count < CFR_BLACKJACK_MAX_PLAYER_HANDS &&
+           hand->card_count == 2 && hand->stake_multiplier == 1 &&
+           hand->can_split && !(hand->from_split && hand->is_soft);
+}
+
+static void compact_normalize_live_hand(CompactHand *hand,
+                                        bool retain_pair_rank) {
+    if (hand->card_count > 2) {
+        hand->card_count = 3;
+        hand->can_split = 0;
+        hand->from_split = 0;
+    } else if (hand->card_count == 2 && !retain_pair_rank) {
+        hand->can_split = 0;
+        hand->from_split = 0;
+    }
+}
+
 static Status compact_state_from_blackjack(const BlackjackState *state,
                                            CompactState *compact) {
     if (state == NULL || compact == NULL || state->phase < 0 ||
         state->phase > CFR_BLACKJACK_PHASE_DEAL_SPLIT_HAND ||
-        state->split_hand_count > UINT8_MAX ||
+        state->player_hand_count > CFR_BLACKJACK_MAX_PLAYER_HANDS ||
+        state->player_hand_count > UINT8_MAX ||
+        state->active_player_hand > UINT8_MAX ||
         state->dealer_up_card < 0 || state->dealer_up_card > UINT8_MAX ||
-        state->undo_count > CFR_BLACKJACK_UNDO_HISTORY_CAPACITY ||
-        state->undo_count > UINT8_MAX)
+        state->undo_count > CFR_BLACKJACK_UNDO_HISTORY_CAPACITY)
         return CFR_STATUS_INVALID_ARGUMENT;
 
     CompactState result = {0};
     result.phase = (uint8_t)state->phase;
-    result.split_hand_count = (uint8_t)state->split_hand_count;
-    Status status = compact_hand_from_blackjack(&state->player_hand,
-                                                &result.player_hand);
-    if (status != CFR_STATUS_SUCCESS)
-        return status;
-    status =
+    result.player_hand_count = (uint8_t)state->player_hand_count;
+    result.active_player_hand = (uint8_t)state->active_player_hand;
+    for (size_t index = 0; index < CFR_BLACKJACK_MAX_PLAYER_HANDS; index++) {
+        Status status = compact_hand_from_blackjack(
+            &state->player_hands[index], &result.player_hands[index]);
+        if (status != CFR_STATUS_SUCCESS)
+            return status;
+        if (index >= state->player_hand_count)
+            continue;
+        const bool live = phase_has_live_player_hands(state->phase) &&
+                          index >= state->active_player_hand;
+        if (!live) {
+            compact_normalize_finished_hand(&result.player_hands[index]);
+        } else {
+            const bool retain_pair_rank =
+                index == state->active_player_hand &&
+                (compact_active_hand_can_split(state) ||
+                 (state->phase ==
+                      CFR_BLACKJACK_PHASE_DEAL_DEALER_HOLE_CARD &&
+                  state->player_hands[index].can_split));
+            compact_normalize_live_hand(&result.player_hands[index],
+                                        retain_pair_rank);
+        }
+    }
+    if (phase_has_live_player_hands(state->phase)) {
+        compact_sort_hands(result.player_hands,
+                           state->active_player_hand);
+    } else {
+        compact_sort_hands(result.player_hands, state->player_hand_count);
+        result.active_player_hand = 0;
+    }
+    Status status =
         compact_hand_from_blackjack(&state->dealer_hand, &result.dealer_hand);
     if (status != CFR_STATUS_SUCCESS)
         return status;
+    if (state->phase == CFR_BLACKJACK_PHASE_TERMINAL) {
+        compact_normalize_finished_hand(&result.dealer_hand);
+    } else {
+        compact_normalize_live_hand(&result.dealer_hand, false);
+        if (state->phase > CFR_BLACKJACK_PHASE_DEAL_DEALER_HOLE_CARD &&
+            result.dealer_hand.card_count == 2)
+            result.dealer_hand.card_count = 3;
+    }
     result.dealer_up_card = (uint8_t)state->dealer_up_card;
-    result.depth = (uint8_t)state->undo_count;
     *compact = result;
     return CFR_STATUS_SUCCESS;
 }
@@ -314,11 +431,7 @@ static Status graph_append_node(CompactGraph *graph,
         .state = *state,
         .information_key = -1,
         .next_in_group = EMPTY_INDEX,
-        .next_at_depth = graph->depth_heads[state->depth],
     };
-    graph->depth_heads[state->depth] = index;
-    if (state->depth > graph->maximum_depth)
-        graph->maximum_depth = state->depth;
     graph->node_count++;
     graph->table[cell] = index;
     graph->table_used++;
@@ -493,47 +606,128 @@ static Status graph_build_node(CompactGraph *graph, BlackjackState *state,
     return CFR_STATUS_SUCCESS;
 }
 
+static Status graph_build_topological_order(CompactGraph *graph,
+                                            size_t root_index) {
+    if (graph == NULL || root_index >= graph->node_count ||
+        graph->topological_order != NULL || graph->node_count == 0 ||
+        graph->node_count > SIZE_MAX / sizeof(size_t))
+        return CFR_STATUS_INVALID_ARGUMENT;
+
+    size_t *indegrees = calloc(graph->node_count, sizeof(*indegrees));
+    size_t *queue = malloc(graph->node_count * sizeof(*queue));
+    size_t *order = malloc(graph->node_count * sizeof(*order));
+    if (indegrees == NULL || queue == NULL || order == NULL) {
+        free(order);
+        free(queue);
+        free(indegrees);
+        return CFR_STATUS_OUT_OF_MEMORY;
+    }
+
+    Status result = CFR_STATUS_SUCCESS;
+    for (size_t index = 0; index < graph->node_count; index++) {
+        const CompactNode *node = &graph->nodes[index];
+        for (size_t action = 0; action < node->edge_count; action++) {
+            const size_t child =
+                graph->edges[node->edge_offset + action].child;
+            if (child >= graph->node_count || indegrees[child] == SIZE_MAX) {
+                result = CFR_STATUS_INVALID_ARGUMENT;
+                goto cleanup;
+            }
+            indegrees[child]++;
+        }
+    }
+
+    size_t queue_head = 0;
+    size_t queue_tail = 0;
+    for (size_t index = 0; index < graph->node_count; index++) {
+        if (indegrees[index] == 0)
+            queue[queue_tail++] = index;
+    }
+    if (queue_tail != 1 || queue[0] != root_index) {
+        result = CFR_STATUS_INVALID_ARGUMENT;
+        goto cleanup;
+    }
+
+    size_t order_count = 0;
+    while (queue_head < queue_tail) {
+        const size_t index = queue[queue_head++];
+        CompactNode *node = &graph->nodes[index];
+        order[order_count++] = index;
+        if (node->depth > graph->maximum_depth)
+            graph->maximum_depth = node->depth;
+        for (size_t action = 0; action < node->edge_count; action++) {
+            const size_t child =
+                graph->edges[node->edge_offset + action].child;
+            CompactNode *child_node = &graph->nodes[child];
+            if (child_node->depth < node->depth + 1)
+                child_node->depth = node->depth + 1;
+            if (indegrees[child] == 0) {
+                result = CFR_STATUS_INVALID_ARGUMENT;
+                goto cleanup;
+            }
+            indegrees[child]--;
+            if (indegrees[child] == 0)
+                queue[queue_tail++] = child;
+        }
+    }
+    if (order_count != graph->node_count) {
+        result = CFR_STATUS_INVALID_ARGUMENT;
+        goto cleanup;
+    }
+    graph->topological_order = order;
+    order = NULL;
+
+cleanup:
+    free(order);
+    free(queue);
+    free(indegrees);
+    return result;
+}
+
 static Status graph_counterfactual_reach(CompactGraph *graph,
                                          size_t root_index) {
-    if (graph == NULL || root_index >= graph->node_count)
+    if (graph == NULL || root_index >= graph->node_count ||
+        graph->topological_order == NULL)
         return CFR_STATUS_INVALID_ARGUMENT;
 
     graph->nodes[root_index].counterfactual_reach = 1.0;
     graph->nodes[root_index].raw_occurrences = 1;
-    for (size_t depth = 0; depth <= graph->maximum_depth; depth++) {
-        size_t index = graph->depth_heads[depth];
-        while (index != EMPTY_INDEX) {
-            if (index >= graph->node_count)
+    for (size_t position = 0; position < graph->node_count; position++) {
+        const size_t index = graph->topological_order[position];
+        if (index >= graph->node_count)
+            return CFR_STATUS_INVALID_ARGUMENT;
+        CompactNode *node = &graph->nodes[index];
+        if (!isfinite(node->counterfactual_reach) ||
+            node->counterfactual_reach < 0.0)
+            return CFR_STATUS_NUMERIC_ERROR;
+        for (size_t action = 0; action < node->edge_count; action++) {
+            const CompactEdge *edge =
+                &graph->edges[node->edge_offset + action];
+            if (edge->child >= graph->node_count)
                 return CFR_STATUS_INVALID_ARGUMENT;
-            CompactNode *node = &graph->nodes[index];
-            if (!isfinite(node->counterfactual_reach) ||
-                node->counterfactual_reach < 0.0)
+            const double weight = node->kind == COMPACT_CHANCE
+                                      ? edge->probability
+                                      : 1.0;
+            const double addition = node->counterfactual_reach * weight;
+            const double candidate =
+                graph->nodes[edge->child].counterfactual_reach + addition;
+            if (!isfinite(addition) || !isfinite(candidate))
                 return CFR_STATUS_NUMERIC_ERROR;
-            for (size_t action = 0; action < node->edge_count; action++) {
-                const CompactEdge *edge =
-                    &graph->edges[node->edge_offset + action];
-                if (edge->child >= graph->node_count ||
-                    graph->nodes[edge->child].state.depth != depth + 1)
-                    return CFR_STATUS_INVALID_ARGUMENT;
-                const double weight = node->kind == COMPACT_CHANCE
-                                          ? edge->probability
-                                          : 1.0;
-                const double addition = node->counterfactual_reach * weight;
-                const double candidate =
-                    graph->nodes[edge->child].counterfactual_reach + addition;
-                if (!isfinite(addition) || !isfinite(candidate))
-                    return CFR_STATUS_NUMERIC_ERROR;
-                graph->nodes[edge->child].counterfactual_reach = candidate;
-                if (graph->nodes[edge->child].raw_occurrences >
-                    SIZE_MAX - node->raw_occurrences)
-                    return CFR_STATUS_NUMERIC_ERROR;
+            graph->nodes[edge->child].counterfactual_reach = candidate;
+            if (graph->nodes[edge->child].raw_occurrences >
+                SIZE_MAX - node->raw_occurrences) {
+                graph->nodes[edge->child].raw_occurrences = SIZE_MAX;
+                graph->raw_visit_count_saturated = true;
+            } else {
                 graph->nodes[edge->child].raw_occurrences +=
                     node->raw_occurrences;
             }
-            if (graph->raw_visit_count > SIZE_MAX - node->raw_occurrences)
-                return CFR_STATUS_NUMERIC_ERROR;
+        }
+        if (graph->raw_visit_count > SIZE_MAX - node->raw_occurrences) {
+            graph->raw_visit_count = SIZE_MAX;
+            graph->raw_visit_count_saturated = true;
+        } else {
             graph->raw_visit_count += node->raw_occurrences;
-            index = node->next_at_depth;
         }
     }
     return CFR_STATUS_SUCCESS;
@@ -657,7 +851,7 @@ static const char *decision_class_name(size_t decision_class) {
 }
 
 /*
- * Total-dependent multi-deck S17 strategy with DAS and no surrender.
+ * Total-dependent infinite-deck S17 strategy with DAS and no surrender.
  * Conditional doubles and splits use the chart's hit/stand fallbacks.
  */
 static size_t basic_hard_action(int total, size_t dealer,
@@ -690,16 +884,18 @@ static size_t basic_soft_action(int total, size_t dealer,
     if (total == 18) {
         if (double_available && dealer >= 3 && dealer <= 6)
             return COMPACT_ACTION_DOUBLE;
-        if (dealer == 2 || dealer == 7 || dealer == 8)
+        if (dealer >= 2 && dealer <= 8)
             return COMPACT_ACTION_STAND;
         return COMPACT_ACTION_HIT;
     }
     if (double_available) {
         if (total == 17 && dealer >= 3 && dealer <= 6)
             return COMPACT_ACTION_DOUBLE;
-        if (total >= 15 && total <= 16 && dealer >= 4 && dealer <= 6)
+        if (total == 16 && dealer >= 4 && dealer <= 6)
             return COMPACT_ACTION_DOUBLE;
-        if (total >= 13 && total <= 14 && dealer >= 5 && dealer <= 6)
+        if (total >= 14 && total <= 15 && dealer >= 5 && dealer <= 6)
+            return COMPACT_ACTION_DOUBLE;
+        if (total == 13 && dealer == 6)
             return COMPACT_ACTION_DOUBLE;
     }
     return COMPACT_ACTION_HIT;
@@ -999,35 +1195,34 @@ static Status prepare_iteration(CompactGraph *graph,
     }
     graph->nodes[root_index].own_reach = 1.0;
 
-    for (size_t depth = 0; depth <= graph->maximum_depth; depth++) {
-        size_t index = graph->depth_heads[depth];
-        while (index != EMPTY_INDEX) {
-            if (index >= graph->node_count)
-                return CFR_STATUS_INVALID_ARGUMENT;
-            CompactNode *node = &graph->nodes[index];
-            if (!isfinite(node->own_reach) || node->own_reach < 0.0)
-                return CFR_STATUS_NUMERIC_ERROR;
-            for (size_t action = 0; action < node->edge_count; action++) {
-                const CompactEdge *edge =
-                    &graph->edges[node->edge_offset + action];
-                Probability weight = 1.0;
-                if (node->kind == COMPACT_PLAYER) {
-                    const InfoSetKey key = node->information_key;
-                    if (key < 0 || key >= BLACKJACK_INFOSET_COUNT ||
-                        !policies[key].present ||
-                        action >= policies[key].action_count ||
-                        node->edge_count != policies[key].action_count)
-                        return CFR_STATUS_INVALID_ARGUMENT;
-                    weight = policies[key].current[action];
-                }
-                const double addition = node->own_reach * weight;
-                const double candidate =
-                    graph->nodes[edge->child].own_reach + addition;
-                if (!isfinite(addition) || !isfinite(candidate))
-                    return CFR_STATUS_NUMERIC_ERROR;
-                graph->nodes[edge->child].own_reach = candidate;
+    if (graph->topological_order == NULL)
+        return CFR_STATUS_INVALID_ARGUMENT;
+    for (size_t position = 0; position < graph->node_count; position++) {
+        const size_t index = graph->topological_order[position];
+        if (index >= graph->node_count)
+            return CFR_STATUS_INVALID_ARGUMENT;
+        CompactNode *node = &graph->nodes[index];
+        if (!isfinite(node->own_reach) || node->own_reach < 0.0)
+            return CFR_STATUS_NUMERIC_ERROR;
+        for (size_t action = 0; action < node->edge_count; action++) {
+            const CompactEdge *edge =
+                &graph->edges[node->edge_offset + action];
+            Probability weight = 1.0;
+            if (node->kind == COMPACT_PLAYER) {
+                const InfoSetKey key = node->information_key;
+                if (key < 0 || key >= BLACKJACK_INFOSET_COUNT ||
+                    !policies[key].present ||
+                    action >= policies[key].action_count ||
+                    node->edge_count != policies[key].action_count)
+                    return CFR_STATUS_INVALID_ARGUMENT;
+                weight = policies[key].current[action];
             }
-            index = node->next_at_depth;
+            const double addition = node->own_reach * weight;
+            const double candidate =
+                graph->nodes[edge->child].own_reach + addition;
+            if (!isfinite(addition) || !isfinite(candidate))
+                return CFR_STATUS_NUMERIC_ERROR;
+            graph->nodes[edge->child].own_reach = candidate;
         }
     }
     return CFR_STATUS_SUCCESS;
@@ -1303,6 +1498,11 @@ int main(int argc, char **argv) {
         result = fail_status("build compact graph", status);
         goto cleanup;
     }
+    status = graph_build_topological_order(&graph, root_index);
+    if (status != CFR_STATUS_SUCCESS) {
+        result = fail_status("order compact graph", status);
+        goto cleanup;
+    }
     status = graph_counterfactual_reach(&graph, root_index);
     if (status != CFR_STATUS_SUCCESS) {
         result = fail_status("calculate counterfactual reach", status);
@@ -1373,8 +1573,9 @@ int main(int argc, char **argv) {
         goto cleanup;
     }
     (void)printf("graph nodes=%zu edges=%zu maximum_depth=%zu "
-                 "raw_visited_nodes=%zu\n",
+                 "raw_visited_nodes=%s%zu\n",
                  graph.node_count, graph.edge_count, graph.maximum_depth,
+                 graph.raw_visit_count_saturated ? ">=" : "",
                  graph.raw_visit_count);
     (void)printf("evaluation training_iterations=%zu "
                  "average_value_player_0=%.17g "
