@@ -1395,6 +1395,45 @@ static void test_evaluation_allocation_failures_are_clean(void) {
     destroy_store(&store);
     CHECK(test_allocator_live_allocations() == 0);
 }
+
+static void test_uniform_evaluation_allocation_failures_are_clean(void) {
+    const Game *game = traversal_game_descriptor();
+    TraversalGameState state;
+    TraversalGameState root;
+    InfoStore store;
+    size_t failure_index;
+    bool reached_success = false;
+
+    initialize_store(&store);
+    CHECK(traversal_game_state_init(&state) == CFR_STATUS_SUCCESS);
+    root = state;
+
+    for (failure_index = 0; failure_index < 128; failure_index += 1) {
+        const size_t live_before = test_allocator_live_allocations();
+        EvaluationMetrics metrics = sentinel_metrics();
+        EvaluationMetrics expected = metrics;
+        Status status;
+
+        test_allocator_fail_after(failure_index);
+        status = cfr_evaluation_metrics_with_unvisited_uniform(
+            game, traversal_game_state_as_public(&state), &store, &metrics);
+        test_allocator_disable_failures();
+        CHECK(test_allocator_live_allocations() == live_before);
+        CHECK(same_traversal_state(&state, &root));
+        CHECK(store.size == 0);
+        if (status == CFR_STATUS_SUCCESS) {
+            reached_success = true;
+            CHECK(isfinite(metrics.exploitability));
+            break;
+        }
+        CHECK(status == CFR_STATUS_OUT_OF_MEMORY);
+        CHECK(same_metrics(&metrics, &expected));
+    }
+    CHECK(reached_success);
+    CHECK(failure_index >= 10);
+    destroy_store(&store);
+    CHECK(test_allocator_live_allocations() == 0);
+}
 #endif
 
 int test_evaluation(void) {
@@ -1414,6 +1453,7 @@ int test_evaluation(void) {
     test_kuhn_uniform_and_trained_metrics();
 #ifdef CFR_TEST_WRAP_ALLOCATOR
     test_evaluation_allocation_failures_are_clean();
+    test_uniform_evaluation_allocation_failures_are_clean();
 #endif
 
     return failures;

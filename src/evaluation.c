@@ -802,7 +802,8 @@ static Status build(const Game *game, GameState *state, const InfoStore *store,
             status = cfr_info_store_get_or_create(
                 &workspace->unvisited_store, key, required_amount,
                 &temporary_node);
-            node = temporary_node;
+            if (status == CFR_STATUS_SUCCESS)
+                node = temporary_node;
         }
         if (status != CFR_STATUS_SUCCESS)
             return status;
