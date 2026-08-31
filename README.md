@@ -369,7 +369,7 @@ cfr-blackjack --full-tree --iterations N [--report-every N] [--evaluate]
 | Option | Description |
 |---|---|
 | `--deal R,R,R` | Solves the hand defined by the three visible initial cards. |
-| `--full-tree` | Trains from the undealt deck instead. Not practically computable; see below. |
+| `--full-tree` | Trains from the undealt deck instead. Computationally expensive; see below. |
 | `--iterations N` | Runs `N` complete training iterations. |
 | `--report-every N` | Reports statistics after each block of up to `N` iterations. |
 | `--evaluate` | Evaluates the average profile after training and reports its value and exploitability. |
@@ -421,7 +421,7 @@ atomically replace their destinations only after successful training and
 serialization. A loaded checkpoint selects classic CFR or CFR+ automatically,
 so `--load` cannot be combined with `--cfr-plus`.
 
-### Why the complete tree is not a workflow
+### Complete-tree cost
 
 Each iteration runs one traversal for the only strategic player and enumerates
 the tree below the root. The dealer follows a deterministic policy and its draws
@@ -432,15 +432,41 @@ information-set keys merge player hands with the same hard or soft total.
 Different card orders and different hard-card compositions therefore reuse one
 stored strategy node. Soft and hard hands remain separate. The chance traversal
 still retains the undealt rank counts required by the without-replacement
-rules. A measured single `--full-tree` iteration exceeds a billion visited
-states and does not finish in any practical time; individual low-card deals
-alone reach tens of millions of states each. `--evaluate` enumerates the same
-tree while materializing it in memory, so it is more demanding still.
+rules. In a measured release build, one `--full-tree` iteration visited
+10,641,003,431 states and completed in about 128 to 132 seconds. Hardware and
+build settings will change that timing, and a converged raw run can still take
+hours. Individual low-card deals alone reach tens of millions of states each.
 
-`--full-tree` therefore exists for experiments, not for use. It is retained so
-that the complete-game formulation stays reachable and measurable, and the
-executable requires it explicitly so that its cost cannot be mistaken for a
-hang.
+The generic `--evaluate` path enumerates the same raw tree while materializing
+it in memory, so it remains substantially more demanding than training. Use
+checkpoints for long full-tree runs and start with `--iterations 1` to measure
+the cost on the current machine. The executable requires `--full-tree`
+explicitly so that this work cannot be mistaken for a hang.
+
+For exact full-tree analysis, build the blackjack-specific compact helper:
+
+```sh
+make blackjack-compact-eval
+build/release/blackjack-compact-eval CHECKPOINT
+```
+
+The helper merges logically identical deck and hand states into a DAG. The
+measured 10.64-billion-state traversal contains 10,617,359 distinct states in
+that representation. It reports the average value, the exact best-response
+value and exploitability, and the learned and optimal hit/stand policy for all
+280 information sets.
+
+It can also resume a CFR or CFR+ checkpoint using the same compact
+representation:
+
+```sh
+build/release/blackjack-compact-eval INPUT.cfr ITERATIONS OUTPUT.cfr
+```
+
+`OUTPUT.cfr` must not already exist. The compact update preserves the raw
+visited-node statistics. It can differ from a raw checkpoint at the last few
+floating-point bits because equivalent contributions are summed in a different
+order.
 
 Each training report contains:
 

@@ -153,8 +153,8 @@ check_usage_error overlapping_outputs \
 check_usage_error combined_help "help can only be requested" \
     --iterations 1 --help
 
-# Training from the undealt deck is not practically computable, so the scope
-# must be chosen explicitly rather than defaulting to an apparent hang.
+# Training from the undealt deck is expensive, so the scope must be chosen
+# explicitly rather than defaulting to an apparent hang.
 check_usage_error missing_scope "missing required option --deal RANKS" \
     --iterations 1
 check_usage_error scope_conflict \
@@ -281,8 +281,8 @@ if [ -c /dev/full ] && [ -w /dev/full ]; then
     require_status 1
     require_text "$case_error" "could not write the start report"
 
-    # --full-tree must reach the start report; its traversal is deliberately
-    # not run because it does not finish in any practical time.
+    # --full-tree must reach the start report; its expensive traversal is
+    # deliberately not run in the CLI argument test.
     case_name=full_tree_write_failure
     case_error=$temporary_directory/$case_name.err
     set +e

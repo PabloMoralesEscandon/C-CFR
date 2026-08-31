@@ -26,6 +26,7 @@ LIB_SOURCES := \
 
 APP_SOURCE := app/cfr_cli.c
 BLACKJACK_APP_SOURCE := app/blackjack_cli.c
+BLACKJACK_COMPACT_EVAL_SOURCE := tools/blackjack_compact_eval.c
 CLI_TEST_SCRIPT := tests/test_cli.sh
 BLACKJACK_CLI_TEST_SCRIPT := tests/test_blackjack_cli.sh
 
@@ -54,6 +55,8 @@ RELEASE_APP_OBJECT := $(patsubst %.c,$(RELEASE_DIR)/%.o,$(APP_SOURCE))
 DEBUG_APP_OBJECT := $(patsubst %.c,$(DEBUG_DIR)/%.o,$(APP_SOURCE))
 RELEASE_BLACKJACK_APP_OBJECT := \
 	$(patsubst %.c,$(RELEASE_DIR)/%.o,$(BLACKJACK_APP_SOURCE))
+RELEASE_BLACKJACK_COMPACT_EVAL_OBJECT := \
+	$(patsubst %.c,$(RELEASE_DIR)/%.o,$(BLACKJACK_COMPACT_EVAL_SOURCE))
 DEBUG_BLACKJACK_APP_OBJECT := \
 	$(patsubst %.c,$(DEBUG_DIR)/%.o,$(BLACKJACK_APP_SOURCE))
 
@@ -65,6 +68,8 @@ BLACKJACK_TEST_OBJECT := $(DEBUG_DIR)/tests/test_blackjack_standalone.o
 RELEASE_BINARY := $(RELEASE_DIR)/cfr-kuhn
 DEBUG_BINARY := $(DEBUG_DIR)/cfr-kuhn
 RELEASE_BLACKJACK_BINARY := $(RELEASE_DIR)/cfr-blackjack
+RELEASE_BLACKJACK_COMPACT_EVAL_BINARY := \
+	$(RELEASE_DIR)/blackjack-compact-eval
 DEBUG_BLACKJACK_BINARY := $(DEBUG_DIR)/cfr-blackjack
 
 DEPENDENCY_FILES := \
@@ -75,14 +80,18 @@ DEPENDENCY_FILES := \
 	$(RELEASE_APP_OBJECT:.o=.d) \
 	$(DEBUG_APP_OBJECT:.o=.d) \
 	$(RELEASE_BLACKJACK_APP_OBJECT:.o=.d) \
+	$(RELEASE_BLACKJACK_COMPACT_EVAL_OBJECT:.o=.d) \
 	$(DEBUG_BLACKJACK_APP_OBJECT:.o=.d)
 
-.PHONY: all blackjack test test-blackjack test-blackjack-cli test-alloc \
+.PHONY: all blackjack blackjack-compact-eval test test-blackjack \
+	test-blackjack-cli test-alloc \
 	test-alloc-run test-asan test-ubsan test-sanitize debug clean
 
 all: $(RELEASE_LIBRARY) $(RELEASE_BINARY) $(RELEASE_BLACKJACK_BINARY)
 
 blackjack: $(RELEASE_BLACKJACK_BINARY)
+
+blackjack-compact-eval: $(RELEASE_BLACKJACK_COMPACT_EVAL_BINARY)
 
 test: $(TEST_BINARY) $(DEBUG_BINARY) $(DEBUG_BLACKJACK_BINARY)
 	$(TEST_ENV) ./$(TEST_BINARY)
@@ -161,6 +170,12 @@ $(RELEASE_BLACKJACK_BINARY): $(RELEASE_BLACKJACK_APP_OBJECT) $(RELEASE_LIBRARY)
 	@mkdir -p $(dir $@)
 	$(CC) $(LDFLAGS) $(RELEASE_BLACKJACK_APP_OBJECT) $(RELEASE_LIBRARY) \
 		$(LDLIBS) -o $@
+
+$(RELEASE_BLACKJACK_COMPACT_EVAL_BINARY): \
+		$(RELEASE_BLACKJACK_COMPACT_EVAL_OBJECT) $(RELEASE_LIBRARY)
+	@mkdir -p $(dir $@)
+	$(CC) $(LDFLAGS) $(RELEASE_BLACKJACK_COMPACT_EVAL_OBJECT) \
+		$(RELEASE_LIBRARY) $(LDLIBS) -o $@
 
 $(DEBUG_BLACKJACK_BINARY): $(DEBUG_BLACKJACK_APP_OBJECT) $(DEBUG_LIBRARY)
 	@mkdir -p $(dir $@)

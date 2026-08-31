@@ -90,15 +90,14 @@ static bool print_usage(FILE *stream, const char *program_name) {
                 "\n"
                 "Warning: --full-tree enumerates every deal of a 52-card deck "
                 "on every\n"
-                "traversal. A measured single iteration exceeds a billion "
-                "states and does not\n"
-                "finish in any practical time, and --evaluate enumerates the "
-                "same tree while\n"
-                "materializing it in memory. --full-tree is provided for "
-                "experiments only; it\n"
-                "is not a supported workflow. Use --deal, which solves one "
-                "initial deal in\n"
-                "seconds. Start with --iterations 1.\n"
+                "traversal. A measured iteration visits about 10.64 billion "
+                "states and took\n"
+                "about two minutes in one release build; converged raw runs "
+                "can therefore take\n"
+                "hours. --evaluate materializes the same tree in memory and "
+                "is substantially\n"
+                "more demanding. Use --deal for quick experiments. "
+                "Start with --iterations 1.\n"
                 "\n"
                 "Exit codes:\n"
                 "  0  Successful execution or help.\n"
@@ -390,14 +389,14 @@ static CliParseResult parse_options(int argc, char *const argv[],
     }
     /*
      * Training from the undealt deck enumerates every deal of a 52-card deck
-     * and does not finish in any practical time. Requiring an explicit choice
-     * keeps that cost from looking like a hang.
+     * and is much more expensive than training one visible deal. Requiring an
+     * explicit choice keeps that cost from looking like a hang.
      */
     if (!deal_seen && !full_tree_seen) {
         (void)fprintf(diagnostic,
                       "error: missing required option --deal RANKS; pass "
                       "--full-tree to train the complete undealt tree "
-                      "instead, which is not practically computable\n");
+                      "instead, which is computationally expensive\n");
         return CLI_PARSE_ERROR;
     }
 
