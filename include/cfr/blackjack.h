@@ -6,31 +6,25 @@
 
 #include "cfr/game.h"
 
-/* Blackjack uses a standard deck without jokers. */
-#define CFR_BLACKJACK_DECK_SIZE 52
 /* Ten rank classes: ace, 2--9, and any card worth ten. */
 #define CFR_BLACKJACK_NUMBER_OF_CARD_RANKS 10
 /* The two participants are the player and the dealer. */
 #define CFR_BLACKJACK_NUMBER_OF_PLAYERS 2
-/* A hand can never contain more cards than the complete deck. */
-#define CFR_BLACKJACK_HAND_CAPACITY CFR_BLACKJACK_DECK_SIZE
-/* Standard table play limits a split round to four player hands. */
-#define CFR_BLACKJACK_MAX_PLAYER_HANDS 4
-/*
- * A card can require a preceding player action. Extra positions are kept for
- * the decisions that finish or split each player hand. This bound is
- * deliberately conservative.
- */
-#define CFR_BLACKJACK_UNDO_HISTORY_CAPACITY                                  \
-    (2 * CFR_BLACKJACK_DECK_SIZE + 2 * CFR_BLACKJACK_MAX_PLAYER_HANDS)
+/* Even with replacement, a live hand reaches 21 within this many cards. */
+#define CFR_BLACKJACK_HAND_CAPACITY 21
+/* Resplitting is represented by at most four equivalent hands. */
+#define CFR_BLACKJACK_MAX_SPLIT_HANDS 4
+/* Conservative bound for every deal and decision along one traversal path. */
+#define CFR_BLACKJACK_UNDO_HISTORY_CAPACITY 64
 /* All ten rank classes can be available at chance; player nodes use at most 4. */
 #define CFR_BLACKJACK_MAX_POSSIBLE_ACTIONS CFR_BLACKJACK_NUMBER_OF_CARD_RANKS
 
 /*
  * Identifies the relevant value of a card.
  *
- * TEN represents a ten, jack, queen, or king. The deck contains sixteen cards
- * in this class and four cards in every other class.
+ * TEN represents a ten, jack, queen, or king. Chance draws use an independent
+ * rank distribution: TEN has probability 4/13 and every other class has
+ * probability 1/13.
  */
 typedef enum {
     CFR_BLACKJACK_CARD_NOT_DEALT,
@@ -89,17 +83,15 @@ typedef enum {
  *
  * total is the best current blackjack total: an ace counts as eleven exactly
  * when doing so does not bust the hand. is_soft records whether total currently
- * includes such an ace. The first two ranks are retained because they determine
- * whether SPLIT is legal. stake_multiplier is one normally and two after a
- * double down. A two-card hand marked from_split is not a natural blackjack.
+ * includes such an ace. can_split records whether the first two cards have the
+ * same rank class. stake_multiplier is one normally and two after a double
+ * down. A two-card hand marked from_split is not a natural blackjack.
  */
 typedef struct {
     int total;
     size_t card_count;
-    size_t ace_count;
     bool is_soft;
-    BlackjackCard first_card;
-    BlackjackCard second_card;
+    bool can_split;
     size_t stake_multiplier;
     bool from_split;
 } BlackjackHand;
@@ -108,9 +100,10 @@ typedef struct {
 typedef struct {
     BlackjackPhase previous_phase;
     BlackjackAction applied_action;
-    size_t previous_active_hand;
-    size_t previous_hand_count;
-    BlackjackHand previous_active_hand_state;
+    BlackjackHand previous_player_hand;
+    BlackjackHand previous_dealer_hand;
+    BlackjackCard previous_dealer_up_card;
+    size_t previous_split_hand_count;
 } BlackjackUndoEntry;
 
 /*
@@ -118,12 +111,13 @@ typedef struct {
  *
  * Adapter rules:
  *
- * - one 52-card deck without replacement;
+ * - independent rank draws (1/13 for ace through nine and 4/13 for ten-value
+ *   cards), matching the basic-strategy infinite-deck abstraction;
  * - the dealer stands on every 17, including soft 17;
  * - a natural blackjack pays 3:2 and a push returns the stake;
  * - the player can hit, stand, double down, or split equal rank classes;
  * - doubling is available on any two-card hand, including after a split;
- * - non-ace pairs can be resplit to at most four hands;
+ * - non-ace pairs can be resplit to at most four equivalent hands;
  * - split aces receive one card each and cannot be resplit;
  * - no insurance or surrender.
  *
@@ -137,32 +131,24 @@ typedef struct {
  * not modify fields directly; operations reject inconsistent states that they
  * can detect.
  *
- * player_hand is a compatibility alias for player_hands[0]. player_hand_count
- * gives the number of live entries and active_player_hand identifies the hand
- * currently being played. dealer_up_card is kept separately because it is the
- * dealer information visible to the player. remaining_cards records rank-class
- * depletion so chance probabilities model a finite deck without replacement.
+ * Split hands are independent under the fixed draw distribution and their
+ * utilities are additive. The state therefore traverses one representative
+ * hand and scales its terminal utility by split_hand_count instead of retaining
+ * sibling hands. dealer_up_card is kept separately because it is the dealer
+ * information visible to the player.
  */
 typedef struct {
     BlackjackPhase phase;
-    union {
-        BlackjackHand player_hand;
-        BlackjackHand player_hands[CFR_BLACKJACK_MAX_PLAYER_HANDS];
-    };
-    size_t player_hand_count;
-    size_t active_player_hand;
+    BlackjackHand player_hand;
+    size_t split_hand_count;
     BlackjackHand dealer_hand;
     BlackjackCard dealer_up_card;
-    /* Undealt count for each rank, in ace-to-ten order. */
-    size_t remaining_cards[CFR_BLACKJACK_NUMBER_OF_CARD_RANKS];
-    /* Total number of undealt cards, maintained incrementally. */
-    size_t cards_remaining;
     BlackjackUndoEntry undo_history[CFR_BLACKJACK_UNDO_HISTORY_CAPACITY];
     size_t undo_count;
 } BlackjackState;
 
 /*
- * Initializes state before the first deal, with a complete deck.
+ * Initializes state before the first independent draw.
  * A null pointer produces CFR_STATUS_INVALID_ARGUMENT.
  */
 Status cfr_blackjack_state_init(BlackjackState *state);
@@ -170,7 +156,7 @@ Status cfr_blackjack_state_init(BlackjackState *state);
 /*
  * Returns the const, static-lifetime blackjack descriptor.
  *
- * The descriptor supplies strategy_schema_id "cfr.blackjack/v3", so trainers
+ * The descriptor supplies strategy_schema_id "cfr.blackjack/v4", so trainers
  * bound to it work with cfr_checkpoint_write, cfr_checkpoint_read, and
  * cfr_strategy_write_text. The identifier must change whenever the rules, the
  * information-set keys, or the meaning of the action indices become

@@ -37,7 +37,7 @@ typedef struct {
     const char *load_path;
     const char *save_path;
     const char *export_path;
-    /* Trains the complete undealt tree; see the --full-tree warning. */
+    /* Trains from the state before the initial draw. */
     bool full_tree;
     bool deal_given;
     /* Ranks one to ten, where one is an ace and ten covers every ten-card. */
@@ -68,8 +68,7 @@ static bool print_usage(FILE *stream, const char *program_name) {
                 "                     event. Each rank is 1 to 10, where 1\n"
                 "                     is an ace and 10 is any ten, jack, "
                 "queen, or king.\n"
-                "  --full-tree        Train from the undealt deck instead. "
-                "See the warning.\n"
+                "  --full-tree        Train from before the initial draw.\n"
                 "  --iterations N     Training iterations; N must be "
                 "positive.\n"
                 "  --report-every N   Iterations between reports; if omitted, "
@@ -88,16 +87,12 @@ static bool print_usage(FILE *stream, const char *program_name) {
                 "\n"
                 "Exactly one of --deal and --full-tree is required.\n"
                 "\n"
-                "Warning: --full-tree enumerates every deal of a 52-card deck "
-                "on every\n"
-                "traversal. Splitting and resplitting make the v3 tree much "
-                "larger than the\n"
-                "former hit/stand-only tree; even one iteration may be "
-                "impractical.\n"
-                "--evaluate materializes the tree in memory and is more "
-                "demanding. Use\n"
-                "--deal for bounded experiments. Start with --iterations "
-                "1.\n"
+                "Chance draws use fixed basic-strategy probabilities: 1/13 "
+                "for ace\n"
+                "through nine and 4/13 for ten-valued cards. Split hands are "
+                "evaluated\n"
+                "as additive equivalent hands instead of a sibling-hand "
+                "cross-product.\n"
                 "\n"
                 "Exit codes:\n"
                 "  0  Successful execution or help.\n"
@@ -387,16 +382,11 @@ static CliParseResult parse_options(int argc, char *const argv[],
                       "error: --deal cannot be combined with --full-tree\n");
         return CLI_PARSE_ERROR;
     }
-    /*
-     * Training from the undealt deck enumerates every deal of a 52-card deck
-     * and is much more expensive than training one visible deal. Requiring an
-     * explicit choice keeps that cost from looking like a hang.
-     */
+    /* Require an explicit choice between a visible deal and the initial root. */
     if (!deal_seen && !full_tree_seen) {
         (void)fprintf(diagnostic,
                       "error: missing required option --deal RANKS; pass "
-                      "--full-tree to train the complete undealt tree "
-                      "instead, which is computationally expensive\n");
+                      "--full-tree to train from before the initial draw\n");
         return CLI_PARSE_ERROR;
     }
 

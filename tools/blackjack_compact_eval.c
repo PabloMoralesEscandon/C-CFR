@@ -29,23 +29,18 @@ typedef enum {
 typedef struct {
     uint8_t total;
     uint8_t card_count;
-    uint8_t ace_count;
     uint8_t is_soft;
-    uint8_t first_card;
-    uint8_t second_card;
+    uint8_t can_split;
     uint8_t stake_multiplier;
     uint8_t from_split;
 } CompactHand;
 
 typedef struct {
     uint8_t phase;
-    CompactHand player_hands[CFR_BLACKJACK_MAX_PLAYER_HANDS];
-    uint8_t player_hand_count;
-    uint8_t active_player_hand;
+    CompactHand player_hand;
+    uint8_t split_hand_count;
     CompactHand dealer_hand;
     uint8_t dealer_up_card;
-    uint8_t cards_remaining;
-    uint8_t remaining_cards[CFR_BLACKJACK_NUMBER_OF_CARD_RANKS];
     uint8_t depth;
 } CompactState;
 
@@ -169,139 +164,43 @@ static Status compact_hand_from_blackjack(const BlackjackHand *hand,
                                           CompactHand *compact) {
     if (hand == NULL || compact == NULL || hand->total < 0 ||
         hand->total > UINT8_MAX || hand->card_count > UINT8_MAX ||
-        hand->ace_count > UINT8_MAX || hand->first_card < 0 ||
-        hand->first_card > UINT8_MAX || hand->second_card < 0 ||
-        hand->second_card > UINT8_MAX || hand->stake_multiplier > UINT8_MAX)
+        hand->stake_multiplier > UINT8_MAX)
         return CFR_STATUS_INVALID_ARGUMENT;
 
     *compact = (CompactHand){
         .total = (uint8_t)hand->total,
         .card_count = (uint8_t)hand->card_count,
-        .ace_count = (uint8_t)hand->ace_count,
         .is_soft = hand->is_soft ? 1 : 0,
-        .first_card = (uint8_t)hand->first_card,
-        .second_card = (uint8_t)hand->second_card,
+        .can_split = hand->can_split ? 1 : 0,
         .stake_multiplier = (uint8_t)hand->stake_multiplier,
         .from_split = hand->from_split ? 1 : 0,
     };
     return CFR_STATUS_SUCCESS;
 }
 
-static void compact_normalize_finished_hand(CompactHand *hand) {
-    const bool natural = hand->card_count == 2 && hand->total == 21 &&
-                         hand->from_split == 0;
-
-    hand->card_count = natural ? 2 : 0;
-    hand->ace_count = 0;
-    hand->is_soft = 0;
-    hand->first_card = 0;
-    hand->second_card = 0;
-    hand->from_split = 0;
-}
-
-static bool phase_has_live_player_hands(BlackjackPhase phase) {
-    switch (phase) {
-    case CFR_BLACKJACK_PHASE_DEAL_PLAYER_FIRST:
-    case CFR_BLACKJACK_PHASE_DEAL_DEALER_UP_CARD:
-    case CFR_BLACKJACK_PHASE_DEAL_PLAYER_SECOND:
-    case CFR_BLACKJACK_PHASE_DEAL_DEALER_HOLE_CARD:
-    case CFR_BLACKJACK_PHASE_PLAYER_TURN:
-    case CFR_BLACKJACK_PHASE_DEAL_PLAYER_HIT:
-    case CFR_BLACKJACK_PHASE_DEAL_PLAYER_DOUBLE:
-    case CFR_BLACKJACK_PHASE_DEAL_SPLIT_HAND:
-        return true;
-    case CFR_BLACKJACK_PHASE_DEAL_DEALER_HIT:
-    case CFR_BLACKJACK_PHASE_TERMINAL:
-    default:
-        return false;
-    }
-}
-
-static bool compact_active_hand_can_split(const BlackjackState *state) {
-    const BlackjackHand *hand =
-        &state->player_hands[state->active_player_hand];
-
-    return state->phase == CFR_BLACKJACK_PHASE_PLAYER_TURN &&
-           state->player_hand_count < CFR_BLACKJACK_MAX_PLAYER_HANDS &&
-           hand->card_count == 2 && hand->stake_multiplier == 1 &&
-           hand->first_card == hand->second_card && hand->first_card > 0 &&
-           !(hand->from_split &&
-             hand->first_card == CFR_BLACKJACK_CARD_ACE);
-}
-
-static void compact_normalize_live_hand(CompactHand *hand,
-                                        bool retain_pair_rank) {
-    hand->ace_count = 0;
-    if (hand->card_count > 2) {
-        hand->card_count = 3;
-        hand->first_card = 0;
-        hand->second_card = 0;
-        hand->from_split = 0;
-    } else if (hand->card_count == 2 && !retain_pair_rank) {
-        hand->first_card = 0;
-        hand->second_card = 0;
-        hand->from_split = 0;
-    }
-}
-
 static Status compact_state_from_blackjack(const BlackjackState *state,
                                            CompactState *compact) {
     if (state == NULL || compact == NULL || state->phase < 0 ||
         state->phase > CFR_BLACKJACK_PHASE_DEAL_SPLIT_HAND ||
-        state->player_hand_count > CFR_BLACKJACK_MAX_PLAYER_HANDS ||
-        state->player_hand_count > UINT8_MAX ||
-        state->active_player_hand > UINT8_MAX ||
+        state->split_hand_count > UINT8_MAX ||
         state->dealer_up_card < 0 || state->dealer_up_card > UINT8_MAX ||
-        state->cards_remaining > UINT8_MAX ||
         state->undo_count > CFR_BLACKJACK_UNDO_HISTORY_CAPACITY ||
         state->undo_count > UINT8_MAX)
         return CFR_STATUS_INVALID_ARGUMENT;
 
     CompactState result = {0};
     result.phase = (uint8_t)state->phase;
-    result.player_hand_count = (uint8_t)state->player_hand_count;
-    result.active_player_hand = (uint8_t)state->active_player_hand;
-    for (size_t index = 0; index < CFR_BLACKJACK_MAX_PLAYER_HANDS; index++) {
-        Status status = compact_hand_from_blackjack(
-            &state->player_hands[index], &result.player_hands[index]);
-        if (status != CFR_STATUS_SUCCESS)
-            return status;
-        if (index >= state->player_hand_count)
-            continue;
-        const bool live = phase_has_live_player_hands(state->phase) &&
-                          index >= state->active_player_hand;
-        if (!live) {
-            compact_normalize_finished_hand(&result.player_hands[index]);
-        } else {
-            const bool retain_pair_rank =
-                index == state->active_player_hand &&
-                compact_active_hand_can_split(state);
-            compact_normalize_live_hand(&result.player_hands[index],
-                                        retain_pair_rank);
-        }
-    }
-    Status status =
+    result.split_hand_count = (uint8_t)state->split_hand_count;
+    Status status = compact_hand_from_blackjack(&state->player_hand,
+                                                &result.player_hand);
+    if (status != CFR_STATUS_SUCCESS)
+        return status;
+    status =
         compact_hand_from_blackjack(&state->dealer_hand, &result.dealer_hand);
     if (status != CFR_STATUS_SUCCESS)
         return status;
-    if (state->phase == CFR_BLACKJACK_PHASE_TERMINAL) {
-        compact_normalize_finished_hand(&result.dealer_hand);
-    } else {
-        compact_normalize_live_hand(&result.dealer_hand, false);
-        if (state->phase > CFR_BLACKJACK_PHASE_DEAL_DEALER_HOLE_CARD &&
-            result.dealer_hand.card_count == 2)
-            result.dealer_hand.card_count = 3;
-    }
     result.dealer_up_card = (uint8_t)state->dealer_up_card;
-    result.cards_remaining = (uint8_t)state->cards_remaining;
     result.depth = (uint8_t)state->undo_count;
-    for (size_t index = 0; index < CFR_BLACKJACK_NUMBER_OF_CARD_RANKS;
-         index++) {
-        if (state->remaining_cards[index] > UINT8_MAX)
-            return CFR_STATUS_INVALID_ARGUMENT;
-        result.remaining_cards[index] =
-            (uint8_t)state->remaining_cards[index];
-    }
     *compact = result;
     return CFR_STATUS_SUCCESS;
 }
@@ -758,9 +657,8 @@ static const char *decision_class_name(size_t decision_class) {
 }
 
 /*
- * Total-dependent single-deck S17 strategy with DAS and no surrender.
+ * Total-dependent multi-deck S17 strategy with DAS and no surrender.
  * Conditional doubles and splits use the chart's hit/stand fallbacks.
- * https://wizardofodds.com/games/blackjack/strategy/1-deck/
  */
 static size_t basic_hard_action(int total, size_t dealer,
                                 bool double_available) {
@@ -773,13 +671,11 @@ static size_t basic_hard_action(int total, size_t dealer,
         return dealer >= 4 && dealer <= 6 ? COMPACT_ACTION_STAND
                                           : COMPACT_ACTION_HIT;
     if (double_available) {
-        if (total == 11)
+        if (total == 11 && dealer != 1)
             return COMPACT_ACTION_DOUBLE;
         if (total == 10 && dealer >= 2 && dealer <= 9)
             return COMPACT_ACTION_DOUBLE;
-        if (total == 9 && dealer >= 2 && dealer <= 6)
-            return COMPACT_ACTION_DOUBLE;
-        if (total == 8 && dealer >= 5 && dealer <= 6)
+        if (total == 9 && dealer >= 3 && dealer <= 6)
             return COMPACT_ACTION_DOUBLE;
     }
     return COMPACT_ACTION_HIT;
@@ -789,22 +685,21 @@ static size_t basic_soft_action(int total, size_t dealer,
                                 bool double_available) {
     if (total >= 20)
         return COMPACT_ACTION_STAND;
-    if (total == 19) {
-        if (double_available && dealer == 6)
-            return COMPACT_ACTION_DOUBLE;
+    if (total == 19)
         return COMPACT_ACTION_STAND;
-    }
     if (total == 18) {
         if (double_available && dealer >= 3 && dealer <= 6)
             return COMPACT_ACTION_DOUBLE;
-        if (dealer == 2 || dealer == 7 || dealer == 8 || dealer == 1)
+        if (dealer == 2 || dealer == 7 || dealer == 8)
             return COMPACT_ACTION_STAND;
         return COMPACT_ACTION_HIT;
     }
     if (double_available) {
-        if (total == 17 && dealer >= 2 && dealer <= 6)
+        if (total == 17 && dealer >= 3 && dealer <= 6)
             return COMPACT_ACTION_DOUBLE;
-        if (total >= 13 && total <= 16 && dealer >= 4 && dealer <= 6)
+        if (total >= 15 && total <= 16 && dealer >= 4 && dealer <= 6)
+            return COMPACT_ACTION_DOUBLE;
+        if (total >= 13 && total <= 14 && dealer >= 5 && dealer <= 6)
             return COMPACT_ACTION_DOUBLE;
     }
     return COMPACT_ACTION_HIT;
@@ -820,17 +715,13 @@ static size_t basic_pair_action(int total, bool soft, size_t dealer) {
     case 4:
         return dealer >= 2 && dealer <= 7 ? COMPACT_ACTION_SPLIT : SIZE_MAX;
     case 6:
-        return dealer >= 2 && dealer <= 8 ? COMPACT_ACTION_SPLIT : SIZE_MAX;
-    case 8:
-        return dealer >= 4 && dealer <= 6 ? COMPACT_ACTION_SPLIT : SIZE_MAX;
-    case 12:
         return dealer >= 2 && dealer <= 7 ? COMPACT_ACTION_SPLIT : SIZE_MAX;
+    case 8:
+        return dealer >= 5 && dealer <= 6 ? COMPACT_ACTION_SPLIT : SIZE_MAX;
+    case 12:
+        return dealer >= 2 && dealer <= 6 ? COMPACT_ACTION_SPLIT : SIZE_MAX;
     case 14:
-        if (dealer >= 2 && dealer <= 8)
-            return COMPACT_ACTION_SPLIT;
-        if (dealer == 10)
-            return COMPACT_ACTION_STAND;
-        return SIZE_MAX;
+        return dealer >= 2 && dealer <= 7 ? COMPACT_ACTION_SPLIT : SIZE_MAX;
     case 16:
         return COMPACT_ACTION_SPLIT;
     case 18:

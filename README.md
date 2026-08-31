@@ -7,14 +7,16 @@ The repository includes complete Kuhn Poker and blackjack adapters. Two
 independent applications train the games, and both adapters are available
 through the same public library API.
 
-The blackjack adapter is declared in `include/cfr/blackjack.h` and uses a
-52-card deck without replacement, dealer stands on soft 17, a 3:2 natural
-blackjack payout, and hit, stand, double-down, and split actions. A player can
-double any two-card hand, including after a split. Equal rank classes can be
-split to four hands; split aces receive one card each, and a split 21 pays even
-money. The adapter does not include insurance or surrender. `CFR_PLAYER_0` is
-the player and `CFR_PLAYER_1` receives the dealer's opposite utility;
-rule-driven dealer draws are represented as chance nodes.
+The blackjack adapter is declared in `include/cfr/blackjack.h` and uses the
+fixed rank distribution assumed by basic strategy: ace through nine each have
+probability 1/13 and ten-valued cards have probability 4/13 on every draw. The
+dealer stands on soft 17, natural blackjack pays 3:2, and the player can hit,
+stand, double down, or split. A player can double any two-card hand, including
+after a split. Equal rank classes can be split to four equivalent hands; split
+aces receive one card, and a split 21 pays even money. The adapter does not
+include insurance or surrender. `CFR_PLAYER_0` is the player and `CFR_PLAYER_1`
+receives the dealer's opposite utility; rule-driven dealer draws are represented
+as chance nodes.
 
 ## Building
 
@@ -184,7 +186,7 @@ action indices becomes incompatible. Serialization stores generic keys and
 indexed arrays; it does not contain Kuhn-specific actions or labels.
 
 Both bundled adapters are serializable: Kuhn Poker declares
-`cfr.kuhn-poker/v1` and blackjack declares `cfr.blackjack/v3`.
+`cfr.kuhn-poker/v1` and blackjack declares `cfr.blackjack/v4`.
 
 ### Exact evaluation of a saved strategy
 
@@ -371,7 +373,7 @@ cfr-blackjack --full-tree --iterations N [--report-every N] [--evaluate]
 | Option | Description |
 |---|---|
 | `--deal R,R,R` | Solves the hand defined by the three visible initial cards. |
-| `--full-tree` | Trains from the undealt deck instead. Computationally expensive; see below. |
+| `--full-tree` | Trains from the state before the initial draw. |
 | `--iterations N` | Runs `N` complete training iterations. |
 | `--report-every N` | Reports statistics after each block of up to `N` iterations. |
 | `--evaluate` | Evaluates the average profile after training and reports its value and exploitability. |
@@ -395,7 +397,7 @@ training includes every state in the player's information set.
 The strategy can choose hit, stand, and double down on an eligible two-card
 hand. When the two player ranks are equal, it can also split. Ten-valued cards
 share one rank class in this adapter. Non-ace pairs can be resplit to the
-four-hand table limit; split aces receive exactly one additional card per hand.
+four-equivalent-hand limit; split aces receive exactly one additional card.
 
 ```sh
 build/release/cfr-blackjack --deal 5,10,6 --iterations 10 \
@@ -434,25 +436,21 @@ Each iteration runs one traversal for the only strategic player and enumerates
 the tree below the root. The dealer follows a deterministic policy and its draws
 are chance nodes, so it does not receive a second traversal.
 
-From the undealt deck that tree covers every deal of a 52-card deck. Strategy
-keys merge hands with the same dealer up card, hard or soft total, and available
-action class. The chance traversal still retains undealt rank counts for the
-without-replacement rules and the complete set of player hands after a split.
+Every chance node has the same ten rank-class outcomes. No deck-composition
+state is retained. Strategy keys merge hands with the same dealer up card, hard
+or soft total, and available action class.
 
-The old 10.64-billion-state, roughly two-minute measurement applied to the v2
-hit/stand-only game and is not representative of the v3 rules. In an August
-2026 release-build probe, one v3 `--full-tree` iteration had not completed after
-14 minutes. Even the fixed `8,8` against dealer 6 subtree had not completed
-after 572 seconds. Non-ace resplitting is the dominant source of growth. A
-fixed hard 11 against 6, by comparison, visited 1,483,593 states in 0.026
-seconds, while split aces against 6 visited 43,937,131 states in 0.747 seconds.
-These measurements are lower bounds and examples, not performance guarantees.
+Split utility is additive under independent draws. Instead of carrying several
+sibling hands and enumerating their cross-product, the adapter traverses one
+representative split hand and scales its payoff by two or four. A resplit pair
+therefore reuses the same information key as the original pair while another
+split is legal. This keeps both bounded-deal and full-tree traversals finite and
+substantially smaller than the former without-replacement, multi-hand model.
 
-The generic `--evaluate` path enumerates the same raw tree while materializing
-it in memory, so it remains substantially more demanding than training. Use
-checkpoints for long full-tree runs and start with `--iterations 1` to measure
-the cost on the current machine. The executable requires `--full-tree`
-explicitly so that this work cannot be mistaken for a hang.
+The generic `--evaluate` path materializes the reachable tree in memory and is
+therefore more demanding than training. The executable still requires an
+explicit choice between `--deal` and `--full-tree` so the intended scope is
+unambiguous.
 
 For compact analysis of a bounded deal, build the blackjack-specific helper:
 
@@ -461,11 +459,11 @@ make blackjack-compact-eval
 build/release/blackjack-compact-eval CHECKPOINT
 ```
 
-The helper merges future-equivalent deck and hand states into a DAG and supports
-hit, stand, double, and split decisions. It reports the learned policy value,
-the value of the matching single-deck S17, double-after-split, no-surrender
-basic strategy, and a deterministic policy-improvement candidate. Because a
-resplit can encounter the same abstract information set more than once along a
+The helper merges future-equivalent hand states into a DAG and supports hit,
+stand, double, and split decisions. It reports the learned policy value, the
+value of the matching multi-deck S17, double-after-split, no-surrender basic
+strategy, and a deterministic policy-improvement candidate. Because a resplit
+can encounter the same abstract information set more than once along a
 trajectory, the candidate improvement is a convergence proxy rather than a
 certified perfect-recall exploitability value.
 
@@ -477,17 +475,10 @@ build/release/blackjack-compact-eval --new-cfr-plus 150 OUTPUT.cfr 1 6 1
 build/release/blackjack-compact-eval INPUT.cfr 150 OUTPUT.cfr 1 6 1
 ```
 
-Omit the three ranks to use the undealt root. `OUTPUT.cfr` must not already
-exist. The compact update preserves raw visited-node statistics and can differ
-from a raw checkpoint at the last few floating-point bits because equivalent
-contributions are summed in a different order.
-
-The DAG does not by itself make unrestricted resplitting cheap. A fixed `8,8`
-against 6 probe was stopped at 45 million compact states, 80 million edges, and
-8.5 GiB resident memory before graph construction completed. Use the helper for
-bounded hands without non-ace resplit expansion; a sampling traversal or a
-different split-specific dynamic program is needed for practical complete-tree
-training under the current four-hand resplit rule.
+Omit the three ranks to use the root before the initial draw. `OUTPUT.cfr` must
+not already exist. The compact update preserves raw visited-node statistics and
+can differ from a raw checkpoint at the last few floating-point bits because
+equivalent contributions are summed in a different order.
 
 Each training report contains:
 

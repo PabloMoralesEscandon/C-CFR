@@ -86,7 +86,7 @@ require_text "$case_output" "--export-strategy FILE"
 require_text "$case_output" "--deal R,R,R"
 require_text "$case_output" "--full-tree"
 require_text "$case_output" "Exactly one of --deal and --full-tree is required."
-require_text "$case_output" "Start with --iterations 1."
+require_text "$case_output" "Chance draws use fixed basic-strategy probabilities"
 require_text "$case_output" "0  Successful execution or help."
 require_text "$case_output" \
     "1  Operation, library, clock, or write failure."
@@ -153,8 +153,7 @@ check_usage_error overlapping_outputs \
 check_usage_error combined_help "help can only be requested" \
     --iterations 1 --help
 
-# Training from the undealt deck is expensive, so the scope must be chosen
-# explicitly rather than defaulting to an apparent hang.
+# The caller must choose a visible deal or the root before the initial draw.
 check_usage_error missing_scope "missing required option --deal RANKS" \
     --iterations 1
 check_usage_error scope_conflict \
