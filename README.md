@@ -434,15 +434,19 @@ Each iteration runs one traversal for the only strategic player and enumerates
 the tree below the root. The dealer follows a deterministic policy and its draws
 are chance nodes, so it does not receive a second traversal.
 
-From the undealt deck that tree covers every deal of a 52-card deck, and its
-information-set keys merge player hands with the same hard or soft total.
-Different card orders and different hard-card compositions therefore reuse one
-stored strategy node. Soft and hard hands remain separate. The chance traversal
-still retains the undealt rank counts required by the without-replacement
-rules. In a measured release build, one `--full-tree` iteration visited
-10,641,003,431 states and completed in about 128 to 132 seconds. Hardware and
-build settings will change that timing, and a converged raw run can still take
-hours. Individual low-card deals alone reach tens of millions of states each.
+From the undealt deck that tree covers every deal of a 52-card deck. Strategy
+keys merge hands with the same dealer up card, hard or soft total, and available
+action class. The chance traversal still retains undealt rank counts for the
+without-replacement rules and the complete set of player hands after a split.
+
+The old 10.64-billion-state, roughly two-minute measurement applied to the v2
+hit/stand-only game and is not representative of the v3 rules. In an August
+2026 release-build probe, one v3 `--full-tree` iteration had not completed after
+14 minutes. Even the fixed `8,8` against dealer 6 subtree had not completed
+after 572 seconds. Non-ace resplitting is the dominant source of growth. A
+fixed hard 11 against 6, by comparison, visited 1,483,593 states in 0.026
+seconds, while split aces against 6 visited 43,937,131 states in 0.747 seconds.
+These measurements are lower bounds and examples, not performance guarantees.
 
 The generic `--evaluate` path enumerates the same raw tree while materializing
 it in memory, so it remains substantially more demanding than training. Use
@@ -450,30 +454,40 @@ checkpoints for long full-tree runs and start with `--iterations 1` to measure
 the cost on the current machine. The executable requires `--full-tree`
 explicitly so that this work cannot be mistaken for a hang.
 
-For exact full-tree analysis, build the blackjack-specific compact helper:
+For compact analysis of a bounded deal, build the blackjack-specific helper:
 
 ```sh
 make blackjack-compact-eval
 build/release/blackjack-compact-eval CHECKPOINT
 ```
 
-The helper merges logically identical deck and hand states into a DAG. The
-measured 10.64-billion-state traversal contains 10,617,359 distinct states in
-that representation. It reports the average value, the exact best-response
-value and exploitability, and the learned and optimal hit/stand policy for all
-280 information sets.
+The helper merges future-equivalent deck and hand states into a DAG and supports
+hit, stand, double, and split decisions. It reports the learned policy value,
+the value of the matching single-deck S17, double-after-split, no-surrender
+basic strategy, and a deterministic policy-improvement candidate. Because a
+resplit can encounter the same abstract information set more than once along a
+trajectory, the candidate improvement is a convergence proxy rather than a
+certified perfect-recall exploitability value.
 
-It can also resume a CFR or CFR+ checkpoint using the same compact
-representation:
+The helper can create a fresh CFR+ checkpoint as well as resume an existing CFR
+or CFR+ checkpoint:
 
 ```sh
-build/release/blackjack-compact-eval INPUT.cfr ITERATIONS OUTPUT.cfr
+build/release/blackjack-compact-eval --new-cfr-plus 150 OUTPUT.cfr 1 6 1
+build/release/blackjack-compact-eval INPUT.cfr 150 OUTPUT.cfr 1 6 1
 ```
 
-`OUTPUT.cfr` must not already exist. The compact update preserves the raw
-visited-node statistics. It can differ from a raw checkpoint at the last few
-floating-point bits because equivalent contributions are summed in a different
-order.
+Omit the three ranks to use the undealt root. `OUTPUT.cfr` must not already
+exist. The compact update preserves raw visited-node statistics and can differ
+from a raw checkpoint at the last few floating-point bits because equivalent
+contributions are summed in a different order.
+
+The DAG does not by itself make unrestricted resplitting cheap. A fixed `8,8`
+against 6 probe was stopped at 45 million compact states, 80 million edges, and
+8.5 GiB resident memory before graph construction completed. Use the helper for
+bounded hands without non-ace resplit expansion; a sampling traversal or a
+different split-specific dynamic program is needed for practical complete-tree
+training under the current four-hand resplit rule.
 
 Each training report contains:
 

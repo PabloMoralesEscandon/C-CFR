@@ -13,7 +13,8 @@
 #include "cfr/game.h"
 #include "cfr/info_store.h"
 
-#define BLACKJACK_INFOSET_COUNT (10 * 2 * 22)
+#define BLACKJACK_INFOSET_COUNT (10 * 2 * 22 * 3)
+#define COMPACT_MAX_PLAYER_ACTIONS 4
 #define EMPTY_INDEX SIZE_MAX
 #define INITIAL_EDGE_CAPACITY 2048
 #define INITIAL_NODE_CAPACITY 1024
@@ -26,15 +27,22 @@ typedef enum {
 } CompactNodeKind;
 
 typedef struct {
+    uint8_t total;
+    uint8_t card_count;
+    uint8_t ace_count;
+    uint8_t is_soft;
+    uint8_t first_card;
+    uint8_t second_card;
+    uint8_t stake_multiplier;
+    uint8_t from_split;
+} CompactHand;
+
+typedef struct {
     uint8_t phase;
-    uint8_t player_total;
-    uint8_t player_card_count;
-    uint8_t player_ace_count;
-    uint8_t player_is_soft;
-    uint8_t dealer_total;
-    uint8_t dealer_card_count;
-    uint8_t dealer_ace_count;
-    uint8_t dealer_is_soft;
+    CompactHand player_hands[CFR_BLACKJACK_MAX_PLAYER_HANDS];
+    uint8_t player_hand_count;
+    uint8_t active_player_hand;
+    CompactHand dealer_hand;
     uint8_t dealer_up_card;
     uint8_t cards_remaining;
     uint8_t remaining_cards[CFR_BLACKJACK_NUMBER_OF_CARD_RANKS];
@@ -89,12 +97,21 @@ typedef struct {
     bool present;
     bool selected;
     size_t selected_action;
+    size_t basic_action;
+    size_t action_count;
     InfoNode *node;
-    Probability current[2];
-    Probability learned[2];
-    Utility action_total[2];
+    Probability current[COMPACT_MAX_PLAYER_ACTIONS];
+    Probability learned[COMPACT_MAX_PLAYER_ACTIONS];
+    Utility action_total[COMPACT_MAX_PLAYER_ACTIONS];
     double counterfactual_reach;
 } CompactPolicy;
+
+enum {
+    COMPACT_ACTION_HIT = 0,
+    COMPACT_ACTION_STAND = 1,
+    COMPACT_ACTION_DOUBLE = 2,
+    COMPACT_ACTION_SPLIT = 3
+};
 
 static void graph_destroy(CompactGraph *graph) {
     if (graph == NULL)
@@ -148,16 +165,92 @@ static Status graph_init(CompactGraph *graph, const Game *game) {
     return CFR_STATUS_SUCCESS;
 }
 
+static Status compact_hand_from_blackjack(const BlackjackHand *hand,
+                                          CompactHand *compact) {
+    if (hand == NULL || compact == NULL || hand->total < 0 ||
+        hand->total > UINT8_MAX || hand->card_count > UINT8_MAX ||
+        hand->ace_count > UINT8_MAX || hand->first_card < 0 ||
+        hand->first_card > UINT8_MAX || hand->second_card < 0 ||
+        hand->second_card > UINT8_MAX || hand->stake_multiplier > UINT8_MAX)
+        return CFR_STATUS_INVALID_ARGUMENT;
+
+    *compact = (CompactHand){
+        .total = (uint8_t)hand->total,
+        .card_count = (uint8_t)hand->card_count,
+        .ace_count = (uint8_t)hand->ace_count,
+        .is_soft = hand->is_soft ? 1 : 0,
+        .first_card = (uint8_t)hand->first_card,
+        .second_card = (uint8_t)hand->second_card,
+        .stake_multiplier = (uint8_t)hand->stake_multiplier,
+        .from_split = hand->from_split ? 1 : 0,
+    };
+    return CFR_STATUS_SUCCESS;
+}
+
+static void compact_normalize_finished_hand(CompactHand *hand) {
+    const bool natural = hand->card_count == 2 && hand->total == 21 &&
+                         hand->from_split == 0;
+
+    hand->card_count = natural ? 2 : 0;
+    hand->ace_count = 0;
+    hand->is_soft = 0;
+    hand->first_card = 0;
+    hand->second_card = 0;
+    hand->from_split = 0;
+}
+
+static bool phase_has_live_player_hands(BlackjackPhase phase) {
+    switch (phase) {
+    case CFR_BLACKJACK_PHASE_DEAL_PLAYER_FIRST:
+    case CFR_BLACKJACK_PHASE_DEAL_DEALER_UP_CARD:
+    case CFR_BLACKJACK_PHASE_DEAL_PLAYER_SECOND:
+    case CFR_BLACKJACK_PHASE_DEAL_DEALER_HOLE_CARD:
+    case CFR_BLACKJACK_PHASE_PLAYER_TURN:
+    case CFR_BLACKJACK_PHASE_DEAL_PLAYER_HIT:
+    case CFR_BLACKJACK_PHASE_DEAL_PLAYER_DOUBLE:
+    case CFR_BLACKJACK_PHASE_DEAL_SPLIT_HAND:
+        return true;
+    case CFR_BLACKJACK_PHASE_DEAL_DEALER_HIT:
+    case CFR_BLACKJACK_PHASE_TERMINAL:
+    default:
+        return false;
+    }
+}
+
+static bool compact_active_hand_can_split(const BlackjackState *state) {
+    const BlackjackHand *hand =
+        &state->player_hands[state->active_player_hand];
+
+    return state->phase == CFR_BLACKJACK_PHASE_PLAYER_TURN &&
+           state->player_hand_count < CFR_BLACKJACK_MAX_PLAYER_HANDS &&
+           hand->card_count == 2 && hand->stake_multiplier == 1 &&
+           hand->first_card == hand->second_card && hand->first_card > 0 &&
+           !(hand->from_split &&
+             hand->first_card == CFR_BLACKJACK_CARD_ACE);
+}
+
+static void compact_normalize_live_hand(CompactHand *hand,
+                                        bool retain_pair_rank) {
+    hand->ace_count = 0;
+    if (hand->card_count > 2) {
+        hand->card_count = 3;
+        hand->first_card = 0;
+        hand->second_card = 0;
+        hand->from_split = 0;
+    } else if (hand->card_count == 2 && !retain_pair_rank) {
+        hand->first_card = 0;
+        hand->second_card = 0;
+        hand->from_split = 0;
+    }
+}
+
 static Status compact_state_from_blackjack(const BlackjackState *state,
                                            CompactState *compact) {
     if (state == NULL || compact == NULL || state->phase < 0 ||
-        state->phase > CFR_BLACKJACK_PHASE_TERMINAL ||
-        state->player_hand.total < 0 || state->player_hand.total > UINT8_MAX ||
-        state->dealer_hand.total < 0 || state->dealer_hand.total > UINT8_MAX ||
-        state->player_hand.card_count > UINT8_MAX ||
-        state->player_hand.ace_count > UINT8_MAX ||
-        state->dealer_hand.card_count > UINT8_MAX ||
-        state->dealer_hand.ace_count > UINT8_MAX ||
+        state->phase > CFR_BLACKJACK_PHASE_DEAL_SPLIT_HAND ||
+        state->player_hand_count > CFR_BLACKJACK_MAX_PLAYER_HANDS ||
+        state->player_hand_count > UINT8_MAX ||
+        state->active_player_hand > UINT8_MAX ||
         state->dealer_up_card < 0 || state->dealer_up_card > UINT8_MAX ||
         state->cards_remaining > UINT8_MAX ||
         state->undo_count > CFR_BLACKJACK_UNDO_HISTORY_CAPACITY ||
@@ -166,14 +259,39 @@ static Status compact_state_from_blackjack(const BlackjackState *state,
 
     CompactState result = {0};
     result.phase = (uint8_t)state->phase;
-    result.player_total = (uint8_t)state->player_hand.total;
-    result.player_card_count = (uint8_t)state->player_hand.card_count;
-    result.player_ace_count = (uint8_t)state->player_hand.ace_count;
-    result.player_is_soft = state->player_hand.is_soft ? 1 : 0;
-    result.dealer_total = (uint8_t)state->dealer_hand.total;
-    result.dealer_card_count = (uint8_t)state->dealer_hand.card_count;
-    result.dealer_ace_count = (uint8_t)state->dealer_hand.ace_count;
-    result.dealer_is_soft = state->dealer_hand.is_soft ? 1 : 0;
+    result.player_hand_count = (uint8_t)state->player_hand_count;
+    result.active_player_hand = (uint8_t)state->active_player_hand;
+    for (size_t index = 0; index < CFR_BLACKJACK_MAX_PLAYER_HANDS; index++) {
+        Status status = compact_hand_from_blackjack(
+            &state->player_hands[index], &result.player_hands[index]);
+        if (status != CFR_STATUS_SUCCESS)
+            return status;
+        if (index >= state->player_hand_count)
+            continue;
+        const bool live = phase_has_live_player_hands(state->phase) &&
+                          index >= state->active_player_hand;
+        if (!live) {
+            compact_normalize_finished_hand(&result.player_hands[index]);
+        } else {
+            const bool retain_pair_rank =
+                index == state->active_player_hand &&
+                compact_active_hand_can_split(state);
+            compact_normalize_live_hand(&result.player_hands[index],
+                                        retain_pair_rank);
+        }
+    }
+    Status status =
+        compact_hand_from_blackjack(&state->dealer_hand, &result.dealer_hand);
+    if (status != CFR_STATUS_SUCCESS)
+        return status;
+    if (state->phase == CFR_BLACKJACK_PHASE_TERMINAL) {
+        compact_normalize_finished_hand(&result.dealer_hand);
+    } else {
+        compact_normalize_live_hand(&result.dealer_hand, false);
+        if (state->phase > CFR_BLACKJACK_PHASE_DEAL_DEALER_HOLE_CARD &&
+            result.dealer_hand.card_count == 2)
+            result.dealer_hand.card_count = 3;
+    }
     result.dealer_up_card = (uint8_t)state->dealer_up_card;
     result.cards_remaining = (uint8_t)state->cards_remaining;
     result.depth = (uint8_t)state->undo_count;
@@ -419,7 +537,8 @@ static Status graph_build_node(CompactGraph *graph, BlackjackState *state,
     if (actor.kind == CFR_ACTOR_CHANCE) {
         graph->nodes[index].kind = COMPACT_CHANCE;
     } else if (actor.kind == CFR_ACTOR_PLAYER &&
-               actor.player == CFR_PLAYER_0 && action_count == 2) {
+               actor.player == CFR_PLAYER_0 && action_count >= 2 &&
+               action_count <= COMPACT_MAX_PLAYER_ACTIONS) {
         InfoSetKey key = -1;
         status = graph->operations->information_set_key(
             graph->game->context, (const GameState *)state, &key);
@@ -431,6 +550,14 @@ static Status graph_build_node(CompactGraph *graph, BlackjackState *state,
         graph->nodes[index].information_key = key;
         graph->nodes[index].next_in_group = graph->group_heads[key];
         graph->group_heads[key] = index;
+        const Action expected_actions[COMPACT_MAX_PLAYER_ACTIONS] = {
+            CFR_BLACKJACK_ACTION_HIT, CFR_BLACKJACK_ACTION_STAND,
+            CFR_BLACKJACK_ACTION_DOUBLE_DOWN, CFR_BLACKJACK_ACTION_SPLIT};
+        for (size_t action_index = 0; action_index < action_count;
+             action_index++) {
+            if (actions[action_index] != expected_actions[action_index])
+                return CFR_STATUS_INVALID_ARGUMENT;
+        }
     } else {
         return CFR_STATUS_INVALID_ARGUMENT;
     }
@@ -514,7 +641,8 @@ static Status graph_counterfactual_reach(CompactGraph *graph,
 }
 
 static Status policy_load(InfoStore *store, const CompactGraph *graph,
-                          CompactPolicy policies[BLACKJACK_INFOSET_COUNT]) {
+                          CompactPolicy policies[BLACKJACK_INFOSET_COUNT],
+                          bool create_missing) {
     if (store == NULL || graph == NULL || policies == NULL)
         return CFR_STATUS_INVALID_ARGUMENT;
 
@@ -524,18 +652,29 @@ static Status policy_load(InfoStore *store, const CompactGraph *graph,
         InfoNode *node = NULL;
         Status status =
             cfr_info_store_find(store, (InfoSetKey)key, &node);
+        if (status == CFR_STATUS_NOT_FOUND && create_missing) {
+            const size_t group_head = graph->group_heads[key];
+            if (group_head >= graph->node_count)
+                return CFR_STATUS_INVALID_ARGUMENT;
+            status = cfr_info_store_get_or_create(
+                store, (InfoSetKey)key,
+                graph->nodes[group_head].edge_count, &node);
+        }
         if (status != CFR_STATUS_SUCCESS || node == NULL ||
-            node->action_count != 2)
+            node->action_count < 2 ||
+            node->action_count > COMPACT_MAX_PLAYER_ACTIONS)
             return status == CFR_STATUS_SUCCESS ? CFR_STATUS_INVALID_ARGUMENT
                                                 : status;
         size_t required = 0;
         status = cfr_evaluation_average_strategy(
-            store, (InfoSetKey)key, policies[key].learned, 2, &required);
-        if (status != CFR_STATUS_SUCCESS || required != 2)
+            store, (InfoSetKey)key, policies[key].learned,
+            COMPACT_MAX_PLAYER_ACTIONS, &required);
+        if (status != CFR_STATUS_SUCCESS || required != node->action_count)
             return status == CFR_STATUS_SUCCESS ? CFR_STATUS_INVALID_ARGUMENT
                                                 : status;
         policies[key].present = true;
         policies[key].node = node;
+        policies[key].action_count = node->action_count;
     }
     return CFR_STATUS_SUCCESS;
 }
@@ -567,9 +706,10 @@ static Status profile_value(CompactGraph *graph, const CompactPolicy *policies,
     } else if (node->kind == COMPACT_PLAYER) {
         const InfoSetKey key = node->information_key;
         if (key < 0 || key >= BLACKJACK_INFOSET_COUNT ||
-            !policies[key].present || node->edge_count != 2)
+            !policies[key].present ||
+            node->edge_count != policies[key].action_count)
             return CFR_STATUS_INVALID_ARGUMENT;
-        for (size_t action = 0; action < 2; action++) {
+        for (size_t action = 0; action < policies[key].action_count; action++) {
             Utility child = 0.0;
             Status status = profile_value(
                 graph, policies, graph->edges[node->edge_offset + action].child,
@@ -586,6 +726,149 @@ static Status profile_value(CompactGraph *graph, const CompactPolicy *policies,
     node->profile_value = result;
     node->profile_ready = true;
     *value_out = result;
+    return CFR_STATUS_SUCCESS;
+}
+
+static const char *compact_action_name(size_t action) {
+    switch (action) {
+    case COMPACT_ACTION_HIT:
+        return "hit";
+    case COMPACT_ACTION_STAND:
+        return "stand";
+    case COMPACT_ACTION_DOUBLE:
+        return "double";
+    case COMPACT_ACTION_SPLIT:
+        return "split";
+    default:
+        return "unknown";
+    }
+}
+
+static const char *decision_class_name(size_t decision_class) {
+    switch (decision_class) {
+    case 0:
+        return "regular";
+    case 1:
+        return "double";
+    case 2:
+        return "split";
+    default:
+        return "unknown";
+    }
+}
+
+/*
+ * Total-dependent single-deck S17 strategy with DAS and no surrender.
+ * Conditional doubles and splits use the chart's hit/stand fallbacks.
+ * https://wizardofodds.com/games/blackjack/strategy/1-deck/
+ */
+static size_t basic_hard_action(int total, size_t dealer,
+                                bool double_available) {
+    if (total >= 17)
+        return COMPACT_ACTION_STAND;
+    if (total >= 13)
+        return dealer >= 2 && dealer <= 6 ? COMPACT_ACTION_STAND
+                                          : COMPACT_ACTION_HIT;
+    if (total == 12)
+        return dealer >= 4 && dealer <= 6 ? COMPACT_ACTION_STAND
+                                          : COMPACT_ACTION_HIT;
+    if (double_available) {
+        if (total == 11)
+            return COMPACT_ACTION_DOUBLE;
+        if (total == 10 && dealer >= 2 && dealer <= 9)
+            return COMPACT_ACTION_DOUBLE;
+        if (total == 9 && dealer >= 2 && dealer <= 6)
+            return COMPACT_ACTION_DOUBLE;
+        if (total == 8 && dealer >= 5 && dealer <= 6)
+            return COMPACT_ACTION_DOUBLE;
+    }
+    return COMPACT_ACTION_HIT;
+}
+
+static size_t basic_soft_action(int total, size_t dealer,
+                                bool double_available) {
+    if (total >= 20)
+        return COMPACT_ACTION_STAND;
+    if (total == 19) {
+        if (double_available && dealer == 6)
+            return COMPACT_ACTION_DOUBLE;
+        return COMPACT_ACTION_STAND;
+    }
+    if (total == 18) {
+        if (double_available && dealer >= 3 && dealer <= 6)
+            return COMPACT_ACTION_DOUBLE;
+        if (dealer == 2 || dealer == 7 || dealer == 8 || dealer == 1)
+            return COMPACT_ACTION_STAND;
+        return COMPACT_ACTION_HIT;
+    }
+    if (double_available) {
+        if (total == 17 && dealer >= 2 && dealer <= 6)
+            return COMPACT_ACTION_DOUBLE;
+        if (total >= 13 && total <= 16 && dealer >= 4 && dealer <= 6)
+            return COMPACT_ACTION_DOUBLE;
+    }
+    return COMPACT_ACTION_HIT;
+}
+
+static size_t basic_pair_action(int total, bool soft, size_t dealer) {
+    if (soft && total == 12)
+        return COMPACT_ACTION_SPLIT;
+    if (soft)
+        return SIZE_MAX;
+
+    switch (total) {
+    case 4:
+        return dealer >= 2 && dealer <= 7 ? COMPACT_ACTION_SPLIT : SIZE_MAX;
+    case 6:
+        return dealer >= 2 && dealer <= 8 ? COMPACT_ACTION_SPLIT : SIZE_MAX;
+    case 8:
+        return dealer >= 4 && dealer <= 6 ? COMPACT_ACTION_SPLIT : SIZE_MAX;
+    case 12:
+        return dealer >= 2 && dealer <= 7 ? COMPACT_ACTION_SPLIT : SIZE_MAX;
+    case 14:
+        if (dealer >= 2 && dealer <= 8)
+            return COMPACT_ACTION_SPLIT;
+        if (dealer == 10)
+            return COMPACT_ACTION_STAND;
+        return SIZE_MAX;
+    case 16:
+        return COMPACT_ACTION_SPLIT;
+    case 18:
+        return (dealer >= 2 && dealer <= 6) || dealer == 8 || dealer == 9
+                   ? COMPACT_ACTION_SPLIT
+                   : COMPACT_ACTION_STAND;
+    case 20:
+        return COMPACT_ACTION_STAND;
+    default:
+        return SIZE_MAX;
+    }
+}
+
+static Status basic_action_for_key(size_t key, size_t action_count,
+                                   size_t *action_out) {
+    if (key >= BLACKJACK_INFOSET_COUNT || action_out == NULL)
+        return CFR_STATUS_INVALID_ARGUMENT;
+
+    const size_t block = key / 66;
+    const size_t remainder = key % 66;
+    const int total = (int)(remainder / 3);
+    const size_t decision_class = remainder % 3;
+    const bool soft = (block % 2) != 0;
+    const size_t dealer = block / 2 + 1;
+    if (dealer < 1 || dealer > 10 || action_count != decision_class + 2)
+        return CFR_STATUS_INVALID_ARGUMENT;
+
+    size_t action = SIZE_MAX;
+    if (decision_class == 2)
+        action = basic_pair_action(total, soft, dealer);
+    if (action == SIZE_MAX) {
+        const bool double_available = decision_class != 0;
+        action = soft ? basic_soft_action(total, dealer, double_available)
+                      : basic_hard_action(total, dealer, double_available);
+    }
+    if (action >= action_count)
+        return CFR_STATUS_INVALID_ARGUMENT;
+    *action_out = action;
     return CFR_STATUS_SUCCESS;
 }
 
@@ -618,8 +901,9 @@ static Status best_response_value(CompactGraph *graph,
     } else if (node->kind == COMPACT_PLAYER) {
         const InfoSetKey key = node->information_key;
         if (key < 0 || key >= BLACKJACK_INFOSET_COUNT ||
-            !policies[key].selected || node->edge_count != 2 ||
-            policies[key].selected_action >= 2)
+            !policies[key].selected ||
+            node->edge_count != policies[key].action_count ||
+            policies[key].selected_action >= policies[key].action_count)
             return CFR_STATUS_INVALID_ARGUMENT;
         const size_t child =
             graph->edges[node->edge_offset +
@@ -639,11 +923,32 @@ static Status best_response_value(CompactGraph *graph,
     return CFR_STATUS_SUCCESS;
 }
 
-static int information_low_total(size_t key) {
-    const size_t block = key / 22;
-    const int total = (int)(key % 22);
-    const bool soft = (block % 2) != 0;
-    return soft ? total - 10 : total;
+static void clear_selected_policy_cache(CompactGraph *graph) {
+    for (size_t index = 0; index < graph->node_count; index++)
+        graph->nodes[index].best_response_ready = false;
+}
+
+static Status evaluate_basic_strategy(CompactGraph *graph,
+                                      CompactPolicy *policies,
+                                      size_t root_index,
+                                      Utility *value_out) {
+    if (graph == NULL || policies == NULL || value_out == NULL ||
+        root_index >= graph->node_count)
+        return CFR_STATUS_INVALID_ARGUMENT;
+
+    for (size_t key = 0; key < BLACKJACK_INFOSET_COUNT; key++) {
+        CompactPolicy *policy = &policies[key];
+        if (!policy->present)
+            continue;
+        Status status = basic_action_for_key(key, policy->action_count,
+                                             &policy->basic_action);
+        if (status != CFR_STATUS_SUCCESS)
+            return status;
+        policy->selected_action = policy->basic_action;
+        policy->selected = true;
+    }
+    clear_selected_policy_cache(graph);
+    return best_response_value(graph, policies, root_index, value_out);
 }
 
 static Status solve_best_response(CompactGraph *graph,
@@ -651,11 +956,28 @@ static Status solve_best_response(CompactGraph *graph,
     if (graph == NULL || policies == NULL)
         return CFR_STATUS_INVALID_ARGUMENT;
 
-    for (int low_total = 21; low_total >= 0; low_total--) {
+    for (size_t key = 0; key < BLACKJACK_INFOSET_COUNT; key++) {
+        CompactPolicy *policy = &policies[key];
+        if (!policy->present)
+            continue;
+        size_t best_action = 0;
+        for (size_t action = 1; action < policy->action_count; action++) {
+            if (policy->learned[action] > policy->learned[best_action])
+                best_action = action;
+        }
+        policy->selected_action = best_action;
+        policy->selected = true;
+    }
+
+    for (size_t pass = 0; pass < 128; pass++) {
+        clear_selected_policy_cache(graph);
         for (size_t key = 0; key < BLACKJACK_INFOSET_COUNT; key++) {
             CompactPolicy *policy = &policies[key];
-            if (!policy->present || information_low_total(key) != low_total)
+            if (!policy->present)
                 continue;
+            policy->counterfactual_reach = 0.0;
+            for (size_t action = 0; action < policy->action_count; action++)
+                policy->action_total[action] = 0.0;
 
             size_t node_index = graph->group_heads[key];
             while (node_index != EMPTY_INDEX) {
@@ -664,12 +986,13 @@ static Status solve_best_response(CompactGraph *graph,
                 const CompactNode *node = &graph->nodes[node_index];
                 if (node->kind != COMPACT_PLAYER ||
                     node->information_key != (InfoSetKey)key ||
-                    node->edge_count != 2 ||
+                    node->edge_count != policy->action_count ||
                     !isfinite(node->counterfactual_reach) ||
                     node->counterfactual_reach < 0.0)
                     return CFR_STATUS_INVALID_ARGUMENT;
                 policy->counterfactual_reach += node->counterfactual_reach;
-                for (size_t action = 0; action < 2; action++) {
+                for (size_t action = 0; action < policy->action_count;
+                     action++) {
                     Utility child_value = 0.0;
                     Status status = best_response_value(
                         graph, policies,
@@ -683,16 +1006,34 @@ static Status solve_best_response(CompactGraph *graph,
                 node_index = node->next_in_group;
             }
             if (!isfinite(policy->counterfactual_reach) ||
-                policy->counterfactual_reach <= 0.0 ||
-                !isfinite(policy->action_total[0]) ||
-                !isfinite(policy->action_total[1]))
+                policy->counterfactual_reach <= 0.0)
                 return CFR_STATUS_NUMERIC_ERROR;
-            policy->selected_action =
-                policy->action_total[0] >= policy->action_total[1] ? 0 : 1;
-            policy->selected = true;
+            for (size_t action = 0; action < policy->action_count; action++) {
+                if (!isfinite(policy->action_total[action]))
+                    return CFR_STATUS_NUMERIC_ERROR;
+            }
         }
+
+        size_t changes = 0;
+        for (size_t key = 0; key < BLACKJACK_INFOSET_COUNT; key++) {
+            CompactPolicy *policy = &policies[key];
+            if (!policy->present)
+                continue;
+            size_t best_action = 0;
+            for (size_t action = 1; action < policy->action_count; action++) {
+                if (policy->action_total[action] >
+                    policy->action_total[best_action])
+                    best_action = action;
+            }
+            if (best_action != policy->selected_action) {
+                policy->selected_action = best_action;
+                changes++;
+            }
+        }
+        if (changes == 0)
+            return CFR_STATUS_SUCCESS;
     }
-    return CFR_STATUS_SUCCESS;
+    return CFR_STATUS_NUMERIC_ERROR;
 }
 
 static Status iteration_value(CompactGraph *graph,
@@ -724,9 +1065,10 @@ static Status iteration_value(CompactGraph *graph,
     } else if (node->kind == COMPACT_PLAYER) {
         const InfoSetKey key = node->information_key;
         if (key < 0 || key >= BLACKJACK_INFOSET_COUNT ||
-            !policies[key].present || node->edge_count != 2)
+            !policies[key].present ||
+            node->edge_count != policies[key].action_count)
             return CFR_STATUS_INVALID_ARGUMENT;
-        for (size_t action = 0; action < 2; action++) {
+        for (size_t action = 0; action < policies[key].action_count; action++) {
             Utility child = 0.0;
             Status status = iteration_value(
                 graph, policies, graph->edges[node->edge_offset + action].child,
@@ -755,7 +1097,8 @@ static Status prepare_iteration(CompactGraph *graph,
         if (!policies[key].present)
             continue;
         Status status = cfr_info_node_current_strategy(
-            policies[key].node, policies[key].current, 2);
+            policies[key].node, policies[key].current,
+            COMPACT_MAX_PLAYER_ACTIONS);
         if (status != CFR_STATUS_SUCCESS)
             return status;
     }
@@ -780,7 +1123,9 @@ static Status prepare_iteration(CompactGraph *graph,
                 if (node->kind == COMPACT_PLAYER) {
                     const InfoSetKey key = node->information_key;
                     if (key < 0 || key >= BLACKJACK_INFOSET_COUNT ||
-                        !policies[key].present || action >= 2)
+                        !policies[key].present ||
+                        action >= policies[key].action_count ||
+                        node->edge_count != policies[key].action_count)
                         return CFR_STATUS_INVALID_ARGUMENT;
                     weight = policies[key].current[action];
                 }
@@ -817,8 +1162,10 @@ static Status compact_cfr_iteration(CompactGraph *graph,
         return status;
     (void)root_value;
 
-    Utility regret_delta[BLACKJACK_INFOSET_COUNT][2] = {{0.0}};
-    double strategy_delta[BLACKJACK_INFOSET_COUNT][2] = {{0.0}};
+    Utility regret_delta[BLACKJACK_INFOSET_COUNT]
+                        [COMPACT_MAX_PLAYER_ACTIONS] = {{0.0}};
+    double strategy_delta[BLACKJACK_INFOSET_COUNT]
+                         [COMPACT_MAX_PLAYER_ACTIONS] = {{0.0}};
     for (size_t key = 0; key < BLACKJACK_INFOSET_COUNT; key++) {
         if (!policies[key].present)
             continue;
@@ -827,10 +1174,12 @@ static Status compact_cfr_iteration(CompactGraph *graph,
             if (node_index >= graph->node_count)
                 return CFR_STATUS_INVALID_ARGUMENT;
             CompactNode *node = &graph->nodes[node_index];
-            if (!node->iteration_ready || node->edge_count != 2 ||
+            if (!node->iteration_ready ||
+                node->edge_count != policies[key].action_count ||
                 node->information_key != (InfoSetKey)key)
                 return CFR_STATUS_INVALID_ARGUMENT;
-            for (size_t action = 0; action < 2; action++) {
+            for (size_t action = 0; action < policies[key].action_count;
+                 action++) {
                 Utility child_value = 0.0;
                 status = iteration_value(
                     graph, policies,
@@ -858,7 +1207,8 @@ static Status compact_cfr_iteration(CompactGraph *graph,
         if (!policies[key].present)
             continue;
         status = cfr_info_node_check_deltas(
-            policies[key].node, regret_delta[key], strategy_delta[key], 2);
+            policies[key].node, regret_delta[key], strategy_delta[key],
+            policies[key].action_count);
         if (status != CFR_STATUS_SUCCESS)
             return status;
     }
@@ -866,11 +1216,13 @@ static Status compact_cfr_iteration(CompactGraph *graph,
         if (!policies[key].present)
             continue;
         status = cfr_info_node_apply_deltas(
-            policies[key].node, regret_delta[key], strategy_delta[key], 2);
+            policies[key].node, regret_delta[key], strategy_delta[key],
+            policies[key].action_count);
         if (status != CFR_STATUS_SUCCESS)
             return status;
         if (variant == CFR_TRAINER_VARIANT_CFR_PLUS) {
-            for (size_t action = 0; action < 2; action++) {
+            for (size_t action = 0; action < policies[key].action_count;
+                 action++) {
                 if (policies[key].node->regret_sums[action] < 0.0)
                     policies[key].node->regret_sums[action] = 0.0;
             }
@@ -969,13 +1321,20 @@ static Status write_checkpoint(const char *path, const Trainer *trainer) {
 }
 
 int main(int argc, char **argv) {
-    if (argc != 2 && argc != 4 && argc != 5 && argc != 7) {
+    const bool fresh = argc > 1 && argv[1] != NULL &&
+                       strcmp(argv[1], "--new-cfr-plus") == 0;
+    if ((fresh && argc != 4 && argc != 7) ||
+        (!fresh && argc != 2 && argc != 4 && argc != 5 && argc != 7)) {
         (void)fprintf(stderr,
                       "usage: %s CHECKPOINT [PLAYER_CARD DEALER_UP_CARD "
                       "PLAYER_CARD]\n"
                       "       %s CHECKPOINT TRAIN_ITERATIONS "
                       "OUTPUT_CHECKPOINT [PLAYER_CARD DEALER_UP_CARD "
+                      "PLAYER_CARD]\n"
+                      "       %s --new-cfr-plus TRAIN_ITERATIONS "
+                      "OUTPUT_CHECKPOINT [PLAYER_CARD DEALER_UP_CARD "
                       "PLAYER_CARD]\n",
+                      argc > 0 ? argv[0] : "blackjack-compact-eval",
                       argc > 0 ? argv[0] : "blackjack-compact-eval",
                       argc > 0 ? argv[0] : "blackjack-compact-eval");
         return EXIT_FAILURE;
@@ -1012,21 +1371,35 @@ int main(int argc, char **argv) {
             return fail_status("apply visible deal", status);
     }
 
-    checkpoint = fopen(argv[1], "rb");
-    if (checkpoint == NULL) {
-        (void)fprintf(stderr, "error: open %s: %s\n", argv[1],
-                      strerror(errno));
-        return EXIT_FAILURE;
+    if (fresh) {
+        status = cfr_info_store_init(&store);
+        if (status != CFR_STATUS_SUCCESS)
+            return fail_status("initialize information store", status);
+        store_initialized = true;
+        status = cfr_trainer_init_plus(
+            &trainer, game, cfr_blackjack_state_as_game_state(&state),
+            &store);
+        if (status != CFR_STATUS_SUCCESS) {
+            result = fail_status("initialize CFR+ trainer", status);
+            goto cleanup;
+        }
+    } else {
+        checkpoint = fopen(argv[1], "rb");
+        if (checkpoint == NULL) {
+            (void)fprintf(stderr, "error: open %s: %s\n", argv[1],
+                          strerror(errno));
+            return EXIT_FAILURE;
+        }
+        status = cfr_checkpoint_read(
+            checkpoint, game, cfr_blackjack_state_as_game_state(&state),
+            &store, &trainer);
+        if (fclose(checkpoint) != 0 && status == CFR_STATUS_SUCCESS)
+            status = CFR_STATUS_IO_ERROR;
+        checkpoint = NULL;
+        if (status != CFR_STATUS_SUCCESS)
+            return fail_status("load checkpoint", status);
+        store_initialized = true;
     }
-    status = cfr_checkpoint_read(
-        checkpoint, game, cfr_blackjack_state_as_game_state(&state), &store,
-        &trainer);
-    if (fclose(checkpoint) != 0 && status == CFR_STATUS_SUCCESS)
-        status = CFR_STATUS_IO_ERROR;
-    checkpoint = NULL;
-    if (status != CFR_STATUS_SUCCESS)
-        return fail_status("load checkpoint", status);
-    store_initialized = true;
 
     status = graph_init(&graph, game);
     if (status != CFR_STATUS_SUCCESS) {
@@ -1044,7 +1417,7 @@ int main(int argc, char **argv) {
         result = fail_status("calculate counterfactual reach", status);
         goto cleanup;
     }
-    status = policy_load(&store, &graph, policies);
+    status = policy_load(&store, &graph, policies, fresh);
     if (status != CFR_STATUS_SUCCESS) {
         result = fail_status("load average policy", status);
         goto cleanup;
@@ -1066,7 +1439,7 @@ int main(int argc, char **argv) {
             result = fail_status("write compact checkpoint", status);
             goto cleanup;
         }
-        status = policy_load(&store, &graph, policies);
+        status = policy_load(&store, &graph, policies, false);
         if (status != CFR_STATUS_SUCCESS) {
             result = fail_status("refresh average policy", status);
             goto cleanup;
@@ -1079,21 +1452,33 @@ int main(int argc, char **argv) {
         result = fail_status("evaluate average policy", status);
         goto cleanup;
     }
-    status = solve_best_response(&graph, policies);
+    Utility basic_value = 0.0;
+    status = evaluate_basic_strategy(&graph, policies, root_index,
+                                     &basic_value);
     if (status != CFR_STATUS_SUCCESS) {
-        result = fail_status("solve compact best response", status);
+        result = fail_status("evaluate basic strategy", status);
         goto cleanup;
     }
-    Utility best_value = 0.0;
-    status = best_response_value(&graph, policies, root_index, &best_value);
+    status = solve_best_response(&graph, policies);
     if (status != CFR_STATUS_SUCCESS) {
-        result = fail_status("evaluate best response", status);
+        result = fail_status("solve candidate deterministic policy", status);
+        goto cleanup;
+    }
+    Utility candidate_value = 0.0;
+    status = best_response_value(&graph, policies, root_index,
+                                 &candidate_value);
+    if (status != CFR_STATUS_SUCCESS) {
+        result = fail_status("evaluate candidate deterministic policy",
+                             status);
         goto cleanup;
     }
 
-    const Utility improvement = best_value - learned_value;
-    if (!isfinite(improvement) || improvement < -1e-10) {
-        result = fail_status("validate improvement", CFR_STATUS_NUMERIC_ERROR);
+    const Utility candidate_improvement = candidate_value - learned_value;
+    const Utility learned_minus_basic = learned_value - basic_value;
+    if (!isfinite(candidate_improvement) || !isfinite(learned_minus_basic) ||
+        candidate_improvement < -1e-10) {
+        result = fail_status("validate policy comparison",
+                             CFR_STATUS_NUMERIC_ERROR);
         goto cleanup;
     }
     (void)printf("graph nodes=%zu edges=%zu maximum_depth=%zu "
@@ -1102,40 +1487,88 @@ int main(int argc, char **argv) {
                  graph.raw_visit_count);
     (void)printf("evaluation training_iterations=%zu "
                  "average_value_player_0=%.17g "
-                 "best_response_value_player_0=%.17g "
-                 "improvement_player_0=%.17g exploitability=%.17g\n",
-                 trainer.training_iterations, learned_value, best_value,
-                 improvement < 0.0 ? 0.0 : improvement,
-                 improvement < 0.0 ? 0.0 : improvement / 2.0);
+                 "basic_strategy_value_player_0=%.17g "
+                 "learned_minus_basic=%.17g "
+                 "candidate_policy_value_player_0=%.17g "
+                 "candidate_improvement_proxy=%.17g\n",
+                 trainer.training_iterations, learned_value, basic_value,
+                 learned_minus_basic, candidate_value,
+                 candidate_improvement < 0.0 ? 0.0
+                                             : candidate_improvement);
 
-    size_t disagreements = 0;
+    size_t basic_disagreements = 0;
+    size_t candidate_disagreements = 0;
+    size_t policy_count = 0;
     for (size_t key = 0; key < BLACKJACK_INFOSET_COUNT; key++) {
         const CompactPolicy *policy = &policies[key];
         if (!policy->present)
             continue;
-        const size_t block = key / 22;
-        const int total = (int)(key % 22);
+        const size_t block = key / 66;
+        const size_t remainder = key % 66;
+        const int total = (int)(remainder / 3);
+        const size_t decision_class = remainder % 3;
         const bool soft = (block % 2) != 0;
         const size_t dealer = block / 2 + 1;
-        const size_t learned_action =
-            policy->learned[0] >= policy->learned[1] ? 0 : 1;
-        const Utility hit_value =
-            policy->action_total[0] / policy->counterfactual_reach;
-        const Utility stand_value =
-            policy->action_total[1] / policy->counterfactual_reach;
+        size_t learned_action = 0;
+        size_t second_action = 0;
+        for (size_t action = 1; action < policy->action_count; action++) {
+            if (policy->learned[action] >
+                policy->learned[learned_action])
+                learned_action = action;
+        }
+        for (size_t action = 0; action < policy->action_count; action++) {
+            if (action == policy->selected_action)
+                continue;
+            if (second_action == policy->selected_action ||
+                policy->action_total[action] >
+                    policy->action_total[second_action])
+                second_action = action;
+        }
+        const Utility hit_value = policy->action_total[0] /
+                                  policy->counterfactual_reach;
+        const Utility stand_value = policy->action_total[1] /
+                                    policy->counterfactual_reach;
+        const Utility double_value =
+            policy->action_count > 2
+                ? policy->action_total[2] / policy->counterfactual_reach
+                : 0.0;
+        const Utility split_value =
+            policy->action_count > 3
+                ? policy->action_total[3] / policy->counterfactual_reach
+                : 0.0;
+        const Utility action_gap =
+            (policy->action_total[policy->selected_action] -
+             policy->action_total[second_action]) /
+            policy->counterfactual_reach;
+        if (learned_action != policy->basic_action)
+            basic_disagreements++;
         if (learned_action != policy->selected_action)
-            disagreements++;
+            candidate_disagreements++;
+        policy_count++;
         (void)printf(
-            "policy key=%zu dealer=%zu hand=%s total=%d learned_hit=%.17g "
-            "learned_stand=%.17g best=%s hit_value=%.17g "
-            "stand_value=%.17g action_gap=%.17g argmax_match=%s\n",
+            "policy key=%zu dealer=%zu hand=%s total=%d class=%s "
+            "action_count=%zu learned_hit=%.17g learned_stand=%.17g "
+            "learned_double=%.17g learned_split=%.17g learned=%s "
+            "basic=%s candidate=%s candidate_hit_value=%.17g "
+            "candidate_stand_value=%.17g candidate_double_value=%.17g "
+            "candidate_split_value=%.17g action_gap=%.17g "
+            "basic_match=%s candidate_match=%s\n",
             key, dealer, soft ? "soft" : "hard", total,
+            decision_class_name(decision_class), policy->action_count,
             policy->learned[0], policy->learned[1],
-            policy->selected_action == 0 ? "hit" : "stand", hit_value,
-            stand_value, fabs(hit_value - stand_value),
+            policy->action_count > 2 ? policy->learned[2] : 0.0,
+            policy->action_count > 3 ? policy->learned[3] : 0.0,
+            compact_action_name(learned_action),
+            compact_action_name(policy->basic_action),
+            compact_action_name(policy->selected_action), hit_value,
+            stand_value, double_value, split_value, action_gap,
+            learned_action == policy->basic_action ? "yes" : "no",
             learned_action == policy->selected_action ? "yes" : "no");
     }
-    (void)printf("comparison argmax_disagreements=%zu\n", disagreements);
+    (void)printf("comparison policies=%zu basic_argmax_disagreements=%zu "
+                 "candidate_argmax_disagreements=%zu\n",
+                 policy_count, basic_disagreements,
+                 candidate_disagreements);
     result = EXIT_SUCCESS;
 
 cleanup:
