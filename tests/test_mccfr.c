@@ -8,6 +8,7 @@
 #include "cfr/checkpoint.h"
 #include "cfr/evaluation.h"
 #include "cfr/kuhn_poker.h"
+#include "cfr/leduc_poker.h"
 #include "cfr/mccfr.h"
 #include "cfr/traversal.h"
 #include "cfr/trainer.h"
@@ -743,6 +744,33 @@ static void test_kuhn_converges(void) {
     destroy_store(&store);
 }
 
+static void test_leduc_converges_across_seeds(void) {
+    static const uint64_t seeds[] = {UINT64_C(0), UINT64_C(1), UINT64_C(2)};
+    const Game *game = cfr_leduc_poker_descriptor();
+
+    for (size_t index = 0; index < sizeof(seeds) / sizeof(seeds[0]);
+         index += 1) {
+        LeducPokerState state;
+        InfoStore store;
+        Trainer trainer;
+        EvaluationMetrics metrics;
+
+        CHECK(cfr_leduc_poker_state_init(&state) == CFR_STATUS_SUCCESS);
+        initialize_store(&store);
+        CHECK(cfr_trainer_init_mccfr(
+                  &trainer, game,
+                  cfr_leduc_poker_state_as_game_state(&state), &store,
+                  seeds[index]) == CFR_STATUS_SUCCESS);
+        CHECK(cfr_trainer_run(&trainer, 50000) == CFR_STATUS_SUCCESS);
+        CHECK(cfr_evaluation_metrics(
+                  game, cfr_leduc_poker_state_as_game_state(&state), &store,
+                  &metrics) == CFR_STATUS_SUCCESS);
+        CHECK(store.size == 288);
+        CHECK(metrics.exploitability < 0.09);
+        destroy_store(&store);
+    }
+}
+
 static bool files_equal(FILE *left, FILE *right) {
     int left_byte;
     int right_byte;
@@ -881,6 +909,7 @@ int test_mccfr(void) {
     test_sampled_player_average_matches_exact_cfr();
     test_single_strategic_player_accumulates_average();
     test_kuhn_converges();
+    test_leduc_converges_across_seeds();
     test_checkpoint_restores_random_stream();
 #ifdef CFR_TEST_WRAP_ALLOCATOR
     test_allocation_failures_are_transactional();
