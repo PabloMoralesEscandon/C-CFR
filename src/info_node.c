@@ -4,6 +4,7 @@
 #include <stdlib.h>
 
 #include "cfr/info_node.h"
+#include "info_node_internal.h"
 
 /* Tolerances for validating that a distribution sums to one. */
 #define REL_EPSILON 1e-8
@@ -128,11 +129,18 @@ Status cfr_info_node_apply_deltas(InfoNode *node, const Utility *delta_regret,
         node, delta_regret, delta_strategy_sum, action_count);
     if (status != CFR_STATUS_SUCCESS)
         return status;
+    cfr_info_node_apply_validated_deltas(node, delta_regret,
+                                         delta_strategy_sum, action_count);
+    return CFR_STATUS_SUCCESS;
+}
+
+void cfr_info_node_apply_validated_deltas(
+    InfoNode *node, const Utility *delta_regret,
+    const double *delta_strategy_sum, size_t action_count) {
     for (size_t i = 0; i < action_count; i++) {
         node->regret_sums[i] += delta_regret[i];
         node->strategy_sums[i] += delta_strategy_sum[i];
     }
-    return CFR_STATUS_SUCCESS;
 }
 
 Status cfr_info_node_add_regret(InfoNode *node, size_t action_index,

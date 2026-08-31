@@ -2,6 +2,7 @@
 
 #include "cfr/trainer.h"
 #include "cfr/traversal.h"
+#include "mccfr_internal.h"
 
 static bool strategic_player_count_is_valid(size_t count) {
     return count == 1 || count == 2;
@@ -18,7 +19,9 @@ static Status trainer_init(Trainer *trainer, const Game *game, GameState *state,
     trainer->store = store;
     trainer->variant = variant;
     trainer->training_iterations = 0;
-    trainer->mccfr_rng.state = seed;
+    const Status status = cfr_mccfr_rng_seed(&trainer->mccfr_rng, seed);
+    if (status != CFR_STATUS_SUCCESS)
+        return status;
     trainer->stats = (TrainerStats){0};
     return CFR_STATUS_SUCCESS;
 }
@@ -44,7 +47,8 @@ Status cfr_trainer_init_mccfr(Trainer *trainer, const Game *game,
 
 static Status trainer_traverse(Trainer *trainer, Player target_player,
                                size_t iteration, Utility *utility,
-                               TraversalStats *stats) {
+                               TraversalStats *stats,
+                               MccfrWorkspace *mccfr_workspace) {
     if (trainer->variant == CFR_TRAINER_VARIANT_CFR) {
         return cfr_traverse_with_stats(trainer->game, trainer->state,
                                        trainer->store, target_player, utility,
@@ -56,19 +60,21 @@ static Status trainer_traverse(Trainer *trainer, Player target_player,
             iteration, utility, stats);
     }
     if (trainer->variant == CFR_TRAINER_VARIANT_MCCFR_EXTERNAL) {
-        return cfr_mccfr_external_traverse_with_stats(
+        return cfr_mccfr_external_traverse_in_workspace(
             trainer->game, trainer->state, trainer->store, target_player,
-            &trainer->mccfr_rng, utility, stats);
+            &trainer->mccfr_rng, utility, stats, mccfr_workspace);
     }
     return CFR_STATUS_INVALID_ARGUMENT;
 }
 
 static Status run_player_traversal(Trainer *trainer, Player player,
-                                   size_t iteration) {
+                                   size_t iteration,
+                                   MccfrWorkspace *mccfr_workspace) {
     TraversalStats traverse_stats = {0};
     Utility utility = 0.0;
-    const Status status = trainer_traverse(trainer, player, iteration, &utility,
-                                           &traverse_stats);
+    const Status status = trainer_traverse(
+        trainer, player, iteration, &utility, &traverse_stats,
+        mccfr_workspace);
 
     if (status != CFR_STATUS_SUCCESS) {
         if (trainer->stats.errors != SIZE_MAX)
@@ -94,6 +100,24 @@ Status cfr_trainer_run(Trainer *trainer, size_t amount) {
          trainer->variant != CFR_TRAINER_VARIANT_CFR_PLUS &&
          trainer->variant != CFR_TRAINER_VARIANT_MCCFR_EXTERNAL))
         return CFR_STATUS_INVALID_ARGUMENT;
+    if (amount == 0)
+        return CFR_STATUS_SUCCESS;
+
+    MccfrWorkspace mccfr_workspace = {0};
+    MccfrWorkspace *workspace_pointer = NULL;
+    if (trainer->variant == CFR_TRAINER_VARIANT_MCCFR_EXTERNAL) {
+        const Status status = cfr_mccfr_workspace_init(
+            &mccfr_workspace, trainer->game->max_legal_actions);
+
+        if (status != CFR_STATUS_SUCCESS) {
+            if (trainer->stats.errors != SIZE_MAX)
+                trainer->stats.errors += 1;
+            return status;
+        }
+        workspace_pointer = &mccfr_workspace;
+    }
+
+    Status result = CFR_STATUS_SUCCESS;
     for (size_t i = 0; i < amount; i++) {
         size_t iteration = trainer->training_iterations;
         if (iteration != SIZE_MAX)
@@ -102,17 +126,22 @@ Status cfr_trainer_run(Trainer *trainer, size_t amount) {
              player_index < trainer->game->strategic_player_count;
              player_index++) {
             const Status status = run_player_traversal(
-                trainer, (Player)player_index, iteration);
+                trainer, (Player)player_index, iteration, workspace_pointer);
 
-            if (status != CFR_STATUS_SUCCESS)
-                return status;
+            if (status != CFR_STATUS_SUCCESS) {
+                result = status;
+                goto cleanup;
+            }
         }
         if (!(trainer->stats.iterations == SIZE_MAX))
             trainer->stats.iterations += 1;
         if (trainer->training_iterations != SIZE_MAX)
             trainer->training_iterations += 1;
     }
-    return CFR_STATUS_SUCCESS;
+
+cleanup:
+    cfr_mccfr_workspace_destroy(&mccfr_workspace);
+    return result;
 }
 
 Status cfr_trainer_get_stats(const Trainer *trainer, TrainerStats *stats_out) {

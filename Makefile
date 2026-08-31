@@ -24,7 +24,8 @@ LIB_SOURCES := \
 	src/leduc_poker.c \
 	src/mccfr.c \
 	src/trainer.c \
-	src/traversal.c
+	src/traversal.c \
+	src/traversal_internal.c
 
 APP_SOURCE := app/cfr_cli.c
 LEDUC_APP_SOURCE := app/leduc_cli.c

@@ -3,13 +3,13 @@
 #include <stdlib.h>
 
 #include "cfr/traversal.h"
+#include "info_node_internal.h"
+#include "traversal_internal.h"
 
 #define CFR_CELL_EMPTY SIZE_MAX
 #define INITIAL_FRAME_CAPACITY 32
 #define INITIAL_TABLE_CAPACITY 64
 #define INITIAL_ENTRY_CAPACITY 16
-#define TRAVERSAL_REL_EPSILON 1e-8
-#define TRAVERSAL_ABS_EPSILON 1e-12
 
 typedef struct {
     Action actions[CFR_TRAVERSAL_MAX_ACTIONS];
@@ -22,12 +22,6 @@ typedef struct {
     size_t action_count;
     size_t offset;
 } Entry;
-
-typedef struct {
-    const GameOperations *operations;
-    const void *context;
-    size_t max_legal_actions;
-} TraversalAdapter;
 
 typedef struct {
     Frame *frames;
@@ -46,31 +40,12 @@ typedef struct {
     bool regret_matching_plus;
 } WorkSpace;
 
-static Status cfr_traverse_chance(const TraversalAdapter *adapter,
+static Status cfr_traverse_chance(const CfrTraversalAdapter *adapter,
                                   GameState *state, InfoStore *store,
                                   Player target_player, size_t depth,
                                   Probability reach_0, Probability reach_1,
                                   Probability reach_chance,
                                   WorkSpace *workspace, Utility *utility_out);
-
-static bool operations_support_traversal(const GameOperations *operations) {
-    return operations != NULL && operations->is_terminal != NULL &&
-           operations->terminal_utility != NULL &&
-           operations->current_actor != NULL &&
-           operations->legal_actions != NULL &&
-           operations->apply_action != NULL &&
-           operations->undo_action != NULL &&
-           (operations->chance_outcomes != NULL ||
-            operations->chance_probability != NULL) &&
-           operations->information_set_key != NULL;
-}
-
-static bool sum_is_one(double sum) {
-    if (fabs(sum - 1.0) <= TRAVERSAL_ABS_EPSILON)
-        return true;
-    double max = (sum > 1.0) ? sum : 1.0;
-    return fabs(sum - 1.0) <= max * TRAVERSAL_REL_EPSILON;
-}
 
 static void workspace_destroy(WorkSpace *workspace) {
     if (workspace == NULL)
@@ -135,8 +110,8 @@ static Status workspace_init(WorkSpace *workspace, size_t max_legal_actions,
     temporary.used_entries = 0;
     temporary.used_arena = 0;
 
-    for (size_t i = 0; i < temporary.table_capacity; i++)
-        temporary.table[i] = CFR_CELL_EMPTY;
+    cfr_traversal_initialize_index_table(
+        temporary.table, temporary.table_capacity, CFR_CELL_EMPTY);
 
     temporary.visits = 0;
     temporary.strategy_weight = strategy_weight;
@@ -144,6 +119,19 @@ static Status workspace_init(WorkSpace *workspace, size_t max_legal_actions,
 
     *workspace = temporary;
     return CFR_STATUS_SUCCESS;
+}
+
+static Status ensure_frame(WorkSpace *workspace, size_t depth) {
+    if (depth < workspace->frame_capacity)
+        return CFR_STATUS_SUCCESS;
+    void *grown;
+    const Status status = cfr_traversal_grow_array(
+        workspace->frames, sizeof(*workspace->frames),
+        &workspace->frame_capacity, &grown);
+
+    if (status == CFR_STATUS_SUCCESS)
+        workspace->frames = grown;
+    return status;
 }
 
 static Status workspace_check_deltas(const WorkSpace *workspace) {
@@ -182,12 +170,8 @@ static Status workspace_apply_deltas(WorkSpace *workspace) {
 
         double *delta_strategy = delta_regret + entry->action_count;
 
-        /* All entries have already been validated by workspace_check_deltas. */
-        Status status = cfr_info_node_apply_deltas(
+        cfr_info_node_apply_validated_deltas(
             entry->node, delta_regret, delta_strategy, entry->action_count);
-
-        if (status != CFR_STATUS_SUCCESS)
-            return status;
 
         if (workspace->regret_matching_plus) {
             for (size_t action = 0; action < entry->action_count; action++) {
@@ -200,24 +184,21 @@ static Status workspace_apply_deltas(WorkSpace *workspace) {
     return CFR_STATUS_SUCCESS;
 }
 
-static size_t hash_node(const InfoNode *node) {
-    /* Fibonacci hashing. Discard the pointer's low 4 bits because malloc
-       alignment makes them nearly constant. */
-    uintptr_t value = (uintptr_t)node >> 4;
-    return (size_t)(value * 11400714819323198485ULL);
-}
-
 static Status grow_table(WorkSpace *ws) {
-    size_t new_capacity = ws->table_capacity * 2;
+    if (ws->table_capacity > SIZE_MAX / 2)
+        return CFR_STATUS_OUT_OF_MEMORY;
+    const size_t new_capacity = ws->table_capacity * 2;
+    if (new_capacity > SIZE_MAX / sizeof(size_t))
+        return CFR_STATUS_OUT_OF_MEMORY;
     size_t *new_table = malloc(new_capacity * sizeof(size_t));
     if (new_table == NULL)
         return CFR_STATUS_OUT_OF_MEMORY;
-    for (size_t i = 0; i < new_capacity; i++)
-        new_table[i] = CFR_CELL_EMPTY;
+    cfr_traversal_initialize_index_table(new_table, new_capacity,
+                                         CFR_CELL_EMPTY);
     /* Reinsert all entries with the new mask. */
     size_t mask = new_capacity - 1;
     for (size_t e = 0; e < ws->used_entries; e++) {
-        size_t cell = hash_node(ws->entries[e].node) & mask;
+        size_t cell = cfr_traversal_hash_node(ws->entries[e].node) & mask;
         while (new_table[cell] != CFR_CELL_EMPTY)
             cell = (cell + 1) & mask;
         new_table[cell] = e;
@@ -230,15 +211,9 @@ static Status grow_table(WorkSpace *ws) {
 
 static Status find_or_create_entry(WorkSpace *ws, InfoNode *node,
                                    size_t action_count, size_t *index_out) {
-    /* Phase 1: grow BEFORE searching if insertion would exceed 3/4 load. */
-    if ((ws->used_table + 1) * 4 > ws->table_capacity * 3) {
-        Status status = grow_table(ws);
-        if (status != CFR_STATUS_SUCCESS)
-            return status;
-    }
-    /* Phase 2: probe linearly from the cell selected by the hash. */
+    /* Probe before growing because a lookup hit does not increase the load. */
     size_t mask = ws->table_capacity - 1; /* power-of-two capacity */
-    size_t cell = hash_node(node) & mask;
+    size_t cell = cfr_traversal_hash_node(node) & mask;
     while (ws->table[cell] != CFR_CELL_EMPTY) {
         size_t candidate = ws->table[cell];
         if (ws->entries[candidate].node == node) {
@@ -246,6 +221,17 @@ static Status find_or_create_entry(WorkSpace *ws, InfoNode *node,
             return CFR_STATUS_SUCCESS;
         }
         cell = (cell + 1) & mask; /* collision: try the next cell */
+    }
+
+    if (ws->used_table + 1 >
+        ws->table_capacity - ws->table_capacity / 4) {
+        Status status = grow_table(ws);
+        if (status != CFR_STATUS_SUCCESS)
+            return status;
+        mask = ws->table_capacity - 1;
+        cell = cfr_traversal_hash_node(node) & mask;
+        while (ws->table[cell] != CFR_CELL_EMPTY)
+            cell = (cell + 1) & mask;
     }
     /* cell is now an empty cell in which to record the new entry. */
     /* Phase 3a: reserve a slot in the entry array. */
@@ -283,7 +269,7 @@ static Status find_or_create_entry(WorkSpace *ws, InfoNode *node,
     return CFR_STATUS_SUCCESS;
 }
 
-static Status cfr_traverse_branch(const TraversalAdapter *adapter,
+static Status cfr_traverse_branch(const CfrTraversalAdapter *adapter,
                                   GameState *state, InfoStore *store,
                                   Player target_player, size_t depth,
                                   Probability reach_0, Probability reach_1,
@@ -327,16 +313,9 @@ static Status cfr_traverse_branch(const TraversalAdapter *adapter,
          current_actor.player != CFR_PLAYER_1))
         return CFR_STATUS_INVALID_ARGUMENT;
 
-    /* Grow the frame array when it has insufficient capacity. */
-    if (depth == workspace->frame_capacity) {
-        size_t new_capacity = workspace->frame_capacity * 2;
-        Frame *new_frames =
-            realloc(workspace->frames, new_capacity * sizeof(Frame));
-        if (new_frames == NULL)
-            return CFR_STATUS_OUT_OF_MEMORY;
-        workspace->frames = new_frames;
-        workspace->frame_capacity = new_capacity;
-    }
+    status = ensure_frame(workspace, depth);
+    if (status != CFR_STATUS_SUCCESS)
+        return status;
 
     /* Get the legal actions. */
     Frame *frame = &(workspace->frames[depth]);
@@ -469,65 +448,24 @@ static Status cfr_traverse_branch(const TraversalAdapter *adapter,
     return CFR_STATUS_SUCCESS;
 }
 
-static Status cfr_traverse_chance(const TraversalAdapter *adapter,
+static Status cfr_traverse_chance(const CfrTraversalAdapter *adapter,
                                   GameState *state, InfoStore *store,
                                   Player target_player, size_t depth,
                                   Probability reach_0, Probability reach_1,
                                   Probability reach_chance,
                                   WorkSpace *workspace, Utility *utility_out) {
-    /* Grow the frame array when it has insufficient capacity. */
-    if (depth == workspace->frame_capacity) {
-        size_t new_capacity = workspace->frame_capacity * 2;
-        Frame *new_frames =
-            realloc(workspace->frames, new_capacity * sizeof(Frame));
-        if (new_frames == NULL)
-            return CFR_STATUS_OUT_OF_MEMORY;
-        workspace->frames = new_frames;
-        workspace->frame_capacity = new_capacity;
-    }
+    Status status = ensure_frame(workspace, depth);
+    if (status != CFR_STATUS_SUCCESS)
+        return status;
 
     /* Get the legal chance outcomes. */
     Frame *frame = &(workspace->frames[depth]);
     size_t required_amount;
-    Status status;
-    const bool batched_chance =
-        adapter->operations->chance_outcomes != NULL;
-    if (batched_chance) {
-        status = adapter->operations->chance_outcomes(
-            adapter->context, state, frame->actions, frame->probabilities,
-            CFR_TRAVERSAL_MAX_ACTIONS, &required_amount);
-    } else {
-        status = adapter->operations->legal_actions(
-            adapter->context, state, frame->actions,
-            CFR_TRAVERSAL_MAX_ACTIONS, &required_amount);
-    }
+    status = cfr_traversal_collect_chance_outcomes(
+        adapter, state, frame->actions, frame->probabilities,
+        CFR_TRAVERSAL_MAX_ACTIONS, &required_amount);
     if (status != CFR_STATUS_SUCCESS)
         return status;
-    if (required_amount == 0 ||
-        required_amount > adapter->max_legal_actions) {
-        return CFR_STATUS_INVALID_ARGUMENT;
-    }
-
-    /* Query and validate the complete distribution before applying the first
-     * action: an invalid distribution does not traverse any branch. */
-    Probability probability_sum = 0.0;
-    for (size_t i = 0; i < required_amount; i++) {
-        Probability probability;
-        if (batched_chance) {
-            probability = frame->probabilities[i];
-        } else {
-            status = adapter->operations->chance_probability(
-                adapter->context, state, frame->actions[i], &probability);
-            if (status != CFR_STATUS_SUCCESS)
-                return status;
-            frame->probabilities[i] = probability;
-        }
-        if (!isfinite(probability) || probability < 0.0)
-            return CFR_STATUS_INVALID_ARGUMENT;
-        probability_sum += probability;
-    }
-    if (!isfinite(probability_sum) || !sum_is_one(probability_sum))
-        return CFR_STATUS_INVALID_ARGUMENT;
 
     /* Expected value weighted by the probability of each outcome. */
     Utility expected_utility = 0.0;
@@ -607,7 +545,7 @@ static Status traverse_with_stats(const Game *game, GameState *state,
     const GameOperations *operations = game->operations;
     if (game->trusted_operations != NULL)
         operations = game->trusted_operations;
-    if (!operations_support_traversal(operations))
+    if (!cfr_traversal_operations_supported(operations))
         return CFR_STATUS_INVALID_ARGUMENT;
 
     WorkSpace ws = {0};
@@ -615,10 +553,11 @@ static Status traverse_with_stats(const Game *game, GameState *state,
                             regret_matching_plus);
     if (status != CFR_STATUS_SUCCESS)
         return status;
-    const TraversalAdapter adapter = {
+    const CfrTraversalAdapter adapter = {
         .operations = operations,
         .context = game->context,
         .max_legal_actions = game->max_legal_actions,
+        .strategic_player_count = game->strategic_player_count,
     };
     Utility temp_utility = 0.0;
     status = cfr_traverse_branch(&adapter, state, store, target_player, 0, 1.0,

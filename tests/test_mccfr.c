@@ -855,6 +855,41 @@ static void test_checkpoint_restores_random_stream(void) {
 }
 
 #ifdef CFR_TEST_WRAP_ALLOCATOR
+static void test_trainer_reuses_workspace_across_traversals(void) {
+    static const InfoSetKey keys[] = {0,  1,  2,  9,  10, 11,
+                                      15, 16, 17, 18, 19, 20};
+    const Game *game = cfr_kuhn_poker_descriptor();
+    KuhnPokerState state;
+    InfoStore store;
+    Trainer trainer;
+    size_t live_before;
+
+    CHECK(cfr_kuhn_poker_state_init(&state) == CFR_STATUS_SUCCESS);
+    initialize_store(&store);
+    for (size_t index = 0; index < sizeof(keys) / sizeof(keys[0]);
+         index += 1) {
+        InfoNode *node = NULL;
+
+        CHECK(cfr_info_store_get_or_create(&store, keys[index], 2, &node) ==
+              CFR_STATUS_SUCCESS);
+        CHECK(node != NULL);
+    }
+    CHECK(cfr_trainer_init_mccfr(
+              &trainer, game, cfr_kuhn_poker_state_as_game_state(&state),
+              &store, 107) == CFR_STATUS_SUCCESS);
+
+    live_before = test_allocator_live_allocations();
+    test_allocator_fail_after(6);
+    CHECK(cfr_trainer_run(&trainer, 2) == CFR_STATUS_SUCCESS);
+    test_allocator_disable_failures();
+    CHECK(test_allocator_live_allocations() == live_before);
+    CHECK(trainer.stats.iterations == 2);
+    CHECK(trainer.stats.traversals == 4);
+
+    destroy_store(&store);
+    CHECK(test_allocator_live_allocations() == 0);
+}
+
 static void test_allocation_failures_are_transactional(void) {
     const Game *game = cfr_kuhn_poker_descriptor();
     bool reached_success = false;
@@ -912,6 +947,7 @@ int test_mccfr(void) {
     test_leduc_converges_across_seeds();
     test_checkpoint_restores_random_stream();
 #ifdef CFR_TEST_WRAP_ALLOCATOR
+    test_trainer_reuses_workspace_across_traversals();
     test_allocation_failures_are_transactional();
 #endif
 
