@@ -498,3 +498,12 @@ Each training report contains:
 
 With `--evaluate`, the final line contains the player's average value, the
 dealer's opposite value, exploitability, and total time.
+
+## License
+
+Copyright 2026 Pablo Morales Escandón.
+
+Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) for the
+complete terms. This license applies to all copyrightable code and documentation
+in this repository, including historical revisions that predate the addition of
+the license, unless otherwise stated.
