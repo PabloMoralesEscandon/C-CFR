@@ -1,3 +1,4 @@
+#include <float.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -216,6 +217,36 @@ static void test_rng_contract(void) {
     CHECK(rng.state == 0);
     CHECK(cfr_mccfr_rng_seed(&rng, UINT64_MAX) == CFR_STATUS_SUCCESS);
     CHECK(rng.state == UINT64_MAX);
+}
+
+/*
+ * SplitMix64 output one has zero in its upper 53 bits. The old binary64 draw
+ * therefore rounded it down to zero and selected DBL_TRUE_MIN as though that
+ * outcome had probability 2^-53. A 64-bit interval assigns only output zero to
+ * the tiny outcome, so output one selects the other chance action.
+ */
+static void test_sampler_uses_all_rng_bits(void) {
+    const uint64_t seed = UINT64_C(0xf8364607e9c949bd);
+    const Game *game = chance_game_descriptor();
+    ChanceGameState state;
+    ChanceGameState root;
+    InfoStore store;
+    MccfrRng rng;
+    Utility utility = 103.0;
+
+    CHECK(chance_game_state_init_coin(&state) == CFR_STATUS_SUCCESS);
+    chance_game_set_probabilities(&state, DBL_TRUE_MIN, 1.0);
+    root = state;
+    initialize_store(&store);
+    CHECK(cfr_mccfr_rng_seed(&rng, seed) == CFR_STATUS_SUCCESS);
+
+    CHECK(cfr_mccfr_external_traverse(
+              game, chance_game_state_as_public(&state), &store,
+              CFR_PLAYER_0, &rng, &utility) == CFR_STATUS_SUCCESS);
+    CHECK(near(utility, 1.0));
+    CHECK(chance_game_state_equal(&state, &root));
+    CHECK(rng.state == seed + UINT64_C(0x9e3779b97f4a7c15));
+    destroy_store(&store);
 }
 
 /*
@@ -840,6 +871,7 @@ int test_mccfr(void) {
     failures = 0;
 
     test_rng_contract();
+    test_sampler_uses_all_rng_bits();
     test_tiny_sample_reach_does_not_abort();
     test_chance_is_sampled_and_target_actions_are_expanded();
     test_opponent_sample_is_shared_by_information_set();

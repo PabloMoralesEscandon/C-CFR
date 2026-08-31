@@ -106,11 +106,6 @@ static uint64_t rng_next(MccfrRng *rng) {
     return value ^ (value >> 31);
 }
 
-static double rng_unit(MccfrRng *rng) {
-    /* The upper 53 bits map exactly into [0, 1) in binary64. */
-    return (double)(rng_next(rng) >> 11) * 0x1.0p-53;
-}
-
 static size_t hash_node(const InfoNode *node) {
     const uintptr_t value = (uintptr_t)node >> 4;
     return (size_t)(value * UINT64_C(11400714819323198485));
@@ -374,8 +369,9 @@ static Status find_or_create_delta(MccfrWorkspace *workspace, InfoNode *node,
 
 static Status sample_index(const Probability *probabilities, size_t count,
                            MccfrRng *rng, size_t *index_out) {
-    double sum = 0.0;
+    long double sum = 0.0L;
     size_t last_positive = SIZE_MAX;
+    size_t positive_count = 0;
 
     if (probabilities == NULL || count == 0 || rng == NULL ||
         index_out == NULL) {
@@ -384,21 +380,59 @@ static Status sample_index(const Probability *probabilities, size_t count,
     for (size_t index = 0; index < count; index += 1) {
         if (!isfinite(probabilities[index]) || probabilities[index] < 0.0)
             return CFR_STATUS_INVALID_ARGUMENT;
-        sum += probabilities[index];
-        if (probabilities[index] > 0.0)
+        sum += (long double)probabilities[index];
+        if (probabilities[index] > 0.0) {
             last_positive = index;
+            positive_count += 1;
+        }
     }
     if (!isfinite(sum) || sum <= 0.0 || last_positive == SIZE_MAX)
         return CFR_STATUS_INVALID_ARGUMENT;
 
-    const double draw = rng_unit(rng) * sum;
-    double cumulative = 0.0;
+    /*
+     * Partition all 2^64 random values into monotonic integer intervals. Each
+     * positive action receives at least one value, including probabilities
+     * below the fixed-point resolution. Reserving values for later actions
+     * keeps every positive action reachable.
+     */
+    const uint64_t draw = rng_next(rng);
+    long double cumulative = 0.0L;
+    uint64_t previous_endpoint = 0;
+    size_t positives_seen = 0;
+
     for (size_t index = 0; index < count; index += 1) {
-        cumulative += probabilities[index];
-        if (draw < cumulative && probabilities[index] > 0.0) {
+        if (!(probabilities[index] > 0.0))
+            continue;
+        if (index == last_positive)
+            break;
+
+        cumulative += (long double)probabilities[index];
+        positives_seen += 1;
+        const size_t positive_remaining = positive_count - positives_seen;
+        const uint64_t minimum_endpoint = previous_endpoint + 1;
+        const uint64_t maximum_endpoint =
+            UINT64_MAX - (uint64_t)(positive_remaining - 1);
+        const long double scaled_endpoint =
+            cumulative / sum * 0x1.0p64L;
+        uint64_t endpoint;
+
+        if (!(scaled_endpoint > 0.0L)) {
+            endpoint = 0;
+        } else if (scaled_endpoint >= (long double)UINT64_MAX) {
+            endpoint = UINT64_MAX;
+        } else {
+            endpoint = (uint64_t)scaled_endpoint;
+        }
+        if (endpoint < minimum_endpoint)
+            endpoint = minimum_endpoint;
+        if (endpoint > maximum_endpoint)
+            endpoint = maximum_endpoint;
+
+        if (draw < endpoint) {
             *index_out = index;
             return CFR_STATUS_SUCCESS;
         }
+        previous_endpoint = endpoint;
     }
     *index_out = last_positive;
     return CFR_STATUS_SUCCESS;
