@@ -21,13 +21,16 @@ LIB_SOURCES := \
 	src/info_node.c \
 	src/info_store.c \
 	src/kuhn_poker.c \
+	src/leduc_poker.c \
 	src/trainer.c \
 	src/traversal.c
 
 APP_SOURCE := app/cfr_cli.c
+LEDUC_APP_SOURCE := app/leduc_cli.c
 BLACKJACK_APP_SOURCE := app/blackjack_cli.c
 BLACKJACK_COMPACT_EVAL_SOURCE := tools/blackjack_compact_eval.c
 CLI_TEST_SCRIPT := tests/test_cli.sh
+LEDUC_CLI_TEST_SCRIPT := tests/test_leduc_cli.sh
 BLACKJACK_CLI_TEST_SCRIPT := tests/test_blackjack_cli.sh
 
 TEST_SOURCES := \
@@ -42,6 +45,7 @@ TEST_SOURCES := \
 	tests/test_checkpoint.c \
 	tests/test_cfr_plus.c \
 	tests/test_kuhn_poker.c \
+	tests/test_leduc_poker.c \
 	tests/test_evaluation.c \
 	tests/support/test_allocator.c \
 	tests/support/fake_game.c \
@@ -53,6 +57,10 @@ DEBUG_OBJECTS := $(patsubst %.c,$(DEBUG_DIR)/%.o,$(LIB_SOURCES))
 TEST_OBJECTS := $(patsubst %.c,$(DEBUG_DIR)/%.o,$(TEST_SOURCES))
 RELEASE_APP_OBJECT := $(patsubst %.c,$(RELEASE_DIR)/%.o,$(APP_SOURCE))
 DEBUG_APP_OBJECT := $(patsubst %.c,$(DEBUG_DIR)/%.o,$(APP_SOURCE))
+RELEASE_LEDUC_APP_OBJECT := \
+	$(patsubst %.c,$(RELEASE_DIR)/%.o,$(LEDUC_APP_SOURCE))
+DEBUG_LEDUC_APP_OBJECT := \
+	$(patsubst %.c,$(DEBUG_DIR)/%.o,$(LEDUC_APP_SOURCE))
 RELEASE_BLACKJACK_APP_OBJECT := \
 	$(patsubst %.c,$(RELEASE_DIR)/%.o,$(BLACKJACK_APP_SOURCE))
 RELEASE_BLACKJACK_COMPACT_EVAL_OBJECT := \
@@ -67,6 +75,8 @@ BLACKJACK_TEST_BINARY := $(DEBUG_DIR)/cfr_blackjack_tests
 BLACKJACK_TEST_OBJECT := $(DEBUG_DIR)/tests/test_blackjack_standalone.o
 RELEASE_BINARY := $(RELEASE_DIR)/cfr-kuhn
 DEBUG_BINARY := $(DEBUG_DIR)/cfr-kuhn
+RELEASE_LEDUC_BINARY := $(RELEASE_DIR)/cfr-leduc
+DEBUG_LEDUC_BINARY := $(DEBUG_DIR)/cfr-leduc
 RELEASE_BLACKJACK_BINARY := $(RELEASE_DIR)/cfr-blackjack
 RELEASE_BLACKJACK_COMPACT_EVAL_BINARY := \
 	$(RELEASE_DIR)/blackjack-compact-eval
@@ -79,24 +89,34 @@ DEPENDENCY_FILES := \
 	$(BLACKJACK_TEST_OBJECT:.o=.d) \
 	$(RELEASE_APP_OBJECT:.o=.d) \
 	$(DEBUG_APP_OBJECT:.o=.d) \
+	$(RELEASE_LEDUC_APP_OBJECT:.o=.d) \
+	$(DEBUG_LEDUC_APP_OBJECT:.o=.d) \
 	$(RELEASE_BLACKJACK_APP_OBJECT:.o=.d) \
 	$(RELEASE_BLACKJACK_COMPACT_EVAL_OBJECT:.o=.d) \
 	$(DEBUG_BLACKJACK_APP_OBJECT:.o=.d)
 
-.PHONY: all blackjack blackjack-compact-eval test test-blackjack \
-	test-blackjack-cli test-alloc \
+.PHONY: all leduc blackjack blackjack-compact-eval test test-leduc-cli \
+	test-blackjack test-blackjack-cli test-alloc \
 	test-alloc-run test-asan test-ubsan test-sanitize debug clean
 
-all: $(RELEASE_LIBRARY) $(RELEASE_BINARY) $(RELEASE_BLACKJACK_BINARY)
+all: $(RELEASE_LIBRARY) $(RELEASE_BINARY) $(RELEASE_LEDUC_BINARY) \
+	$(RELEASE_BLACKJACK_BINARY)
+
+leduc: $(RELEASE_LEDUC_BINARY)
 
 blackjack: $(RELEASE_BLACKJACK_BINARY)
 
 blackjack-compact-eval: $(RELEASE_BLACKJACK_COMPACT_EVAL_BINARY)
 
-test: $(TEST_BINARY) $(DEBUG_BINARY) $(DEBUG_BLACKJACK_BINARY)
+test: $(TEST_BINARY) $(DEBUG_BINARY) $(DEBUG_LEDUC_BINARY) \
+	$(DEBUG_BLACKJACK_BINARY)
 	$(TEST_ENV) ./$(TEST_BINARY)
 	$(TEST_ENV) ./$(CLI_TEST_SCRIPT) ./$(DEBUG_BINARY)
+	$(TEST_ENV) ./$(LEDUC_CLI_TEST_SCRIPT) ./$(DEBUG_LEDUC_BINARY)
 	$(TEST_ENV) ./$(BLACKJACK_CLI_TEST_SCRIPT) ./$(DEBUG_BLACKJACK_BINARY)
+
+test-leduc-cli: $(DEBUG_LEDUC_BINARY)
+	$(TEST_ENV) ./$(LEDUC_CLI_TEST_SCRIPT) ./$(DEBUG_LEDUC_BINARY)
 
 test-blackjack-cli: $(DEBUG_BLACKJACK_BINARY)
 	$(TEST_ENV) ./$(BLACKJACK_CLI_TEST_SCRIPT) ./$(DEBUG_BLACKJACK_BINARY)
@@ -134,7 +154,7 @@ test-sanitize:
 		TEST_ENV='$(SANITIZER_TEST_ENV)' test
 
 debug: $(DEBUG_LIBRARY) $(TEST_BINARY) $(DEBUG_BINARY) \
-	$(DEBUG_BLACKJACK_BINARY)
+	$(DEBUG_LEDUC_BINARY) $(DEBUG_BLACKJACK_BINARY)
 
 $(RELEASE_LIBRARY): $(RELEASE_OBJECTS)
 	@mkdir -p $(dir $@)
@@ -165,6 +185,16 @@ $(RELEASE_BINARY): $(RELEASE_APP_OBJECT) $(RELEASE_LIBRARY)
 $(DEBUG_BINARY): $(DEBUG_APP_OBJECT) $(DEBUG_LIBRARY)
 	@mkdir -p $(dir $@)
 	$(CC) $(LDFLAGS) $(DEBUG_APP_OBJECT) $(DEBUG_LIBRARY) $(LDLIBS) -o $@
+
+$(RELEASE_LEDUC_BINARY): $(RELEASE_LEDUC_APP_OBJECT) $(RELEASE_LIBRARY)
+	@mkdir -p $(dir $@)
+	$(CC) $(LDFLAGS) $(RELEASE_LEDUC_APP_OBJECT) $(RELEASE_LIBRARY) \
+		$(LDLIBS) -o $@
+
+$(DEBUG_LEDUC_BINARY): $(DEBUG_LEDUC_APP_OBJECT) $(DEBUG_LIBRARY)
+	@mkdir -p $(dir $@)
+	$(CC) $(LDFLAGS) $(DEBUG_LEDUC_APP_OBJECT) $(DEBUG_LIBRARY) $(LDLIBS) \
+		-o $@
 
 $(RELEASE_BLACKJACK_BINARY): $(RELEASE_BLACKJACK_APP_OBJECT) $(RELEASE_LIBRARY)
 	@mkdir -p $(dir $@)

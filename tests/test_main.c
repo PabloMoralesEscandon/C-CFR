@@ -13,6 +13,7 @@ int main(void) {
     failures += test_chance_trainer();
     failures += test_cfr_plus();
     failures += test_kuhn_poker();
+    failures += test_leduc_poker();
     failures += test_blackjack();
     failures += test_evaluation();
     failures += test_checkpoint();
