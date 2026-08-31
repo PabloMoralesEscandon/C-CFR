@@ -5,6 +5,7 @@
 #include "cfr/info_node.h"
 #include "cfr/info_store.h"
 #include "cfr/kuhn_poker.h"
+#include "cfr/leduc_poker.h"
 #include "cfr/trainer.h"
 #include "cfr/traversal.h"
 #include "cfr/types.h"
@@ -21,6 +22,7 @@ int test_public_headers(void) {
     InfoNode node = {0};
     InfoStore store = {0};
     KuhnPokerState kuhn_poker_state = {0};
+    LeducPokerState leduc_poker_state = {0};
     BlackjackState blackjack_state = {0};
     EvaluationMetrics evaluation_metrics = {0};
     TrainerVariant trainer_variant = CFR_TRAINER_VARIANT_CFR_PLUS;
@@ -31,6 +33,7 @@ int test_public_headers(void) {
             status == CFR_STATUS_SUCCESS && utility == 0.0 &&
             probability == 1.0 && node.action_count == 0 && store.size == 0 &&
             kuhn_poker_state.public_action_count == 0 &&
+            leduc_poker_state.public_action_count == 0 &&
             blackjack_state.player_hand.card_count == 0 &&
             evaluation_metrics.exploitability == 0.0 &&
             trainer_variant == CFR_TRAINER_VARIANT_CFR_PLUS &&

@@ -3,9 +3,18 @@
 This project implements a CFR and CFR+ library for finite extensive-form games.
 The first version supports two-player zero-sum games.
 
-The repository includes complete Kuhn Poker and blackjack adapters. Two
-independent applications train the games, and both adapters are available
-through the same public library API.
+The repository includes complete Kuhn Poker, Leduc Poker, and blackjack
+adapters. Three independent applications train the games, and all adapters are
+available through the same public library API.
+
+The Leduc adapter uses the standard six-card deck with two copies each of jack,
+queen, and king. Each player antes one chip and receives one private card. A
+two-chip fixed-limit betting round is followed by one public card and a
+four-chip betting round. Each round permits an opening bet and one raise. A
+private card paired with the public card beats an unpaired hand; otherwise the
+higher private rank wins. Equal hands split the pot. Suits are strategically
+irrelevant, so chance exposes rank outcomes with the exact card-removal
+probabilities. The adapter is declared in `include/cfr/leduc_poker.h`.
 
 The blackjack adapter is declared in `include/cfr/blackjack.h` and uses the
 fixed rank distribution assumed by basic strategy: ace through nine each have
@@ -30,10 +39,18 @@ This target creates the following release artifacts:
 
 - `build/release/libcfr.a`
 - `build/release/cfr-kuhn`
+- `build/release/cfr-leduc`
 - `build/release/cfr-blackjack`
 
-The applications are not part of the library. `app/cfr_cli.c` and
-`app/blackjack_cli.c` consume the public API as external applications.
+The applications are not part of the library. `app/cfr_cli.c`,
+`app/leduc_cli.c`, and `app/blackjack_cli.c` consume the public API as external
+applications.
+
+To build only the library and the Leduc executable:
+
+```sh
+make leduc
+```
 
 To build only the library and the blackjack executable:
 
@@ -60,10 +77,17 @@ Run the C test suite and the application integration test:
 make test
 ```
 
-The Kuhn integration test checks arguments, reports, the average strategy,
-reproducibility, and convergence. The blackjack tests check its rules,
-integration with `Trainer` on a bounded subtree, and its interface without
-accidentally starting a full traversal. Run them separately with:
+The Kuhn and Leduc integration tests check arguments, reports, average
+strategies, resumable checkpoints, exact evaluation, and convergence. The
+blackjack tests check its rules, integration with `Trainer` on a bounded
+subtree, and its interface without accidentally starting a full traversal. Run
+the Leduc CLI checks separately with:
+
+```sh
+make test-leduc-cli
+```
+
+Run the blackjack checks separately with:
 
 ```sh
 make test-blackjack
@@ -138,6 +162,54 @@ additional iterations. The checkpoint selects classic CFR or CFR+; do not pass
 `--cfr-plus` while loading. Reports from resumed training use the cumulative
 training iteration count.
 
+## Using Leduc Poker
+
+The Leduc executable has the same training, reporting, checkpoint, evaluation,
+and export options as `cfr-kuhn`:
+
+```text
+cfr-leduc --iterations N [--report-every N] [--print-strategy] [--cfr-plus]
+          [--save FILE] [--export-strategy FILE]
+cfr-leduc --load FILE --iterations N [--report-every N] [--print-strategy]
+          [--save FILE] [--export-strategy FILE]
+cfr-leduc --load FILE --evaluate [--print-strategy]
+          [--export-strategy FILE]
+```
+
+For example, train with CFR+, save everything needed to resume, and export a
+readable average policy:
+
+```sh
+build/release/cfr-leduc --iterations 100000 --cfr-plus \
+    --report-every 10000 --save leduc-100000.cfr \
+    --export-strategy leduc-100000.txt
+```
+
+The binary `.cfr` file contains regrets, strategy sums, trainer statistics, and
+the completed iteration count. The text file contains only normalized action
+probabilities and cannot resume training. `--print-strategy` writes a
+deterministic, labeled view to standard output after the report. Each label
+identifies the acting player, private rank, public rank, round, and visible
+betting history; its probabilities are named `check`, `bet`, `fold`, `call`, or
+`raise`.
+
+The generic text export retains indexed actions for compatibility with the
+library format. At an unopened Leduc information set, `action_0` is check and
+`action_1` is bet. When facing a wager, the order is fold, call, raise; after
+the cap is reached only fold and call remain.
+
+Evaluate or continue a checkpoint with:
+
+```sh
+build/release/cfr-leduc --load leduc-100000.cfr --evaluate
+build/release/cfr-leduc --load leduc-100000.cfr --iterations 50000 \
+    --save leduc-150000.cfr
+```
+
+Leduc has 288 information sets under these rules. A well-converged strategy's
+Player 0 value approaches approximately `-0.0856064`; exploitability approaches
+zero.
+
 ## Saving and loading strategies
 
 A binary checkpoint is the authoritative saved strategy. It contains both the
@@ -185,8 +257,9 @@ must change when game rules, information-set keys, or the meaning or order of
 action indices becomes incompatible. Serialization stores generic keys and
 indexed arrays; it does not contain Kuhn-specific actions or labels.
 
-Both bundled adapters are serializable: Kuhn Poker declares
-`cfr.kuhn-poker/v1` and blackjack declares `cfr.blackjack/v4`.
+All bundled adapters are serializable: Kuhn Poker declares
+`cfr.kuhn-poker/v1`, Leduc Poker declares `cfr.leduc-poker/v1`, and blackjack
+declares `cfr.blackjack/v4`.
 
 ### Exact evaluation of a saved strategy
 

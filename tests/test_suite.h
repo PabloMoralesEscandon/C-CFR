@@ -9,6 +9,7 @@ int test_traversal(void);
 int test_chance_trainer(void);
 int test_cfr_plus(void);
 int test_kuhn_poker(void);
+int test_leduc_poker(void);
 int test_blackjack(void);
 int test_evaluation(void);
 int test_checkpoint(void);
