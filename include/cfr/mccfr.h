@@ -7,6 +7,8 @@
 #include "cfr/info_store.h"
 #include "cfr/traversal.h"
 
+CFR_EXTERN_C_BEGIN
+
 /*
  * State for the deterministic random stream used by MCCFR.
  *
@@ -64,5 +66,7 @@ Status cfr_mccfr_external_traverse(const Game *game, GameState *state,
 Status cfr_mccfr_external_traverse_with_stats(
     const Game *game, GameState *state, InfoStore *store, Player target_player,
     MccfrRng *rng, Utility *utility_out, TraversalStats *stats_out);
+
+CFR_EXTERN_C_END
 
 #endif

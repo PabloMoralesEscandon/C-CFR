@@ -5,6 +5,8 @@
 
 #include "cfr/game.h"
 
+CFR_EXTERN_C_BEGIN
+
 /* Maximum number of actions in the public history. */
 #define CFR_KUHN_POKER_PUBLIC_HISTORY_CAPACITY 3
 /* Maximum number of transitions that can be undone. */
@@ -23,7 +25,7 @@
  * The order of the real cards represents their rank. The jack is the lowest
  * card, and the king is the highest.
  */
-typedef enum {
+typedef CFR_ENUM_INT(CfrKuhnPokerCard) {
     CFR_KUHN_POKER_CARD_NOT_DEALT,
     CFR_KUHN_POKER_CARD_JACK,
     CFR_KUHN_POKER_CARD_QUEEN,
@@ -31,7 +33,7 @@ typedef enum {
 } KuhnPokerCard;
 
 /* Identifies the current phase and determines the actor and legal actions. */
-typedef enum {
+typedef CFR_ENUM_INT(CfrKuhnPokerPhase) {
     CFR_KUHN_POKER_PHASE_CHANCE,
     CFR_KUHN_POKER_PHASE_PLAYER_0_OPEN,
     CFR_KUHN_POKER_PHASE_PLAYER_1_AFTER_CHECK,
@@ -48,7 +50,7 @@ typedef enum {
  * enumerates FOLD and CALL. The order is stable to preserve the meaning of each
  * strategy index.
  */
-typedef enum {
+typedef CFR_ENUM_INT(CfrKuhnPokerAction) {
     CFR_KUHN_POKER_ACTION_NONE,
     CFR_KUHN_POKER_ACTION_JQ,
     CFR_KUHN_POKER_ACTION_JK,
@@ -137,5 +139,7 @@ GameState *cfr_kuhn_poker_state_as_game_state(KuhnPokerState *kuhn_poker_state);
  */
 const GameState *cfr_kuhn_poker_state_as_game_state_const(
     const KuhnPokerState *kuhn_poker_state);
+
+CFR_EXTERN_C_END
 
 #endif

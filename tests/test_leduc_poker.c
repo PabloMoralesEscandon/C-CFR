@@ -75,6 +75,10 @@ static void check_root_and_private_chance(void) {
     CHECK(game->strategic_player_count == 2);
     CHECK(game->max_legal_actions == 9);
     CHECK(strcmp(game->strategy_schema_id, "cfr.leduc-poker/v1") == 0);
+    CHECK(game->operations != NULL);
+    CHECK(game->operations->validate_state != NULL);
+    CHECK(game->operations->chance_outcomes != NULL);
+    CHECK(game->trusted_operations != NULL);
     CHECK(state.phase == CFR_LEDUC_POKER_PHASE_PRIVATE_DEAL);
     CHECK(state.private_cards[0] == CFR_LEDUC_POKER_CARD_NOT_DEALT);
     CHECK(state.private_cards[1] == CFR_LEDUC_POKER_CARD_NOT_DEALT);

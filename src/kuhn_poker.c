@@ -29,22 +29,73 @@ static Status kuhn_poker_information_set_key(const void *context,
                                              const GameState *state,
                                              InfoSetKey *result);
 
+static Status kuhn_poker_validate_state(const void *context,
+                                        const GameState *state);
+
+static Status kuhn_poker_chance_outcomes(const void *context,
+                                         const GameState *state,
+                                         Action *actions,
+                                         Probability *probabilities,
+                                         size_t capacity,
+                                         size_t *required_count);
+
+static Status kuhn_poker_trusted_is_terminal(const void *context,
+                                             const GameState *state,
+                                             bool *result);
+static Status kuhn_poker_trusted_terminal_utility(
+    const void *context, const GameState *state, Player player,
+    Utility *result);
+static Status kuhn_poker_trusted_current_actor(const void *context,
+                                               const GameState *state,
+                                               Actor *result);
+static Status kuhn_poker_trusted_legal_actions(
+    const void *context, const GameState *state, Action *actions,
+    size_t capacity, size_t *required_count);
+static Status kuhn_poker_trusted_apply_action(const void *context,
+                                              GameState *state,
+                                              Action action);
+static Status kuhn_poker_trusted_undo_action(const void *context,
+                                             GameState *state);
+static Status kuhn_poker_trusted_chance_probability(
+    const void *context, const GameState *state, Action action,
+    Probability *result);
+static Status kuhn_poker_trusted_chance_outcomes(
+    const void *context, const GameState *state, Action *actions,
+    Probability *probabilities, size_t capacity, size_t *required_count);
+static Status kuhn_poker_trusted_information_set_key(
+    const void *context, const GameState *state, InfoSetKey *result);
+
 static const GameOperations KP_GAME_OPERATIONS = {
-    .apply_action = kuhn_poker_apply_action,
-    .legal_actions = kuhn_poker_legal_actions,
-    .undo_action = kuhn_poker_undo_action,
-    .chance_probability = kuhn_poker_chance_probability,
-    .current_actor = kuhn_poker_current_actor,
     .is_terminal = kuhn_poker_is_terminal,
     .terminal_utility = kuhn_poker_terminal_utility,
-    .information_set_key = kuhn_poker_information_set_key};
+    .current_actor = kuhn_poker_current_actor,
+    .legal_actions = kuhn_poker_legal_actions,
+    .apply_action = kuhn_poker_apply_action,
+    .undo_action = kuhn_poker_undo_action,
+    .chance_probability = kuhn_poker_chance_probability,
+    .information_set_key = kuhn_poker_information_set_key,
+    .validate_state = kuhn_poker_validate_state,
+    .chance_outcomes = kuhn_poker_chance_outcomes};
 
-static const Game KP_GAME = {.context = NULL,
+static const GameOperations KP_TRUSTED_GAME_OPERATIONS = {
+    .is_terminal = kuhn_poker_trusted_is_terminal,
+    .terminal_utility = kuhn_poker_trusted_terminal_utility,
+    .current_actor = kuhn_poker_trusted_current_actor,
+    .legal_actions = kuhn_poker_trusted_legal_actions,
+    .apply_action = kuhn_poker_trusted_apply_action,
+    .undo_action = kuhn_poker_trusted_undo_action,
+    .chance_probability = kuhn_poker_trusted_chance_probability,
+    .information_set_key = kuhn_poker_trusted_information_set_key,
+    .chance_outcomes = kuhn_poker_trusted_chance_outcomes};
+
+static const Game KP_GAME = {.operations = &KP_GAME_OPERATIONS,
+                             .context = NULL,
                              .strategic_player_count = 2,
                              .max_legal_actions =
                                  CFR_KUHN_POKER_MAX_POSSIBLE_ACTIONS,
                              .strategy_schema_id = "cfr.kuhn-poker/v1",
-                             .operations = &KP_GAME_OPERATIONS};
+                             .trusted_operations =
+                                 &KP_TRUSTED_GAME_OPERATIONS};
 
 Status cfr_kuhn_poker_state_init(KuhnPokerState *state) {
     if (state == NULL)
@@ -344,13 +395,26 @@ const GameState *cfr_kuhn_poker_state_as_game_state_const(
     return (const GameState *)kuhn_poker_state;
 }
 
+static Status kuhn_poker_validate_state(const void *context,
+                                        const GameState *state) {
+    (void)context;
+    return validate_state(as_kuhn_const(state));
+}
+
 static Status kuhn_poker_is_terminal(const void *context,
                                      const GameState *state, bool *result) {
-    (void)context;
     const KuhnPokerState *kuhn_poker_state = as_kuhn_const(state);
     Status status = validate_state(kuhn_poker_state);
     if (status != CFR_STATUS_SUCCESS)
         return status;
+    return kuhn_poker_trusted_is_terminal(context, state, result);
+}
+
+static Status kuhn_poker_trusted_is_terminal(const void *context,
+                                             const GameState *state,
+                                             bool *result) {
+    (void)context;
+    const KuhnPokerState *kuhn_poker_state = as_kuhn_const(state);
     switch (kuhn_poker_state->phase) {
     case CFR_KUHN_POKER_PHASE_TERMINAL:
         *result = true;
@@ -364,11 +428,18 @@ static Status kuhn_poker_is_terminal(const void *context,
 static Status kuhn_poker_terminal_utility(const void *context,
                                           const GameState *state, Player player,
                                           Utility *result) {
-    (void)context;
     const KuhnPokerState *kuhn_poker_state = as_kuhn_const(state);
     Status status = validate_state(kuhn_poker_state);
     if (status != CFR_STATUS_SUCCESS)
         return status;
+    return kuhn_poker_trusted_terminal_utility(context, state, player, result);
+}
+
+static Status kuhn_poker_trusted_terminal_utility(
+    const void *context, const GameState *state, Player player,
+    Utility *result) {
+    (void)context;
+    const KuhnPokerState *kuhn_poker_state = as_kuhn_const(state);
     if (kuhn_poker_state->phase != CFR_KUHN_POKER_PHASE_TERMINAL)
         return CFR_STATUS_INVALID_ARGUMENT;
     if (!(player == CFR_PLAYER_0 || player == CFR_PLAYER_1))
@@ -425,11 +496,18 @@ static Status kuhn_poker_terminal_utility(const void *context,
 
 static Status kuhn_poker_current_actor(const void *context,
                                        const GameState *state, Actor *result) {
-    (void)context;
     const KuhnPokerState *kuhn_poker_state = as_kuhn_const(state);
     Status status = validate_state(kuhn_poker_state);
     if (status != CFR_STATUS_SUCCESS)
         return status;
+    return kuhn_poker_trusted_current_actor(context, state, result);
+}
+
+static Status kuhn_poker_trusted_current_actor(const void *context,
+                                               const GameState *state,
+                                               Actor *result) {
+    (void)context;
+    const KuhnPokerState *kuhn_poker_state = as_kuhn_const(state);
     switch (kuhn_poker_state->phase) {
     case CFR_KUHN_POKER_PHASE_CHANCE:
         result->kind = CFR_ACTOR_CHANCE;
@@ -456,11 +534,19 @@ static Status kuhn_poker_legal_actions(const void *context,
                                        const GameState *state, Action *actions,
                                        size_t capacity,
                                        size_t *required_count) {
-    (void)context;
     const KuhnPokerState *kuhn_poker_state = as_kuhn_const(state);
     Status status = validate_state(kuhn_poker_state);
     if (status != CFR_STATUS_SUCCESS)
         return status;
+    return kuhn_poker_trusted_legal_actions(context, state, actions, capacity,
+                                            required_count);
+}
+
+static Status kuhn_poker_trusted_legal_actions(
+    const void *context, const GameState *state, Action *actions,
+    size_t capacity, size_t *required_count) {
+    (void)context;
+    const KuhnPokerState *kuhn_poker_state = as_kuhn_const(state);
     switch (kuhn_poker_state->phase) {
     case CFR_KUHN_POKER_PHASE_CHANCE:
         *required_count = 6;
@@ -511,11 +597,19 @@ static Status kuhn_poker_legal_actions(const void *context,
 
 static Status kuhn_poker_apply_action(const void *context, GameState *state,
                                       Action action) {
-    (void)context;
     KuhnPokerState *kuhn_poker_state = as_kuhn(state);
     Status status = validate_state(kuhn_poker_state);
     if (status != CFR_STATUS_SUCCESS)
         return status;
+    return kuhn_poker_trusted_apply_action(context, state, action);
+}
+
+static Status kuhn_poker_trusted_apply_action(const void *context,
+                                              GameState *state,
+                                              Action action) {
+    (void)context;
+    KuhnPokerState *kuhn_poker_state = as_kuhn(state);
+    Status status;
     KuhnPokerCard next_cards[2];
     for (size_t i = 0; i < CFR_KUHN_POKER_NUMBER_OF_PLAYERS; i++)
         next_cards[i] = kuhn_poker_state->cards[i];
@@ -524,7 +618,7 @@ static Status kuhn_poker_apply_action(const void *context, GameState *state,
     switch (kuhn_poker_state->phase) {
     case CFR_KUHN_POKER_PHASE_CHANCE:
         next_phase = CFR_KUHN_POKER_PHASE_PLAYER_0_OPEN;
-        status = decode_deal(action, next_cards);
+        status = decode_deal(static_cast<KuhnPokerAction>(action), next_cards);
         public_action = false;
         if (status != CFR_STATUS_SUCCESS)
             return status;
@@ -581,12 +675,14 @@ static Status kuhn_poker_apply_action(const void *context, GameState *state,
     if (public_action && kuhn_poker_state->public_action_count >=
                              CFR_KUHN_POKER_PUBLIC_HISTORY_CAPACITY)
         return CFR_STATUS_BUFFER_TOO_SMALL;
-    status = save_undo(kuhn_poker_state, action);
+    status = save_undo(kuhn_poker_state,
+                       static_cast<KuhnPokerAction>(action));
     if (status != CFR_STATUS_SUCCESS)
         return status;
     if (public_action) {
         kuhn_poker_state
-            ->public_actions[kuhn_poker_state->public_action_count] = action;
+            ->public_actions[kuhn_poker_state->public_action_count] =
+            static_cast<KuhnPokerAction>(action);
         kuhn_poker_state->public_action_count += 1;
     }
     kuhn_poker_state->phase = next_phase;
@@ -596,11 +692,17 @@ static Status kuhn_poker_apply_action(const void *context, GameState *state,
 }
 
 static Status kuhn_poker_undo_action(const void *context, GameState *state) {
-    (void)context;
     KuhnPokerState *kuhn_poker_state = as_kuhn(state);
     Status status = validate_state(kuhn_poker_state);
     if (status != CFR_STATUS_SUCCESS)
         return status;
+    return kuhn_poker_trusted_undo_action(context, state);
+}
+
+static Status kuhn_poker_trusted_undo_action(const void *context,
+                                             GameState *state) {
+    (void)context;
+    KuhnPokerState *kuhn_poker_state = as_kuhn(state);
     if (kuhn_poker_state->undo_count == 0)
         return CFR_STATUS_INVALID_ARGUMENT;
 
@@ -636,11 +738,19 @@ static Status kuhn_poker_chance_probability(const void *context,
                                             const GameState *state,
                                             Action action,
                                             Probability *result) {
-    (void)context;
     const KuhnPokerState *kuhn_poker_state = as_kuhn_const(state);
     Status status = validate_state(kuhn_poker_state);
     if (status != CFR_STATUS_SUCCESS)
         return status;
+    return kuhn_poker_trusted_chance_probability(context, state, action,
+                                                 result);
+}
+
+static Status kuhn_poker_trusted_chance_probability(
+    const void *context, const GameState *state, Action action,
+    Probability *result) {
+    (void)context;
+    const KuhnPokerState *kuhn_poker_state = as_kuhn_const(state);
     if (kuhn_poker_state->phase != CFR_KUHN_POKER_PHASE_CHANCE)
         return CFR_STATUS_INVALID_ARGUMENT;
     switch (action) {
@@ -658,14 +768,53 @@ static Status kuhn_poker_chance_probability(const void *context,
     return CFR_STATUS_SUCCESS;
 }
 
+static Status kuhn_poker_chance_outcomes(const void *context,
+                                         const GameState *state,
+                                         Action *actions,
+                                         Probability *probabilities,
+                                         size_t capacity,
+                                         size_t *required_count) {
+    if (actions == NULL || probabilities == NULL || required_count == NULL)
+        return CFR_STATUS_INVALID_ARGUMENT;
+    const Status status = validate_state(as_kuhn_const(state));
+
+    if (status != CFR_STATUS_SUCCESS)
+        return status;
+    return kuhn_poker_trusted_chance_outcomes(
+        context, state, actions, probabilities, capacity, required_count);
+}
+
+static Status kuhn_poker_trusted_chance_outcomes(
+    const void *context, const GameState *state, Action *actions,
+    Probability *probabilities, size_t capacity, size_t *required_count) {
+    const KuhnPokerState *kuhn_poker_state = as_kuhn_const(state);
+
+    if (kuhn_poker_state->phase != CFR_KUHN_POKER_PHASE_CHANCE)
+        return CFR_STATUS_INVALID_ARGUMENT;
+    Status status = kuhn_poker_trusted_legal_actions(
+        context, state, actions, capacity, required_count);
+
+    if (status != CFR_STATUS_SUCCESS)
+        return status;
+    for (size_t index = 0; index < *required_count; index += 1)
+        probabilities[index] = 1.0 / 6.0;
+    return CFR_STATUS_SUCCESS;
+}
+
 static Status kuhn_poker_information_set_key(const void *context,
                                              const GameState *state,
                                              InfoSetKey *result) {
-    (void)context;
     const KuhnPokerState *kuhn_poker_state = as_kuhn_const(state);
     Status status = validate_state(kuhn_poker_state);
     if (status != CFR_STATUS_SUCCESS)
         return status;
+    return kuhn_poker_trusted_information_set_key(context, state, result);
+}
+
+static Status kuhn_poker_trusted_information_set_key(
+    const void *context, const GameState *state, InfoSetKey *result) {
+    (void)context;
+    const KuhnPokerState *kuhn_poker_state = as_kuhn_const(state);
     KuhnPokerCard private_card;
     InfoSetKey player_code;
     InfoSetKey context_code;

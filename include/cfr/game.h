@@ -6,6 +6,8 @@
 
 #include "cfr/types.h"
 
+CFR_EXTERN_C_BEGIN
+
 /*
  * Represents a state through an opaque type.
  *
@@ -269,5 +271,7 @@ Status cfr_game_chance_outcomes(const Game *game, const GameState *state,
 /* Queries the stable key of the current information set. */
 Status cfr_game_information_set_key(const Game *game, const GameState *state,
                                     InfoSetKey *result);
+
+CFR_EXTERN_C_END
 
 #endif

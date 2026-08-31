@@ -203,10 +203,10 @@ if ! awk '
     fail "CFR+ did not converge to the expected Leduc value"
 fi
 
-run_case mccfr --iterations 2000 --mccfr --seed 42
+run_case mccfr --iterations 5000 --mccfr --seed 42
 require_status 0
 require_empty "$case_error"
-require_text "$case_output" "report iterations=2000 "
+require_text "$case_output" "report iterations=5000 "
 require_text "$case_output" " information_sets=288 "
 
 printf 'All Leduc CLI integration tests completed successfully.\n'

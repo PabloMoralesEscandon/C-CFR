@@ -8,6 +8,8 @@
 #include "cfr/info_store.h"
 #include "cfr/mccfr.h"
 
+CFR_EXTERN_C_BEGIN
+
 /*
  * Contains a snapshot of the trainer's cumulative statistics.
  *
@@ -26,7 +28,7 @@ typedef struct {
 } TrainerStats;
 
 /* Selects the update rule used by the trainer. */
-typedef enum {
+typedef CFR_ENUM_INT(CfrTrainerVariant) {
     /* Classic CFR with untruncated cumulative regrets and unit weight. */
     CFR_TRAINER_VARIANT_CFR,
     /* CFR+ with truncated regrets and linear averaging. */
@@ -152,5 +154,7 @@ Status cfr_trainer_get_stats(const Trainer *trainer, TrainerStats *stats_out);
  * statistics does not reset CFR+ linear weights or MCCFR sampling.
  */
 Status cfr_trainer_reset_stats(Trainer *trainer);
+
+CFR_EXTERN_C_END
 
 #endif

@@ -7,6 +7,8 @@
 #include "cfr/info_store.h"
 #include "cfr/trainer.h"
 
+CFR_EXTERN_C_BEGIN
+
 /*
  * Writes a complete, resumable trainer checkpoint to stream.
  *
@@ -47,5 +49,7 @@ Status cfr_checkpoint_read(FILE *stream, const Game *game, GameState *state,
  * flush it.
  */
 Status cfr_strategy_write_text(FILE *stream, const Trainer *trainer);
+
+CFR_EXTERN_C_END
 
 #endif

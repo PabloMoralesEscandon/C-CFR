@@ -1,14 +1,15 @@
 
 #include <stdbool.h>
+#include <bit>
 #include <stdint.h>
 #include <stdlib.h>
 
 #include "cfr/info_store.h"
 #include "info_store_internal.h"
 
-static const size_t INITIAL_STORE_CAPACITY = 8;
+static constexpr size_t INITIAL_STORE_CAPACITY = 8;
 
-static const uint64_t HASH_MULTIPLIER = UINT64_C(11400714819323198485);
+static constexpr uint64_t HASH_MULTIPLIER = UINT64_C(11400714819323198485);
 
 typedef enum {
     LOCATE_INVALID_ARGUMENT,
@@ -35,10 +36,7 @@ static uint64_t disperse(InfoSetKey key) {
 }
 
 static size_t bits_needed(size_t capacity) {
-    size_t bits = 0;
-    for (; capacity > 1; capacity = capacity >> 1)
-        bits++;
-    return bits;
+    return std::bit_width(capacity) - 1;
 }
 
 static size_t initial_index(InfoSetKey key, size_t capacity) {
@@ -80,13 +78,13 @@ static Status resize(InfoStore *info_store) {
     size_t new_capacity = 2 * info_store->capacity;
     if (new_capacity > (SIZE_MAX / sizeof(InfoStoreEntry)))
         return CFR_STATUS_OUT_OF_MEMORY;
-    InfoStoreEntry *temp_entries =
-        malloc(new_capacity * sizeof(InfoStoreEntry));
+    InfoStoreEntry *temp_entries = static_cast<InfoStoreEntry *>(
+        malloc(new_capacity * sizeof(InfoStoreEntry)));
     if (temp_entries == NULL)
         return CFR_STATUS_OUT_OF_MEMORY;
     for (size_t i = 0; i < new_capacity; i++)
         temp_entries[i].node = NULL;
-    InfoStore temp_store = {0};
+    InfoStore temp_store = {};
     temp_store.capacity = new_capacity;
     temp_store.entries = temp_entries;
 
@@ -120,8 +118,8 @@ Status cfr_info_store_init(InfoStore *info_store) {
         return CFR_STATUS_INVALID_ARGUMENT;
     if (INITIAL_STORE_CAPACITY > (SIZE_MAX / sizeof(InfoStoreEntry)))
         return CFR_STATUS_INVALID_ARGUMENT;
-    InfoStoreEntry *temp =
-        malloc(sizeof(InfoStoreEntry) * INITIAL_STORE_CAPACITY);
+    InfoStoreEntry *temp = static_cast<InfoStoreEntry *>(
+        malloc(sizeof(InfoStoreEntry) * INITIAL_STORE_CAPACITY));
     if (temp == NULL)
         return CFR_STATUS_OUT_OF_MEMORY;
     for (size_t i = 0; i < INITIAL_STORE_CAPACITY; i++)
@@ -193,10 +191,10 @@ Status cfr_info_store_get_or_create(InfoStore *info_store, InfoSetKey key,
         *node_out = info_store->entries[index].node;
         return CFR_STATUS_SUCCESS;
     }
-    InfoNode *temp = malloc(sizeof(InfoNode));
+    InfoNode *temp = static_cast<InfoNode *>(malloc(sizeof(InfoNode)));
     if (temp == NULL)
         return CFR_STATUS_OUT_OF_MEMORY;
-    *temp = (InfoNode){0};
+    *temp = InfoNode{};
     Status init = cfr_info_node_init(temp, key, action_count);
     if (init != CFR_STATUS_SUCCESS) {
         cfr_info_node_destroy(temp);
@@ -273,7 +271,8 @@ Status cfr_info_store_visit_sorted(const InfoStore *info_store,
         return CFR_STATUS_INVALID_ARGUMENT;
     }
     if (info_store->size > 0) {
-        nodes = malloc(info_store->size * sizeof(*nodes));
+        nodes = static_cast<const InfoNode **>(
+            malloc(info_store->size * sizeof(*nodes)));
         if (nodes == NULL)
             return CFR_STATUS_OUT_OF_MEMORY;
     }

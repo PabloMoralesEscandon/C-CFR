@@ -6,6 +6,8 @@
 
 #include "cfr/game.h"
 
+CFR_EXTERN_C_BEGIN
+
 /* Ten rank classes: ace, 2--9, and any card worth ten. */
 #define CFR_BLACKJACK_NUMBER_OF_CARD_RANKS 10
 /* The two participants are the player and the dealer. */
@@ -28,7 +30,7 @@
  * rank distribution: TEN has probability 4/13 and every other class has
  * probability 1/13.
  */
-typedef enum {
+typedef CFR_ENUM_INT(CfrBlackjackCard) {
     CFR_BLACKJACK_CARD_NOT_DEALT,
     CFR_BLACKJACK_CARD_ACE,
     CFR_BLACKJACK_CARD_TWO,
@@ -43,7 +45,7 @@ typedef enum {
 } BlackjackCard;
 
 /* Identifies the exact point in the rules reached by the hand. */
-typedef enum {
+typedef CFR_ENUM_INT(CfrBlackjackPhase) {
     CFR_BLACKJACK_PHASE_DEAL_PLAYER_FIRST,
     CFR_BLACKJACK_PHASE_DEAL_DEALER_UP_CARD,
     CFR_BLACKJACK_PHASE_DEAL_PLAYER_SECOND,
@@ -62,7 +64,7 @@ typedef enum {
  * Card actions always appear in ace-to-ten order. The dealer is not a
  * strategic actor: its rule-driven draws are chance nodes.
  */
-typedef enum {
+typedef CFR_ENUM_INT(CfrBlackjackAction) {
     CFR_BLACKJACK_ACTION_NONE,
     CFR_BLACKJACK_ACTION_DEAL_ACE,
     CFR_BLACKJACK_ACTION_DEAL_TWO,
@@ -178,5 +180,7 @@ GameState *cfr_blackjack_state_as_game_state(BlackjackState *blackjack_state);
 /* Views blackjack_state as a const opaque game state without copying it. */
 const GameState *
 cfr_blackjack_state_as_game_state_const(const BlackjackState *blackjack_state);
+
+CFR_EXTERN_C_END
 
 #endif

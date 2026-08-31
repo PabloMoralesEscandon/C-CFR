@@ -3,11 +3,26 @@
 
 #include <stdint.h>
 
+#ifdef __cplusplus
+#define CFR_EXTERN_C_BEGIN extern "C" {
+#define CFR_EXTERN_C_END }
+#define CFR_ENUM_INT(name) enum name : int
+#else
+#define CFR_EXTERN_C_BEGIN
+#define CFR_EXTERN_C_END
+#define CFR_ENUM_INT(name) enum name
+#endif
+
+CFR_EXTERN_C_BEGIN
+
 /* Identifies one of the two players in the zero-sum game. */
-typedef enum { CFR_PLAYER_0, CFR_PLAYER_1 } Player;
+typedef CFR_ENUM_INT(CfrPlayer) { CFR_PLAYER_0, CFR_PLAYER_1 } Player;
 
 /* Identifies the entity that selects the next action. */
-typedef enum { CFR_ACTOR_PLAYER, CFR_ACTOR_CHANCE } ActorKind;
+typedef CFR_ENUM_INT(CfrActorKind) {
+    CFR_ACTOR_PLAYER,
+    CFR_ACTOR_CHANCE
+} ActorKind;
 
 /* Describes the current actor. */
 typedef struct {
@@ -23,7 +38,7 @@ typedef int Action;
 typedef int64_t InfoSetKey;
 
 /* Indicates the result of a contract operation. */
-typedef enum {
+typedef CFR_ENUM_INT(CfrStatus) {
     /* The operation completed successfully. Outputs are valid. */
     CFR_STATUS_SUCCESS,
     /* An argument is null, invalid, or inconsistent with the state. */
@@ -51,5 +66,7 @@ typedef double Utility;
 
 /* Represents a probability in the closed interval from zero to one. */
 typedef double Probability;
+
+CFR_EXTERN_C_END
 
 #endif

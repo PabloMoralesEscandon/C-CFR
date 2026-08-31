@@ -3,13 +3,10 @@
 
 #include "cfr/leduc_poker.h"
 
-enum {
-    LEDUC_ANTE = 1,
-    LEDUC_FIRST_ROUND_BET = 2,
-    LEDUC_SECOND_ROUND_BET = 4,
-    LEDUC_PRIVATE_CARD_COUNT = 2,
-    LEDUC_PUBLIC_DEAL_CARD_COUNT = 4
-};
+static constexpr int LEDUC_ANTE = 1;
+static constexpr int LEDUC_FIRST_ROUND_BET = 2;
+static constexpr int LEDUC_SECOND_ROUND_BET = 4;
+static constexpr size_t LEDUC_PUBLIC_DEAL_CARD_COUNT = 4;
 
 typedef struct {
     LeducPokerPhase phase;
@@ -51,6 +48,30 @@ static Status leduc_chance_outcomes(const void *context,
                                     const GameState *state, Action *actions,
                                     Probability *probabilities,
                                     size_t capacity, size_t *required_count);
+static Status leduc_trusted_is_terminal(const void *context,
+                                        const GameState *state, bool *result);
+static Status leduc_trusted_terminal_utility(const void *context,
+                                             const GameState *state,
+                                             Player player, Utility *result);
+static Status leduc_trusted_current_actor(const void *context,
+                                          const GameState *state,
+                                          Actor *result);
+static Status leduc_trusted_legal_actions(const void *context,
+                                          const GameState *state,
+                                          Action *actions, size_t capacity,
+                                          size_t *required_count);
+static Status leduc_trusted_apply_action(const void *context, GameState *state,
+                                         Action action);
+static Status leduc_trusted_undo_action(const void *context, GameState *state);
+static Status leduc_trusted_chance_probability(
+    const void *context, const GameState *state, Action action,
+    Probability *result);
+static Status leduc_trusted_information_set_key(const void *context,
+                                                const GameState *state,
+                                                InfoSetKey *result);
+static Status leduc_trusted_chance_outcomes(
+    const void *context, const GameState *state, Action *actions,
+    Probability *probabilities, size_t capacity, size_t *required_count);
 
 static const GameOperations LEDUC_OPERATIONS = {
     .is_terminal = leduc_is_terminal,
@@ -65,13 +86,25 @@ static const GameOperations LEDUC_OPERATIONS = {
     .chance_outcomes = leduc_chance_outcomes,
 };
 
+static const GameOperations LEDUC_TRUSTED_OPERATIONS = {
+    .is_terminal = leduc_trusted_is_terminal,
+    .terminal_utility = leduc_trusted_terminal_utility,
+    .current_actor = leduc_trusted_current_actor,
+    .legal_actions = leduc_trusted_legal_actions,
+    .apply_action = leduc_trusted_apply_action,
+    .undo_action = leduc_trusted_undo_action,
+    .chance_probability = leduc_trusted_chance_probability,
+    .information_set_key = leduc_trusted_information_set_key,
+    .chance_outcomes = leduc_trusted_chance_outcomes,
+};
+
 static const Game LEDUC_GAME = {
     .operations = &LEDUC_OPERATIONS,
     .context = NULL,
     .strategic_player_count = CFR_LEDUC_POKER_NUMBER_OF_PLAYERS,
     .max_legal_actions = CFR_LEDUC_POKER_MAX_POSSIBLE_ACTIONS,
     .strategy_schema_id = "cfr.leduc-poker/v1",
-    .trusted_operations = NULL,
+    .trusted_operations = &LEDUC_TRUSTED_OPERATIONS,
 };
 
 static LeducPokerState *as_leduc(GameState *state) {
@@ -91,7 +124,7 @@ static Player other_player(Player player) {
 }
 
 static void model_init(LeducModel *model) {
-    *model = (LeducModel){0};
+    *model = LeducModel{};
     model->phase = CFR_LEDUC_POKER_PHASE_PRIVATE_DEAL;
     model->private_cards[0] = CFR_LEDUC_POKER_CARD_NOT_DEALT;
     model->private_cards[1] = CFR_LEDUC_POKER_CARD_NOT_DEALT;
@@ -372,7 +405,7 @@ static bool undo_entry_matches_model(const LeducPokerUndoEntry *entry,
 }
 
 static bool undo_entry_is_empty(const LeducPokerUndoEntry *entry) {
-    const LeducPokerUndoEntry empty = {0};
+    const LeducPokerUndoEntry empty = {};
 
     return entry->previous_phase == empty.previous_phase &&
            entry->previous_private_cards[0] ==
@@ -475,7 +508,7 @@ Status cfr_leduc_poker_state_init(LeducPokerState *state) {
 
     if (state == NULL)
         return CFR_STATUS_INVALID_ARGUMENT;
-    *state = (LeducPokerState){0};
+    *state = LeducPokerState{};
     model_init(&model);
     state_from_model(state, &model);
     return CFR_STATUS_SUCCESS;
@@ -503,12 +536,20 @@ static Status leduc_is_terminal(const void *context, const GameState *state,
     const LeducPokerState *leduc = as_leduc_const(state);
     Status status;
 
-    (void)context;
     if (result == NULL)
         return CFR_STATUS_INVALID_ARGUMENT;
     status = validate_state(leduc);
     if (status != CFR_STATUS_SUCCESS)
         return status;
+    return leduc_trusted_is_terminal(context, state, result);
+}
+
+static Status leduc_trusted_is_terminal(const void *context,
+                                        const GameState *state,
+                                        bool *result) {
+    const LeducPokerState *leduc = as_leduc_const(state);
+
+    (void)context;
     *result = leduc->phase == CFR_LEDUC_POKER_PHASE_TERMINAL;
     return CFR_STATUS_SUCCESS;
 }
@@ -530,15 +571,24 @@ static Status leduc_terminal_utility(const void *context,
                                      const GameState *state, Player player,
                                      Utility *result) {
     const LeducPokerState *leduc = as_leduc_const(state);
-    Utility player0_utility;
     Status status;
 
-    (void)context;
     if (result == NULL || !player_is_valid(player))
         return CFR_STATUS_INVALID_ARGUMENT;
     status = validate_state(leduc);
     if (status != CFR_STATUS_SUCCESS)
         return status;
+    return leduc_trusted_terminal_utility(context, state, player, result);
+}
+
+static Status leduc_trusted_terminal_utility(const void *context,
+                                             const GameState *state,
+                                             Player player,
+                                             Utility *result) {
+    const LeducPokerState *leduc = as_leduc_const(state);
+    Utility player0_utility;
+
+    (void)context;
     if (leduc->phase != CFR_LEDUC_POKER_PHASE_TERMINAL)
         return CFR_STATUS_INVALID_ARGUMENT;
 
@@ -568,12 +618,20 @@ static Status leduc_current_actor(const void *context, const GameState *state,
     const LeducPokerState *leduc = as_leduc_const(state);
     Status status;
 
-    (void)context;
     if (result == NULL)
         return CFR_STATUS_INVALID_ARGUMENT;
     status = validate_state(leduc);
     if (status != CFR_STATUS_SUCCESS)
         return status;
+    return leduc_trusted_current_actor(context, state, result);
+}
+
+static Status leduc_trusted_current_actor(const void *context,
+                                          const GameState *state,
+                                          Actor *result) {
+    const LeducPokerState *leduc = as_leduc_const(state);
+
+    (void)context;
     if (leduc->phase == CFR_LEDUC_POKER_PHASE_PRIVATE_DEAL ||
         leduc->phase == CFR_LEDUC_POKER_PHASE_PUBLIC_DEAL) {
         result->kind = CFR_ACTOR_CHANCE;
@@ -601,7 +659,8 @@ static Status collect_legal_actions(const LeducModel *model, Action *actions,
             temporary[count++] = CFR_LEDUC_POKER_ACTION_DEAL_JJ + (Action)index;
     } else if (model->phase == CFR_LEDUC_POKER_PHASE_PUBLIC_DEAL) {
         for (LeducPokerCard rank = CFR_LEDUC_POKER_CARD_JACK;
-             rank <= CFR_LEDUC_POKER_CARD_KING; rank++) {
+             rank <= CFR_LEDUC_POKER_CARD_KING;
+             rank = static_cast<LeducPokerCard>(rank + 1)) {
             if (remaining_rank_count(model, rank) > 0) {
                 temporary[count++] = CFR_LEDUC_POKER_ACTION_REVEAL_J +
                                      (Action)(rank -
@@ -643,15 +702,25 @@ static Status leduc_legal_actions(const void *context, const GameState *state,
                                   Action *actions, size_t capacity,
                                   size_t *required_count) {
     const LeducPokerState *leduc = as_leduc_const(state);
-    LeducModel model;
     Status status;
 
-    (void)context;
     if (actions == NULL || required_count == NULL)
         return CFR_STATUS_INVALID_ARGUMENT;
     status = validate_state(leduc);
     if (status != CFR_STATUS_SUCCESS)
         return status;
+    return leduc_trusted_legal_actions(context, state, actions, capacity,
+                                       required_count);
+}
+
+static Status leduc_trusted_legal_actions(const void *context,
+                                          const GameState *state,
+                                          Action *actions, size_t capacity,
+                                          size_t *required_count) {
+    const LeducPokerState *leduc = as_leduc_const(state);
+    LeducModel model;
+
+    (void)context;
     model_from_state(leduc, &model);
     return collect_legal_actions(&model, actions, capacity, required_count);
 }
@@ -659,13 +728,21 @@ static Status leduc_legal_actions(const void *context, const GameState *state,
 static Status leduc_apply_action(const void *context, GameState *state,
                                  Action action) {
     LeducPokerState *leduc = as_leduc(state);
+    Status status;
+
+    status = validate_state(leduc);
+    if (status != CFR_STATUS_SUCCESS)
+        return status;
+    return leduc_trusted_apply_action(context, state, action);
+}
+
+static Status leduc_trusted_apply_action(const void *context, GameState *state,
+                                         Action action) {
+    LeducPokerState *leduc = as_leduc(state);
     LeducModel next;
     Status status;
 
     (void)context;
-    status = validate_state(leduc);
-    if (status != CFR_STATUS_SUCCESS)
-        return status;
     if (leduc->undo_count >= CFR_LEDUC_POKER_UNDO_HISTORY_CAPACITY)
         return CFR_STATUS_BUFFER_TOO_SMALL;
     model_from_state(leduc, &next);
@@ -679,14 +756,21 @@ static Status leduc_apply_action(const void *context, GameState *state,
 
 static Status leduc_undo_action(const void *context, GameState *state) {
     LeducPokerState *leduc = as_leduc(state);
-    LeducPokerUndoEntry entry;
-    size_t index;
     Status status;
 
-    (void)context;
     status = validate_state(leduc);
     if (status != CFR_STATUS_SUCCESS)
         return status;
+    return leduc_trusted_undo_action(context, state);
+}
+
+static Status leduc_trusted_undo_action(const void *context,
+                                        GameState *state) {
+    LeducPokerState *leduc = as_leduc(state);
+    LeducPokerUndoEntry entry;
+    size_t index;
+
+    (void)context;
     if (leduc->undo_count == 0)
         return CFR_STATUS_INVALID_ARGUMENT;
 
@@ -709,7 +793,7 @@ static Status leduc_undo_action(const void *context, GameState *state) {
     leduc->folded = entry.previous_folded;
     leduc->folded_player = entry.previous_folded_player;
     leduc->undo_count -= 1;
-    leduc->undo_history[leduc->undo_count] = (LeducPokerUndoEntry){0};
+    leduc->undo_history[leduc->undo_count] = LeducPokerUndoEntry{};
     return CFR_STATUS_SUCCESS;
 }
 
@@ -735,7 +819,8 @@ static Status chance_probability_for_model(const LeducModel *model,
         remaining = remaining_rank_count(model, card);
         if (remaining == 0)
             return CFR_STATUS_ILLEGAL_ACTION;
-        *result = (Probability)remaining / LEDUC_PUBLIC_DEAL_CARD_COUNT;
+        *result = static_cast<Probability>(remaining) /
+                  static_cast<Probability>(LEDUC_PUBLIC_DEAL_CARD_COUNT);
         return CFR_STATUS_SUCCESS;
     }
     return CFR_STATUS_INVALID_ARGUMENT;
@@ -745,15 +830,23 @@ static Status leduc_chance_probability(const void *context,
                                        const GameState *state, Action action,
                                        Probability *result) {
     const LeducPokerState *leduc = as_leduc_const(state);
-    LeducModel model;
     Status status;
 
-    (void)context;
     if (result == NULL)
         return CFR_STATUS_INVALID_ARGUMENT;
     status = validate_state(leduc);
     if (status != CFR_STATUS_SUCCESS)
         return status;
+    return leduc_trusted_chance_probability(context, state, action, result);
+}
+
+static Status leduc_trusted_chance_probability(
+    const void *context, const GameState *state, Action action,
+    Probability *result) {
+    const LeducPokerState *leduc = as_leduc_const(state);
+    LeducModel model;
+
+    (void)context;
     model_from_state(leduc, &model);
     return chance_probability_for_model(&model, (LeducPokerAction)action,
                                         result);
@@ -764,6 +857,21 @@ static Status leduc_chance_outcomes(const void *context,
                                     Probability *probabilities,
                                     size_t capacity, size_t *required_count) {
     const LeducPokerState *leduc = as_leduc_const(state);
+    Status status;
+
+    if (actions == NULL || probabilities == NULL || required_count == NULL)
+        return CFR_STATUS_INVALID_ARGUMENT;
+    status = validate_state(leduc);
+    if (status != CFR_STATUS_SUCCESS)
+        return status;
+    return leduc_trusted_chance_outcomes(
+        context, state, actions, probabilities, capacity, required_count);
+}
+
+static Status leduc_trusted_chance_outcomes(
+    const void *context, const GameState *state, Action *actions,
+    Probability *probabilities, size_t capacity, size_t *required_count) {
+    const LeducPokerState *leduc = as_leduc_const(state);
     Action temporary_actions[CFR_LEDUC_POKER_MAX_POSSIBLE_ACTIONS];
     Probability
         temporary_probabilities[CFR_LEDUC_POKER_MAX_POSSIBLE_ACTIONS];
@@ -773,11 +881,6 @@ static Status leduc_chance_outcomes(const void *context,
     Status status;
 
     (void)context;
-    if (actions == NULL || probabilities == NULL || required_count == NULL)
-        return CFR_STATUS_INVALID_ARGUMENT;
-    status = validate_state(leduc);
-    if (status != CFR_STATUS_SUCCESS)
-        return status;
     model_from_state(leduc, &model);
     status = collect_legal_actions(&model, temporary_actions,
                                    CFR_LEDUC_POKER_MAX_POSSIBLE_ACTIONS,
@@ -824,17 +927,25 @@ static Status leduc_information_set_key(const void *context,
                                         const GameState *state,
                                         InfoSetKey *result) {
     const LeducPokerState *leduc = as_leduc_const(state);
-    InfoSetKey key;
-    int round_code;
-    size_t index;
     Status status;
 
-    (void)context;
     if (result == NULL)
         return CFR_STATUS_INVALID_ARGUMENT;
     status = validate_state(leduc);
     if (status != CFR_STATUS_SUCCESS)
         return status;
+    return leduc_trusted_information_set_key(context, state, result);
+}
+
+static Status leduc_trusted_information_set_key(const void *context,
+                                                const GameState *state,
+                                                InfoSetKey *result) {
+    const LeducPokerState *leduc = as_leduc_const(state);
+    InfoSetKey key;
+    int round_code;
+    size_t index;
+
+    (void)context;
     if (!phase_is_betting(leduc->phase))
         return CFR_STATUS_INVALID_ARGUMENT;
 

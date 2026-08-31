@@ -7,6 +7,8 @@
 #include "cfr/info_store.h"
 #include "cfr/types.h"
 
+CFR_EXTERN_C_BEGIN
+
 /*
  * Contains the metrics from a point-in-time evaluation.
  *
@@ -148,5 +150,7 @@ Status cfr_evaluation_metrics(const Game *game, GameState *state,
 Status cfr_evaluation_metrics_with_unvisited_uniform(
     const Game *game, GameState *state, const InfoStore *store,
     EvaluationMetrics *eval_out);
+
+CFR_EXTERN_C_END
 
 #endif

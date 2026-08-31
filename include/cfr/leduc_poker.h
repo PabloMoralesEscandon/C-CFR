@@ -6,6 +6,8 @@
 
 #include "cfr/game.h"
 
+CFR_EXTERN_C_BEGIN
+
 /* Number of strategic players in two-player Leduc Poker. */
 #define CFR_LEDUC_POKER_NUMBER_OF_PLAYERS 2
 /* Maximum number of visible betting actions across both rounds. */
@@ -21,7 +23,7 @@
  * Identifies a card rank. The deck contains two cards of every real rank.
  * Suits have no strategic meaning and are represented through probabilities.
  */
-typedef enum {
+typedef CFR_ENUM_INT(CfrLeducPokerCard) {
     CFR_LEDUC_POKER_CARD_NOT_DEALT,
     CFR_LEDUC_POKER_CARD_JACK,
     CFR_LEDUC_POKER_CARD_QUEEN,
@@ -29,7 +31,7 @@ typedef enum {
 } LeducPokerCard;
 
 /* Identifies the current phase and, together with current_player, the actor. */
-typedef enum {
+typedef CFR_ENUM_INT(CfrLeducPokerPhase) {
     CFR_LEDUC_POKER_PHASE_PRIVATE_DEAL,
     CFR_LEDUC_POKER_PHASE_FIRST_BETTING,
     CFR_LEDUC_POKER_PHASE_PUBLIC_DEAL,
@@ -45,7 +47,7 @@ typedef enum {
  * actions reveal one rank. At player nodes, an unopened pot uses CHECK/BET and
  * a player facing a wager uses FOLD/CALL and, below the cap, RAISE.
  */
-typedef enum {
+typedef CFR_ENUM_INT(CfrLeducPokerAction) {
     CFR_LEDUC_POKER_ACTION_NONE,
     CFR_LEDUC_POKER_ACTION_DEAL_JJ,
     CFR_LEDUC_POKER_ACTION_DEAL_JQ,
@@ -119,5 +121,7 @@ GameState *cfr_leduc_poker_state_as_game_state(LeducPokerState *state);
 /* Views a const concrete Leduc state through the engine's opaque state type. */
 const GameState *
 cfr_leduc_poker_state_as_game_state_const(const LeducPokerState *state);
+
+CFR_EXTERN_C_END
 
 #endif

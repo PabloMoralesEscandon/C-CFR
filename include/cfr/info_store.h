@@ -6,6 +6,8 @@
 #include "cfr/info_node.h"
 #include "cfr/types.h"
 
+CFR_EXTERN_C_BEGIN
+
 typedef struct CfrInfoStoreEntry InfoStoreEntry;
 
 /*
@@ -163,5 +165,7 @@ Status cfr_info_store_find_const(const InfoStore *info_store, InfoSetKey key,
 Status cfr_info_store_visit_sorted(const InfoStore *info_store,
                                    InfoStoreConstVisitor visitor,
                                    void *context);
+
+CFR_EXTERN_C_END
 
 #endif

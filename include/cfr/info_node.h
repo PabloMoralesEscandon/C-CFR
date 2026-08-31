@@ -5,6 +5,8 @@
 
 #include "cfr/types.h"
 
+CFR_EXTERN_C_BEGIN
+
 /*
  * Stores the learning data for an information set.
  *
@@ -148,5 +150,7 @@ Status cfr_info_node_accumulate_strategy(InfoNode *node,
 Status cfr_info_node_average_strategy(const InfoNode *node,
                                       Probability *strategy_array,
                                       size_t strategy_capacity);
+
+CFR_EXTERN_C_END
 
 #endif

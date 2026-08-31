@@ -145,6 +145,9 @@ static void check_root_and_descriptor(void) {
     CHECK(game->operations->undo_action != NULL);
     CHECK(game->operations->chance_probability != NULL);
     CHECK(game->operations->information_set_key != NULL);
+    CHECK(game->operations->validate_state != NULL);
+    CHECK(game->operations->chance_outcomes != NULL);
+    CHECK(game->trusted_operations != NULL);
 
     initialize(&state);
     CHECK(cfr_kuhn_poker_state_as_game_state(&state) == (GameState *)&state);

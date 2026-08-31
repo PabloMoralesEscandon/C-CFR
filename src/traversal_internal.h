@@ -6,6 +6,7 @@
 
 #include "cfr/game.h"
 #include "cfr/info_node.h"
+#include "cfr/traversal.h"
 
 typedef struct {
     const GameOperations *operations;
@@ -13,6 +14,8 @@ typedef struct {
     size_t max_legal_actions;
     size_t strategic_player_count;
 } CfrTraversalAdapter;
+
+typedef struct CfrFullTraversalWorkspace CfrFullTraversalWorkspace;
 
 bool cfr_traversal_operations_supported(const GameOperations *operations);
 
@@ -28,5 +31,16 @@ void cfr_traversal_initialize_index_table(size_t *table, size_t capacity,
 
 Status cfr_traversal_grow_array(void *array, size_t element_size,
                                 size_t *capacity, void **grown_out);
+
+Status cfr_full_traversal_workspace_create(
+    size_t max_legal_actions, CfrFullTraversalWorkspace **workspace_out);
+
+void cfr_full_traversal_workspace_destroy(
+    CfrFullTraversalWorkspace *workspace);
+
+Status cfr_full_traverse_in_workspace(
+    const Game *game, GameState *state, InfoStore *store, Player target_player,
+    size_t iteration, bool regret_matching_plus, Utility *utility_out,
+    TraversalStats *stats_out, CfrFullTraversalWorkspace *workspace);
 
 #endif

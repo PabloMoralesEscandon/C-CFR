@@ -4,6 +4,8 @@
 #include "cfr/game.h"
 #include "cfr/info_store.h"
 
+CFR_EXTERN_C_BEGIN
+
 /* Maximum number of legal actions supported by a traversal. */
 #define CFR_TRAVERSAL_MAX_ACTIONS 64
 
@@ -105,5 +107,7 @@ Status cfr_traverse_plus(const Game *game, GameState *state, InfoStore *store,
 Status cfr_traverse_plus_with_stats(
     const Game *game, GameState *state, InfoStore *store, Player target_player,
     size_t iteration, Utility *utility_out, TraversalStats *stats_out);
+
+CFR_EXTERN_C_END
 
 #endif

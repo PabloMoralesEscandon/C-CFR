@@ -7,8 +7,8 @@
 #include "info_node_internal.h"
 
 /* Tolerances for validating that a distribution sums to one. */
-#define REL_EPSILON 1e-8
-#define ABS_EPSILON 1e-12
+static constexpr double REL_EPSILON = 1e-8;
+static constexpr double ABS_EPSILON = 1e-12;
 
 static bool valid_probability(double probability) {
     if (fabs(probability - 1.0) <= ABS_EPSILON)
@@ -24,10 +24,12 @@ Status cfr_info_node_init(InfoNode *node, InfoSetKey key, size_t action_count) {
         return CFR_STATUS_INVALID_ARGUMENT;
     if (action_count > (SIZE_MAX / sizeof(double)))
         return CFR_STATUS_INVALID_ARGUMENT;
-    Utility *regret_sums = malloc(sizeof(Utility) * action_count);
+    Utility *regret_sums =
+        static_cast<Utility *>(malloc(sizeof(Utility) * action_count));
     if (regret_sums == NULL)
         return CFR_STATUS_OUT_OF_MEMORY;
-    double *strategy_sums = malloc(sizeof(double) * action_count);
+    double *strategy_sums =
+        static_cast<double *>(malloc(sizeof(double) * action_count));
     if (strategy_sums == NULL) {
         free(regret_sums);
         regret_sums = NULL;

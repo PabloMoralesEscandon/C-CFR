@@ -5,14 +5,14 @@
 
 #include "cfr/evaluation.h"
 
-#define EVALUATION_ABS_EPSILON 1e-12
-#define EVALUATION_INDEX_EMPTY SIZE_MAX
-#define EVALUATION_REL_EPSILON 1e-8
-#define INITIAL_EDGE_CAPACITY 8
-#define INITIAL_FRAME_CAPACITY 8
-#define INITIAL_GROUP_CAPACITY 8
-#define INITIAL_GROUP_TABLE_CAPACITY 8
-#define INITIAL_NODE_CAPACITY 8
+static constexpr double EVALUATION_ABS_EPSILON = 1e-12;
+static constexpr size_t EVALUATION_INDEX_EMPTY = SIZE_MAX;
+static constexpr double EVALUATION_REL_EPSILON = 1e-8;
+static constexpr size_t INITIAL_EDGE_CAPACITY = 8;
+static constexpr size_t INITIAL_FRAME_CAPACITY = 8;
+static constexpr size_t INITIAL_GROUP_CAPACITY = 8;
+static constexpr size_t INITIAL_GROUP_TABLE_CAPACITY = 8;
+static constexpr size_t INITIAL_NODE_CAPACITY = 8;
 
 typedef enum {
     EVALUATION_NODE_TERMINAL,
@@ -120,7 +120,7 @@ static void workspace_destroy(EvaluationWorkspace *workspace) {
     if (workspace->unvisited_store_initialized)
         (void)cfr_info_store_destroy(&workspace->unvisited_store);
 
-    *workspace = (EvaluationWorkspace){0};
+    *workspace = EvaluationWorkspace{};
 }
 
 static Status workspace_init(EvaluationWorkspace *workspace,
@@ -133,36 +133,38 @@ static Status workspace_init(EvaluationWorkspace *workspace,
         max_legal_actions > SIZE_MAX / sizeof(Probability))
         return CFR_STATUS_OUT_OF_MEMORY;
 
-    EvaluationWorkspace temporary = {0};
+    EvaluationWorkspace temporary = {};
 
-    temporary.nodes = malloc(INITIAL_NODE_CAPACITY * sizeof(*temporary.nodes));
+    temporary.nodes = static_cast<EvaluationNode *>(
+        malloc(INITIAL_NODE_CAPACITY * sizeof(*temporary.nodes)));
     if (temporary.nodes == NULL) {
         workspace_destroy(&temporary);
         return CFR_STATUS_OUT_OF_MEMORY;
     }
 
-    temporary.edges = malloc(INITIAL_EDGE_CAPACITY * sizeof(*temporary.edges));
+    temporary.edges = static_cast<EvaluationEdge *>(
+        malloc(INITIAL_EDGE_CAPACITY * sizeof(*temporary.edges)));
     if (temporary.edges == NULL) {
         workspace_destroy(&temporary);
         return CFR_STATUS_OUT_OF_MEMORY;
     }
 
-    temporary.groups =
-        malloc(INITIAL_GROUP_CAPACITY * sizeof(*temporary.groups));
+    temporary.groups = static_cast<InformationGroup *>(
+        malloc(INITIAL_GROUP_CAPACITY * sizeof(*temporary.groups)));
     if (temporary.groups == NULL) {
         workspace_destroy(&temporary);
         return CFR_STATUS_OUT_OF_MEMORY;
     }
 
-    temporary.group_table =
-        malloc(INITIAL_GROUP_TABLE_CAPACITY * sizeof(*temporary.group_table));
+    temporary.group_table = static_cast<size_t *>(
+        malloc(INITIAL_GROUP_TABLE_CAPACITY * sizeof(*temporary.group_table)));
     if (temporary.group_table == NULL) {
         workspace_destroy(&temporary);
         return CFR_STATUS_OUT_OF_MEMORY;
     }
 
-    temporary.frames =
-        malloc(INITIAL_FRAME_CAPACITY * sizeof(*temporary.frames));
+    temporary.frames = static_cast<EvaluationFrame *>(
+        malloc(INITIAL_FRAME_CAPACITY * sizeof(*temporary.frames)));
     if (temporary.frames == NULL) {
         workspace_destroy(&temporary);
         return CFR_STATUS_OUT_OF_MEMORY;
@@ -172,7 +174,7 @@ static Status workspace_init(EvaluationWorkspace *workspace,
         temporary.group_table[i] = EVALUATION_INDEX_EMPTY;
 
     for (size_t i = 0; i < INITIAL_FRAME_CAPACITY; i++)
-        temporary.frames[i] = (EvaluationFrame){0};
+        temporary.frames[i] = EvaluationFrame{};
 
     temporary.node_capacity = INITIAL_NODE_CAPACITY;
     temporary.edge_capacity = INITIAL_EDGE_CAPACITY;
@@ -261,27 +263,29 @@ static Status ensure_frame(EvaluationWorkspace *workspace, size_t depth) {
         if (new_capacity > SIZE_MAX / sizeof(EvaluationFrame))
             return CFR_STATUS_OUT_OF_MEMORY;
 
-        EvaluationFrame *grown =
-            realloc(workspace->frames, new_capacity * sizeof(EvaluationFrame));
+        EvaluationFrame *grown = static_cast<EvaluationFrame *>(
+            realloc(workspace->frames,
+                    new_capacity * sizeof(EvaluationFrame)));
 
         if (grown == NULL)
             return CFR_STATUS_OUT_OF_MEMORY;
 
         for (size_t i = old_capacity; i < new_capacity; i++)
-            grown[i] = (EvaluationFrame){0};
+            grown[i] = EvaluationFrame{};
 
         workspace->frames = grown;
         workspace->frame_capacity = new_capacity;
     }
 
     while (workspace->frame_count < required_count) {
-        Action *actions = malloc(workspace->max_legal_actions * sizeof(Action));
+        Action *actions = static_cast<Action *>(
+            malloc(workspace->max_legal_actions * sizeof(Action)));
 
         if (actions == NULL)
             return CFR_STATUS_OUT_OF_MEMORY;
 
-        Probability *probabilities =
-            malloc(workspace->max_legal_actions * sizeof(Probability));
+        Probability *probabilities = static_cast<Probability *>(
+            malloc(workspace->max_legal_actions * sizeof(Probability)));
 
         if (probabilities == NULL) {
             free(actions);
@@ -320,8 +324,9 @@ static Status workspace_append_node(EvaluationWorkspace *workspace,
         if (new_capacity > SIZE_MAX / sizeof(*workspace->nodes))
             return CFR_STATUS_OUT_OF_MEMORY;
 
-        EvaluationNode *grown =
-            realloc(workspace->nodes, new_capacity * sizeof(*workspace->nodes));
+        EvaluationNode *grown = static_cast<EvaluationNode *>(
+            realloc(workspace->nodes,
+                    new_capacity * sizeof(*workspace->nodes)));
         if (grown == NULL)
             return CFR_STATUS_OUT_OF_MEMORY;
 
@@ -362,8 +367,9 @@ static Status workspace_reserve_edges(EvaluationWorkspace *workspace,
         if (new_capacity > SIZE_MAX / sizeof(*workspace->edges))
             return CFR_STATUS_OUT_OF_MEMORY;
 
-        EvaluationEdge *grown =
-            realloc(workspace->edges, new_capacity * sizeof(*workspace->edges));
+        EvaluationEdge *grown = static_cast<EvaluationEdge *>(
+            realloc(workspace->edges,
+                    new_capacity * sizeof(*workspace->edges)));
         if (grown == NULL)
             return CFR_STATUS_OUT_OF_MEMORY;
 
@@ -373,7 +379,7 @@ static Status workspace_reserve_edges(EvaluationWorkspace *workspace,
 
     size_t offset = workspace->edge_count;
     for (size_t i = 0; i < amount; i++) {
-        workspace->edges[offset + i] = (EvaluationEdge){0};
+        workspace->edges[offset + i] = EvaluationEdge{};
         workspace->edges[offset + i].child_index = EVALUATION_INDEX_EMPTY;
     }
 
@@ -447,7 +453,8 @@ static Status workspace_grow_group_table(EvaluationWorkspace *workspace) {
     if (new_capacity > SIZE_MAX / sizeof(*workspace->group_table))
         return CFR_STATUS_OUT_OF_MEMORY;
 
-    size_t *new_table = malloc(new_capacity * sizeof(*new_table));
+    size_t *new_table = static_cast<size_t *>(
+        malloc(new_capacity * sizeof(*new_table)));
     if (new_table == NULL)
         return CFR_STATUS_OUT_OF_MEMORY;
 
@@ -612,8 +619,8 @@ static Status workspace_find_or_create_group(EvaluationWorkspace *workspace,
         if (new_capacity > SIZE_MAX / sizeof(*workspace->groups))
             return CFR_STATUS_OUT_OF_MEMORY;
 
-        InformationGroup *grown = realloc(
-            workspace->groups, new_capacity * sizeof(*workspace->groups));
+        InformationGroup *grown = static_cast<InformationGroup *>(realloc(
+            workspace->groups, new_capacity * sizeof(*workspace->groups)));
         if (grown == NULL)
             return CFR_STATUS_OUT_OF_MEMORY;
 
@@ -622,7 +629,7 @@ static Status workspace_find_or_create_group(EvaluationWorkspace *workspace,
     }
 
     group_index = workspace->group_count;
-    workspace->groups[group_index] = (InformationGroup){
+    workspace->groups[group_index] = InformationGroup{
         .policy_node = node->policy_node,
         .player = node->player,
         .first_node_index = node_index,
@@ -648,7 +655,7 @@ static Status workspace_build_snapshot(const Game *game, GameState *state,
         game->max_legal_actions == 0)
         return CFR_STATUS_INVALID_ARGUMENT;
 
-    EvaluationWorkspace temporary = {0};
+    EvaluationWorkspace temporary = {};
     Status status = cfr_game_validate_state(game, state);
     if (status != CFR_STATUS_SUCCESS)
         return status;
@@ -695,7 +702,7 @@ static Status build(const Game *game, GameState *state, const InfoStore *store,
     if (!(isfinite(counterfactual_reach_1) && 0.0 <= counterfactual_reach_1 &&
           1.0 >= counterfactual_reach_1))
         return CFR_STATUS_INVALID_ARGUMENT;
-    EvaluationNode new_node = {0};
+    EvaluationNode new_node = {};
     new_node.counterfactual_reach_0 = counterfactual_reach_0;
     new_node.counterfactual_reach_1 = counterfactual_reach_1;
     Status status;
@@ -1264,7 +1271,7 @@ Status cfr_evaluation_profile_value(const Game *game, GameState *state,
     if (player != CFR_PLAYER_0 && player != CFR_PLAYER_1)
         return CFR_STATUS_INVALID_ARGUMENT;
     Status status;
-    EvaluationWorkspace workspace = {0};
+    EvaluationWorkspace workspace = {};
     size_t root_index;
     status =
         workspace_build_snapshot(game, state, store, false, &workspace,
@@ -1288,7 +1295,7 @@ Status cfr_evaluation_best_response_value(const Game *game, GameState *state,
     if (player != CFR_PLAYER_0 && player != CFR_PLAYER_1)
         return CFR_STATUS_INVALID_ARGUMENT;
     Status status;
-    EvaluationWorkspace workspace = {0};
+    EvaluationWorkspace workspace = {};
     size_t root_index;
     status =
         workspace_build_snapshot(game, state, store, false, &workspace,
@@ -1311,14 +1318,14 @@ Status cfr_evaluation_metrics(const Game *game, GameState *state,
     if (game == NULL || state == NULL || store == NULL || eval_out == NULL)
         return CFR_STATUS_INVALID_ARGUMENT;
     Status status;
-    EvaluationWorkspace workspace = {0};
+    EvaluationWorkspace workspace = {};
     size_t root_index;
     status =
         workspace_build_snapshot(game, state, store, false, &workspace,
                                  &root_index);
     if (status != CFR_STATUS_SUCCESS)
         return status;
-    EvaluationMetrics eval_temp = {0};
+    EvaluationMetrics eval_temp = {};
     status = calculate_metrics(&workspace, root_index, &eval_temp);
     workspace_destroy(&workspace);
     if (status != CFR_STATUS_SUCCESS)
@@ -1332,13 +1339,13 @@ Status cfr_evaluation_metrics_with_unvisited_uniform(
     EvaluationMetrics *eval_out) {
     if (game == NULL || state == NULL || store == NULL || eval_out == NULL)
         return CFR_STATUS_INVALID_ARGUMENT;
-    EvaluationWorkspace workspace = {0};
+    EvaluationWorkspace workspace = {};
     size_t root_index;
     Status status = workspace_build_snapshot(game, state, store, true,
                                              &workspace, &root_index);
     if (status != CFR_STATUS_SUCCESS)
         return status;
-    EvaluationMetrics temporary = {0};
+    EvaluationMetrics temporary = {};
     status = calculate_metrics(&workspace, root_index, &temporary);
     workspace_destroy(&workspace);
     if (status != CFR_STATUS_SUCCESS)

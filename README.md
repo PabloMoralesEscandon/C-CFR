@@ -1,8 +1,14 @@
-# CFR, CFR+, and MCCFR in C17
+# CFR, CFR+, and MCCFR with a C API and C++20 core
 
 This project implements CFR, CFR+, and external-sampling Monte Carlo CFR for
 finite extensive-form games. The first version supports two-player zero-sum
 games.
+
+The public API, applications, and tests remain C17-compatible. The library
+implementation is compiled as C++20 so it can use compile-time tables,
+`constexpr`, `std::bit_cast`, and other type-safe standard-library facilities.
+Public headers carry C linkage when included from C++, so the static library
+has one C ABI for both C and C++ consumers.
 
 The repository includes complete Kuhn Poker, Leduc Poker, and blackjack
 adapters. Three independent applications train the games, and all adapters are
@@ -35,6 +41,8 @@ Run the commands from the repository root.
 ```sh
 make all
 ```
+
+The build requires a C17 compiler in `CC` and a C++20 compiler in `CXX`.
 
 This target creates the following release artifacts:
 
@@ -69,6 +77,27 @@ This target creates the library, the C test suite, and both debug applications.
 The files are placed in `build/debug`.
 
 Use `make clean` to remove the `build` directory.
+
+## Benchmarking
+
+Build the reproducible training, evaluation, and checkpoint microbenchmarks:
+
+```sh
+make benchmark
+```
+
+Example invocations are:
+
+```sh
+build/release/training-benchmark kuhn cfr 500000 9
+build/release/training-benchmark leduc mccfr 100000 9
+build/release/evaluation-benchmark leduc 10 500 9
+build/release/checkpoint-benchmark 100000 11
+```
+
+Each benchmark performs one unreported warm-up sample, then emits CSV rows for
+the requested number of measured samples. See [BENCHMARKS.md](BENCHMARKS.md)
+for the baseline methodology, results, ablations, and keep/discard decisions.
 
 ## Testing
 

@@ -1,17 +1,27 @@
+#if (defined(__unix__) || defined(__APPLE__)) && \
+    !defined(_POSIX_C_SOURCE)
+#define _POSIX_C_SOURCE 200809L
+#endif
+
 #include <float.h>
+#include <array>
+#include <bit>
 #include <inttypes.h>
 #include <math.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#if defined(__unix__) || defined(__APPLE__)
+#include <unistd.h>
+#endif
 
 #include "cfr/checkpoint.h"
 #include "info_store_internal.h"
 
-#define CHECKPOINT_VERSION UINT32_C(1)
-#define STRATEGY_TEXT_VERSION 1
-#define SCHEMA_ID_MAX_LENGTH 255
+static constexpr uint32_t CHECKPOINT_VERSION = 1;
+static constexpr int STRATEGY_TEXT_VERSION = 1;
+static constexpr size_t SCHEMA_ID_MAX_LENGTH = 255;
 
 static const unsigned char CHECKPOINT_MAGIC[8] = {'C', 'F', 'R', 'C',
                                                    'K', 'P', 'T', '\0'};
@@ -20,6 +30,56 @@ typedef struct {
     uint32_t crc;
 } Checksum;
 
+static constexpr uint32_t checksum_table_entry(uint32_t value) {
+    for (unsigned int bit = 0; bit < 8; bit += 1) {
+        const uint32_t mask =
+            static_cast<uint32_t>(-static_cast<int32_t>(value & 1U));
+        value = (value >> 1) ^ (UINT32_C(0xedb88320) & mask);
+    }
+    return value;
+}
+
+static constexpr std::array<uint32_t, 256> make_checksum_table() {
+    std::array<uint32_t, 256> table = {};
+
+    for (size_t index = 0; index < table.size(); index += 1)
+        table[index] = checksum_table_entry(static_cast<uint32_t>(index));
+    return table;
+}
+
+static constexpr auto CHECKSUM_TABLE = make_checksum_table();
+
+/* POSIX stdio locks are recursive; acquire once across each complete stream
+ * operation instead of once for every small fread/fwrite/fprintf call. */
+class StreamLock final {
+  public:
+    explicit StreamLock(FILE *stream)
+#if defined(_POSIX_VERSION)
+        : stream_(stream)
+#endif
+    {
+#if defined(_POSIX_VERSION)
+        flockfile(stream_);
+#else
+        (void)stream;
+#endif
+    }
+
+    ~StreamLock() {
+#if defined(_POSIX_VERSION)
+        funlockfile(stream_);
+#endif
+    }
+
+    StreamLock(const StreamLock &) = delete;
+    StreamLock &operator=(const StreamLock &) = delete;
+
+  private:
+#if defined(_POSIX_VERSION)
+    FILE *stream_;
+#endif
+};
+
 static void checksum_init(Checksum *checksum) {
     checksum->crc = UINT32_MAX;
 }
@@ -27,13 +87,10 @@ static void checksum_init(Checksum *checksum) {
 static void checksum_update(Checksum *checksum, const unsigned char *bytes,
                             size_t length) {
     for (size_t index = 0; index < length; index += 1) {
-        checksum->crc ^= bytes[index];
-        for (unsigned int bit = 0; bit < 8; bit += 1) {
-            const uint32_t mask =
-                (uint32_t)-(int32_t)(checksum->crc & UINT32_C(1));
-            checksum->crc =
-                (checksum->crc >> 1) ^ (UINT32_C(0xedb88320) & mask);
-        }
+        const uint8_t table_index =
+            static_cast<uint8_t>(checksum->crc ^ bytes[index]);
+        checksum->crc =
+            (checksum->crc >> 8) ^ CHECKSUM_TABLE[table_index];
     }
 }
 
@@ -218,7 +275,8 @@ static Status collect_nodes(const Trainer *trainer, const InfoNode ***nodes_out,
         return CFR_STATUS_INVALID_ARGUMENT;
     }
     if (store->size > 0) {
-        nodes = malloc(store->size * sizeof(*nodes));
+        nodes = static_cast<const InfoNode **>(
+            malloc(store->size * sizeof(*nodes)));
         if (nodes == NULL)
             return CFR_STATUS_OUT_OF_MEMORY;
     }
@@ -259,17 +317,11 @@ static Status collect_nodes(const Trainer *trainer, const InfoNode ***nodes_out,
 }
 
 static uint64_t double_bits(double value) {
-    uint64_t bits;
-
-    memcpy(&bits, &value, sizeof(bits));
-    return bits;
+    return std::bit_cast<uint64_t>(value);
 }
 
 static double bits_double(uint64_t bits) {
-    double value;
-
-    memcpy(&value, &bits, sizeof(value));
-    return value;
+    return std::bit_cast<double>(bits);
 }
 
 static InfoSetKey decode_key(uint64_t encoded) {
@@ -297,6 +349,7 @@ Status cfr_checkpoint_write(FILE *stream, const Trainer *trainer) {
     if (status != CFR_STATUS_SUCCESS)
         return status;
 
+    const StreamLock stream_lock(stream);
     checksum_init(&checksum);
 #define WRITE_OR_CLEAN(expression)                                             \
     do {                                                                       \
@@ -479,10 +532,10 @@ static Status read_node(FILE *stream, Checksum *checksum, const Game *game,
 
 Status cfr_checkpoint_read(FILE *stream, const Game *game, GameState *state,
                            InfoStore *store_out, Trainer *trainer_out) {
-    InfoStore temporary_store = {0};
-    TrainerStats stats = {0};
+    InfoStore temporary_store = {};
+    TrainerStats stats = {};
     TrainerVariant variant = CFR_TRAINER_VARIANT_CFR;
-    MccfrRng mccfr_rng = {0};
+    MccfrRng mccfr_rng = {};
     size_t training_iterations = 0;
     size_t node_count = 0;
     uint32_t stored_checksum;
@@ -498,6 +551,7 @@ Status cfr_checkpoint_read(FILE *stream, const Game *game, GameState *state,
         return CFR_STATUS_INVALID_ARGUMENT;
     if (!binary64_is_supported())
         return CFR_STATUS_FORMAT_ERROR;
+    const StreamLock stream_lock(stream);
     checksum_init(&checksum);
     status = read_header(stream, game, &checksum, &variant, &mccfr_rng,
                          &training_iterations, &stats, &node_count);
@@ -533,13 +587,13 @@ Status cfr_checkpoint_read(FILE *stream, const Game *game, GameState *state,
     }
     *store_out = temporary_store;
     store_initialized = false;
-    *trainer_out = (Trainer){.game = game,
-                             .state = state,
-                             .store = store_out,
-                             .variant = variant,
-                             .training_iterations = training_iterations,
-                             .mccfr_rng = mccfr_rng,
-                             .stats = stats};
+    *trainer_out = Trainer{.game = game,
+                           .state = state,
+                           .store = store_out,
+                           .variant = variant,
+                           .training_iterations = training_iterations,
+                           .mccfr_rng = mccfr_rng,
+                           .stats = stats};
     return CFR_STATUS_SUCCESS;
 
 cleanup:
@@ -579,12 +633,14 @@ Status cfr_strategy_write_text(FILE *stream, const Trainer *trainer) {
             strategy_capacity = nodes[index]->action_count;
     }
     if (strategy_capacity > 0) {
-        strategy = malloc(strategy_capacity * sizeof(*strategy));
+        strategy = static_cast<Probability *>(
+            malloc(strategy_capacity * sizeof(*strategy)));
         if (strategy == NULL) {
             free(nodes);
             return CFR_STATUS_OUT_OF_MEMORY;
         }
     }
+    const StreamLock stream_lock(stream);
     if (fprintf(stream,
                 "cfr-strategy version=%d schema=%s variant=%s "
                 "training_iterations=%zu information_sets=%zu\n",
