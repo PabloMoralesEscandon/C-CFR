@@ -9,10 +9,12 @@ through the same public library API.
 
 The blackjack adapter is declared in `include/cfr/blackjack.h` and uses a
 52-card deck without replacement, dealer stands on soft 17, a 3:2 natural
-blackjack payout, and hit or stand actions. It does not include doubling,
-splitting, insurance, or surrender. `CFR_PLAYER_0` is the player and
-`CFR_PLAYER_1` receives the dealer's opposite utility; rule-driven dealer draws
-are represented as chance nodes.
+blackjack payout, and hit, stand, double-down, and split actions. A player can
+double any two-card hand, including after a split. Equal rank classes can be
+split to four hands; split aces receive one card each, and a split 21 pays even
+money. The adapter does not include insurance or surrender. `CFR_PLAYER_0` is
+the player and `CFR_PLAYER_1` receives the dealer's opposite utility;
+rule-driven dealer draws are represented as chance nodes.
 
 ## Building
 
@@ -182,7 +184,7 @@ action indices becomes incompatible. Serialization stores generic keys and
 indexed arrays; it does not contain Kuhn-specific actions or labels.
 
 Both bundled adapters are serializable: Kuhn Poker declares
-`cfr.kuhn-poker/v1` and blackjack declares `cfr.blackjack/v2`.
+`cfr.kuhn-poker/v1` and blackjack declares `cfr.blackjack/v3`.
 
 ### Exact evaluation of a saved strategy
 
@@ -389,6 +391,11 @@ player. Each rank is an integer from 1 to 10, where 1 is an ace and 10 covers
 every ten, jack, queen, and king. The hidden dealer hole card is deliberately
 not supplied: it remains the first chance event below the traversal root, so
 training includes every state in the player's information set.
+
+The strategy can choose hit, stand, and double down on an eligible two-card
+hand. When the two player ranks are equal, it can also split. Ten-valued cards
+share one rank class in this adapter. Non-ace pairs can be resplit to the
+four-hand table limit; split aces receive exactly one additional card per hand.
 
 ```sh
 build/release/cfr-blackjack --deal 5,10,6 --iterations 10 \

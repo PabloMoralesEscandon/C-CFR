@@ -223,7 +223,7 @@ if ! awk '
     fail "deal_training did not complete a valid training and evaluation run"
 fi
 
-run_case deal_training_cfr_plus --deal 10,6,10 --iterations 2 --cfr-plus
+run_case deal_training_cfr_plus --deal 10,6,9 --iterations 2 --cfr-plus
 require_status 0
 require_empty "$case_error"
 require_text "$case_output" "variant=cfr+"
@@ -245,7 +245,7 @@ require_text "$case_error" "load the checkpoint failed: CFR_STATUS_IO_ERROR"
 
 checkpoint_path=$temporary_directory/model.cfr
 strategy_path=$temporary_directory/strategy.txt
-run_case checkpoint_save --deal 10,6,10 --iterations 2 \
+run_case checkpoint_save --deal 10,6,9 --iterations 2 \
     --save "$checkpoint_path" --export-strategy "$strategy_path"
 require_status 0
 require_empty "$case_error"
@@ -253,12 +253,12 @@ if [ ! -s "$checkpoint_path" ] || [ ! -s "$strategy_path" ]; then
     fail "checkpoint_save did not create both output files"
 fi
 
-run_case checkpoint_resume --deal 10,6,10 --load "$checkpoint_path" \
+run_case checkpoint_resume --deal 10,6,9 --load "$checkpoint_path" \
     --iterations 1
 require_status 0
 require_empty "$case_error"
 require_text "$case_output" \
-    "scope=deal:10,6,10 requested_iterations=1 starting_iterations=2"
+    "scope=deal:10,6,9 requested_iterations=1 starting_iterations=2"
 require_text "$case_output" "iterations=3 traversals=3"
 
 if [ -c /dev/full ] && [ -w /dev/full ]; then
