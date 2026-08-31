@@ -47,6 +47,167 @@ static InfoNode *find_node(InfoStore *store, InfoSetKey key) {
     return node;
 }
 
+enum {
+    MCCFR_REACH_CHAIN_ACTION_COUNT = 3,
+    MCCFR_REACH_CHAIN_DEPTH = 430,
+    MCCFR_REACH_CHAIN_KEY_BASE = 10000
+};
+
+static const Probability MCCFR_REACH_CHAIN_RARE_PROBABILITY = 0x1p-40;
+
+typedef struct {
+    size_t depth;
+} MccfrReachChainState;
+
+static const MccfrReachChainState *reach_chain_const(const GameState *state) {
+    return (const MccfrReachChainState *)state;
+}
+
+static MccfrReachChainState *reach_chain(GameState *state) {
+    return (MccfrReachChainState *)state;
+}
+
+static Status reach_chain_is_terminal(const void *context,
+                                      const GameState *state, bool *result) {
+    const MccfrReachChainState *chain = reach_chain_const(state);
+
+    (void)context;
+    if (chain == NULL || result == NULL ||
+        chain->depth > MCCFR_REACH_CHAIN_DEPTH) {
+        return CFR_STATUS_INVALID_ARGUMENT;
+    }
+    *result = chain->depth == MCCFR_REACH_CHAIN_DEPTH;
+    return CFR_STATUS_SUCCESS;
+}
+
+static Status reach_chain_terminal_utility(const void *context,
+                                           const GameState *state,
+                                           Player player, Utility *result) {
+    const MccfrReachChainState *chain = reach_chain_const(state);
+
+    (void)context;
+    if (chain == NULL || result == NULL ||
+        chain->depth != MCCFR_REACH_CHAIN_DEPTH ||
+        (player != CFR_PLAYER_0 && player != CFR_PLAYER_1)) {
+        return CFR_STATUS_INVALID_ARGUMENT;
+    }
+    *result = 0.0;
+    return CFR_STATUS_SUCCESS;
+}
+
+static Status reach_chain_current_actor(const void *context,
+                                        const GameState *state,
+                                        Actor *result) {
+    const MccfrReachChainState *chain = reach_chain_const(state);
+
+    (void)context;
+    if (chain == NULL || result == NULL ||
+        chain->depth >= MCCFR_REACH_CHAIN_DEPTH) {
+        return CFR_STATUS_INVALID_ARGUMENT;
+    }
+    result->kind = CFR_ACTOR_PLAYER;
+    result->player = CFR_PLAYER_1;
+    return CFR_STATUS_SUCCESS;
+}
+
+static Status reach_chain_legal_actions(const void *context,
+                                        const GameState *state,
+                                        Action *actions, size_t capacity,
+                                        size_t *required_count) {
+    const MccfrReachChainState *chain = reach_chain_const(state);
+
+    (void)context;
+    if (chain == NULL || actions == NULL || required_count == NULL ||
+        chain->depth >= MCCFR_REACH_CHAIN_DEPTH) {
+        return CFR_STATUS_INVALID_ARGUMENT;
+    }
+    *required_count = MCCFR_REACH_CHAIN_ACTION_COUNT;
+    if (capacity < MCCFR_REACH_CHAIN_ACTION_COUNT)
+        return CFR_STATUS_BUFFER_TOO_SMALL;
+    for (size_t action = 0; action < MCCFR_REACH_CHAIN_ACTION_COUNT;
+         action += 1) {
+        actions[action] = (Action)action;
+    }
+    return CFR_STATUS_SUCCESS;
+}
+
+static Status reach_chain_apply_action(const void *context, GameState *state,
+                                       Action action) {
+    MccfrReachChainState *chain = reach_chain(state);
+
+    (void)context;
+    if (chain == NULL || chain->depth >= MCCFR_REACH_CHAIN_DEPTH)
+        return CFR_STATUS_INVALID_ARGUMENT;
+    if (action < 0 || action >= MCCFR_REACH_CHAIN_ACTION_COUNT)
+        return CFR_STATUS_ILLEGAL_ACTION;
+    chain->depth += 1;
+    return CFR_STATUS_SUCCESS;
+}
+
+static Status reach_chain_undo_action(const void *context, GameState *state) {
+    MccfrReachChainState *chain = reach_chain(state);
+
+    (void)context;
+    if (chain == NULL || chain->depth == 0)
+        return CFR_STATUS_INVALID_ARGUMENT;
+    chain->depth -= 1;
+    return CFR_STATUS_SUCCESS;
+}
+
+static Status reach_chain_chance_probability(const void *context,
+                                             const GameState *state,
+                                             Action action,
+                                             Probability *result) {
+    (void)context;
+    (void)state;
+    (void)action;
+    (void)result;
+    return CFR_STATUS_INVALID_ARGUMENT;
+}
+
+static Status reach_chain_information_set_key(const void *context,
+                                              const GameState *state,
+                                              InfoSetKey *result) {
+    const MccfrReachChainState *chain = reach_chain_const(state);
+
+    (void)context;
+    if (chain == NULL || result == NULL ||
+        chain->depth >= MCCFR_REACH_CHAIN_DEPTH) {
+        return CFR_STATUS_INVALID_ARGUMENT;
+    }
+    *result = MCCFR_REACH_CHAIN_KEY_BASE + (InfoSetKey)chain->depth;
+    return CFR_STATUS_SUCCESS;
+}
+
+static const GameOperations MCCFR_REACH_CHAIN_OPERATIONS = {
+    .is_terminal = reach_chain_is_terminal,
+    .terminal_utility = reach_chain_terminal_utility,
+    .current_actor = reach_chain_current_actor,
+    .legal_actions = reach_chain_legal_actions,
+    .apply_action = reach_chain_apply_action,
+    .undo_action = reach_chain_undo_action,
+    .chance_probability = reach_chain_chance_probability,
+    .information_set_key = reach_chain_information_set_key,
+};
+
+static const Game MCCFR_REACH_CHAIN_GAME = {
+    .operations = &MCCFR_REACH_CHAIN_OPERATIONS,
+    .context = NULL,
+    .strategic_player_count = 2,
+    .max_legal_actions = MCCFR_REACH_CHAIN_ACTION_COUNT,
+    .strategy_schema_id = "cfr.test.mccfr-reach-chain/v1",
+};
+
+static uint64_t reach_chain_rng_next(uint64_t *state) {
+    uint64_t value;
+
+    *state += UINT64_C(0x9e3779b97f4a7c15);
+    value = *state;
+    value = (value ^ (value >> 30)) * UINT64_C(0xbf58476d1ce4e5b9);
+    value = (value ^ (value >> 27)) * UINT64_C(0x94d049bb133111eb);
+    return value ^ (value >> 31);
+}
+
 static void test_rng_contract(void) {
     MccfrRng rng = {.state = 91};
 
@@ -55,6 +216,71 @@ static void test_rng_contract(void) {
     CHECK(rng.state == 0);
     CHECK(cfr_mccfr_rng_seed(&rng, UINT64_MAX) == CFR_STATUS_SUCCESS);
     CHECK(rng.state == UINT64_MAX);
+}
+
+/*
+ * The former inverse-reach average multiplied every sampled probability into
+ * one cumulative long double. This chain selects an approximately 2^-40 action
+ * at every level, which forced that cumulative reach to zero and made retries
+ * repeat the same numeric error. External sampling does not need that product.
+ */
+static void test_tiny_sample_reach_does_not_abort(void) {
+    const uint64_t seed = UINT64_C(0x4d43434652);
+    MccfrReachChainState state = {0};
+    InfoStore store;
+    MccfrRng rng;
+    Utility utility = 101.0;
+    TraversalStats stats = {.visited_nodes = 102};
+    uint64_t expected_rng_state = seed;
+
+    initialize_store(&store);
+    for (size_t depth = 0; depth < MCCFR_REACH_CHAIN_DEPTH; depth += 1) {
+        const double draw =
+            (double)(reach_chain_rng_next(&expected_rng_state) >> 11) *
+            0x1.0p-53;
+        const Probability half_rare =
+            MCCFR_REACH_CHAIN_RARE_PROBABILITY / 2.0;
+        Probability lower;
+
+        if (draw < half_rare) {
+            lower = 0.0;
+        } else if (draw > 1.0 - half_rare) {
+            lower = 1.0 - MCCFR_REACH_CHAIN_RARE_PROBABILITY;
+        } else {
+            lower = draw - half_rare;
+        }
+
+        InfoNode *node = NULL;
+        CHECK(cfr_info_store_get_or_create(
+                  &store, MCCFR_REACH_CHAIN_KEY_BASE + (InfoSetKey)depth,
+                  MCCFR_REACH_CHAIN_ACTION_COUNT, &node) ==
+              CFR_STATUS_SUCCESS);
+        CHECK(node != NULL);
+        node->regret_sums[0] = lower;
+        node->regret_sums[1] = MCCFR_REACH_CHAIN_RARE_PROBABILITY;
+        node->regret_sums[2] =
+            1.0 - (lower + MCCFR_REACH_CHAIN_RARE_PROBABILITY);
+
+        Probability strategy[MCCFR_REACH_CHAIN_ACTION_COUNT];
+        CHECK(cfr_info_node_current_strategy(
+                  node, strategy, MCCFR_REACH_CHAIN_ACTION_COUNT) ==
+              CFR_STATUS_SUCCESS);
+        const double probability_sum =
+            strategy[0] + strategy[1] + strategy[2];
+        const double scaled_draw = draw * probability_sum;
+        CHECK(scaled_draw >= strategy[0]);
+        CHECK(scaled_draw < strategy[0] + strategy[1]);
+    }
+
+    CHECK(cfr_mccfr_rng_seed(&rng, seed) == CFR_STATUS_SUCCESS);
+    CHECK(cfr_mccfr_external_traverse_with_stats(
+              &MCCFR_REACH_CHAIN_GAME, (GameState *)&state, &store,
+              CFR_PLAYER_0, &rng, &utility, &stats) == CFR_STATUS_SUCCESS);
+    CHECK(state.depth == 0);
+    CHECK(rng.state == expected_rng_state);
+    CHECK(near(utility, 0.0));
+    CHECK(stats.visited_nodes == MCCFR_REACH_CHAIN_DEPTH + 1);
+    destroy_store(&store);
 }
 
 static void test_chance_is_sampled_and_target_actions_are_expanded(void) {
@@ -614,6 +840,7 @@ int test_mccfr(void) {
     failures = 0;
 
     test_rng_contract();
+    test_tiny_sample_reach_does_not_abort();
     test_chance_is_sampled_and_target_actions_are_expanded();
     test_opponent_sample_is_shared_by_information_set();
     test_error_preserves_rng_outputs_and_learning();
