@@ -287,16 +287,16 @@ static void initialize_unchecked(BlackjackState *state) {
 
     state->phase = CFR_BLACKJACK_PHASE_DEAL_PLAYER_FIRST;
     for (index = 0; index < CFR_BLACKJACK_MAX_PLAYER_HANDS; index += 1)
-        state->player_hands[index] = BlackjackHand{};
+        state->player_hands[index] = (BlackjackHand){0};
     state->player_hands[0].stake_multiplier = 1;
     state->player_hand_count = 1;
     state->active_player_hand = 0;
-    state->dealer_hand = BlackjackHand{};
+    state->dealer_hand = (BlackjackHand){0};
     state->dealer_up_card = CFR_BLACKJACK_CARD_NOT_DEALT;
     state->undo_count = 0;
 
     for (index = 0; index < CFR_BLACKJACK_UNDO_HISTORY_CAPACITY; index += 1) {
-        state->undo_history[index] = BlackjackUndoEntry{
+        state->undo_history[index] = (BlackjackUndoEntry){
             .previous_phase = CFR_BLACKJACK_PHASE_DEAL_PLAYER_FIRST,
             .applied_action = CFR_BLACKJACK_ACTION_NONE};
     }
@@ -512,7 +512,7 @@ static Status advance_state(BlackjackState *state, Action action) {
 }
 
 static bool undo_entry_is_empty(const BlackjackUndoEntry *entry) {
-    const BlackjackHand empty_hand = {};
+    const BlackjackHand empty_hand = {0};
 
     return entry->previous_phase == CFR_BLACKJACK_PHASE_DEAL_PLAYER_FIRST &&
            entry->applied_action == CFR_BLACKJACK_ACTION_NONE &&
@@ -547,7 +547,7 @@ static bool hand_has_valid_shape(const BlackjackHand *hand) {
 }
 
 static bool hand_is_unused(const BlackjackHand *hand) {
-    const BlackjackHand empty_hand = {};
+    const BlackjackHand empty_hand = {0};
 
     return hands_equal(hand, &empty_hand);
 }
@@ -895,7 +895,7 @@ static Status blackjack_trusted_apply_action(const void *context,
         return CFR_STATUS_BUFFER_TOO_SMALL;
     }
 
-    entry = BlackjackUndoEntry{
+    entry = (BlackjackUndoEntry){
         .previous_phase = blackjack_state->phase,
         .applied_action = (BlackjackAction)action,
         .previous_active_hand = blackjack_state->active_player_hand,
@@ -954,7 +954,7 @@ static Status blackjack_trusted_undo_action(const void *context,
                 blackjack_state->player_hands[index + 1];
         }
         blackjack_state->player_hands[entry.previous_hand_count] =
-            BlackjackHand{};
+            (BlackjackHand){0};
     }
 
     blackjack_state->phase = entry.previous_phase;
@@ -966,7 +966,7 @@ static Status blackjack_trusted_undo_action(const void *context,
     blackjack_state->dealer_up_card = entry.previous_dealer_up_card;
     blackjack_state->undo_count -= 1;
     blackjack_state->undo_history[blackjack_state->undo_count] =
-        BlackjackUndoEntry{
+        (BlackjackUndoEntry){
             .previous_phase = CFR_BLACKJACK_PHASE_DEAL_PLAYER_FIRST,
             .applied_action = CFR_BLACKJACK_ACTION_NONE};
     return CFR_STATUS_SUCCESS;

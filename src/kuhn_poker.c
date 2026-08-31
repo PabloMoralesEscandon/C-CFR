@@ -618,7 +618,7 @@ static Status kuhn_poker_trusted_apply_action(const void *context,
     switch (kuhn_poker_state->phase) {
     case CFR_KUHN_POKER_PHASE_CHANCE:
         next_phase = CFR_KUHN_POKER_PHASE_PLAYER_0_OPEN;
-        status = decode_deal(static_cast<KuhnPokerAction>(action), next_cards);
+        status = decode_deal((KuhnPokerAction)action, next_cards);
         public_action = false;
         if (status != CFR_STATUS_SUCCESS)
             return status;
@@ -676,13 +676,13 @@ static Status kuhn_poker_trusted_apply_action(const void *context,
                              CFR_KUHN_POKER_PUBLIC_HISTORY_CAPACITY)
         return CFR_STATUS_BUFFER_TOO_SMALL;
     status = save_undo(kuhn_poker_state,
-                       static_cast<KuhnPokerAction>(action));
+                       (KuhnPokerAction)action);
     if (status != CFR_STATUS_SUCCESS)
         return status;
     if (public_action) {
         kuhn_poker_state
             ->public_actions[kuhn_poker_state->public_action_count] =
-            static_cast<KuhnPokerAction>(action);
+            (KuhnPokerAction)action;
         kuhn_poker_state->public_action_count += 1;
     }
     kuhn_poker_state->phase = next_phase;

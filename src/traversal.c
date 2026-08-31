@@ -6,10 +6,10 @@
 #include "info_node_internal.h"
 #include "traversal_internal.h"
 
-static constexpr size_t CFR_CELL_EMPTY = SIZE_MAX;
-static constexpr size_t INITIAL_FRAME_CAPACITY = 32;
-static constexpr size_t INITIAL_TABLE_CAPACITY = 64;
-static constexpr size_t INITIAL_ENTRY_CAPACITY = 16;
+#define CFR_CELL_EMPTY SIZE_MAX
+#define INITIAL_FRAME_CAPACITY ((size_t)32)
+#define INITIAL_TABLE_CAPACITY ((size_t)64)
+#define INITIAL_ENTRY_CAPACITY ((size_t)16)
 
 typedef struct {
     Action actions[CFR_TRAVERSAL_MAX_ACTIONS];
@@ -56,7 +56,7 @@ static void workspace_destroy(WorkSpace *workspace) {
     free(workspace->entries);
     free(workspace->arena);
 
-    *workspace = WorkSpace{};
+    *workspace = (WorkSpace){0};
 }
 
 static Status workspace_init(WorkSpace *workspace, size_t max_legal_actions,
@@ -67,24 +67,24 @@ static Status workspace_init(WorkSpace *workspace, size_t max_legal_actions,
         !isfinite(strategy_weight) || strategy_weight <= 0.0)
         return CFR_STATUS_INVALID_ARGUMENT;
 
-    WorkSpace temporary = {};
+    WorkSpace temporary = {0};
 
-    temporary.frames = static_cast<Frame *>(
-        malloc(INITIAL_FRAME_CAPACITY * sizeof(*temporary.frames)));
+    temporary.frames =
+        malloc(INITIAL_FRAME_CAPACITY * sizeof(*temporary.frames));
     if (temporary.frames == NULL) {
         workspace_destroy(&temporary);
         return CFR_STATUS_OUT_OF_MEMORY;
     }
 
-    temporary.table = static_cast<size_t *>(
-        malloc(INITIAL_TABLE_CAPACITY * sizeof(*temporary.table)));
+    temporary.table =
+        malloc(INITIAL_TABLE_CAPACITY * sizeof(*temporary.table));
     if (temporary.table == NULL) {
         workspace_destroy(&temporary);
         return CFR_STATUS_OUT_OF_MEMORY;
     }
 
-    temporary.entries = static_cast<Entry *>(
-        malloc(INITIAL_ENTRY_CAPACITY * sizeof(*temporary.entries)));
+    temporary.entries =
+        malloc(INITIAL_ENTRY_CAPACITY * sizeof(*temporary.entries));
     if (temporary.entries == NULL) {
         workspace_destroy(&temporary);
         return CFR_STATUS_OUT_OF_MEMORY;
@@ -96,8 +96,8 @@ static Status workspace_init(WorkSpace *workspace, size_t max_legal_actions,
      */
     temporary.reserved_arena = INITIAL_ENTRY_CAPACITY * 2 * max_legal_actions;
 
-    temporary.arena = static_cast<double *>(
-        malloc(temporary.reserved_arena * sizeof(*temporary.arena)));
+    temporary.arena =
+        malloc(temporary.reserved_arena * sizeof(*temporary.arena));
     if (temporary.arena == NULL) {
         workspace_destroy(&temporary);
         return CFR_STATUS_OUT_OF_MEMORY;
@@ -151,7 +151,7 @@ static Status ensure_frame(WorkSpace *workspace, size_t depth) {
         &workspace->frame_capacity, &grown);
 
     if (status == CFR_STATUS_SUCCESS)
-        workspace->frames = static_cast<Frame *>(grown);
+        workspace->frames = grown;
     return status;
 }
 
@@ -211,8 +211,7 @@ static Status grow_table(WorkSpace *ws) {
     const size_t new_capacity = ws->table_capacity * 2;
     if (new_capacity > SIZE_MAX / sizeof(size_t))
         return CFR_STATUS_OUT_OF_MEMORY;
-    size_t *new_table =
-        static_cast<size_t *>(malloc(new_capacity * sizeof(size_t)));
+    size_t *new_table = malloc(new_capacity * sizeof(size_t));
     if (new_table == NULL)
         return CFR_STATUS_OUT_OF_MEMORY;
     cfr_traversal_initialize_index_table(new_table, new_capacity,
@@ -259,8 +258,7 @@ static Status find_or_create_entry(WorkSpace *ws, InfoNode *node,
     /* Phase 3a: reserve a slot in the entry array. */
     if (ws->used_entries == ws->entry_capacity) {
         size_t new_capacity = ws->entry_capacity * 2;
-        Entry *grown = static_cast<Entry *>(
-            realloc(ws->entries, new_capacity * sizeof(Entry)));
+        Entry *grown = realloc(ws->entries, new_capacity * sizeof(Entry));
         if (grown == NULL)
             return CFR_STATUS_OUT_OF_MEMORY;
         ws->entries = grown;
@@ -271,8 +269,7 @@ static Status find_or_create_entry(WorkSpace *ws, InfoNode *node,
         size_t new_reserved = ws->reserved_arena * 2;
         while (ws->used_arena + 2 * action_count > new_reserved)
             new_reserved *= 2;
-        double *grown = static_cast<double *>(
-            realloc(ws->arena, new_reserved * sizeof(double)));
+        double *grown = realloc(ws->arena, new_reserved * sizeof(double));
         if (grown == NULL)
             return CFR_STATUS_OUT_OF_MEMORY;
         ws->arena = grown;
@@ -534,7 +531,7 @@ static Status cfr_traverse_chance(const CfrTraversalAdapter *adapter,
 
 Status cfr_traverse(const Game *game, GameState *state, InfoStore *store,
                     Player target_player, Utility *utility_out) {
-    TraversalStats discard = {};
+    TraversalStats discard = {0};
     Status status = cfr_traverse_with_stats(game, state, store, target_player,
                                             utility_out, &discard);
     return status;
@@ -543,7 +540,7 @@ Status cfr_traverse(const Game *game, GameState *state, InfoStore *store,
 Status cfr_traverse_plus(const Game *game, GameState *state, InfoStore *store,
                          Player target_player, size_t iteration,
                          Utility *utility_out) {
-    TraversalStats discard = {};
+    TraversalStats discard = {0};
     return cfr_traverse_plus_with_stats(game, state, store, target_player,
                                         iteration, utility_out, &discard);
 }
@@ -609,7 +606,7 @@ static Status traverse_with_stats(const Game *game, GameState *state,
         game->max_legal_actions > CFR_TRAVERSAL_MAX_ACTIONS)
         return CFR_STATUS_INVALID_ARGUMENT;
 
-    WorkSpace ws = {};
+    WorkSpace ws = {0};
     Status status = workspace_init(&ws, game->max_legal_actions,
                                    strategy_weight, regret_matching_plus);
     if (status == CFR_STATUS_SUCCESS) {
@@ -626,11 +623,10 @@ Status cfr_full_traversal_workspace_create(
     if (workspace_out == NULL)
         return CFR_STATUS_INVALID_ARGUMENT;
 
-    WorkSpace *workspace =
-        static_cast<WorkSpace *>(malloc(sizeof(*workspace)));
+    WorkSpace *workspace = malloc(sizeof(*workspace));
     if (workspace == NULL)
         return CFR_STATUS_OUT_OF_MEMORY;
-    *workspace = WorkSpace{};
+    *workspace = (WorkSpace){0};
 
     const Status status =
         workspace_init(workspace, max_legal_actions, 1.0, false);
@@ -656,7 +652,7 @@ Status cfr_full_traverse_in_workspace(
         return CFR_STATUS_INVALID_ARGUMENT;
 
     const double strategy_weight =
-        regret_matching_plus ? static_cast<double>(iteration) : 1.0;
+        regret_matching_plus ? (double)iteration : 1.0;
     return traverse_in_workspace(
         game, state, store, target_player, strategy_weight,
         regret_matching_plus, utility_out, stats_out, workspace);

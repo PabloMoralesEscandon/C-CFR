@@ -23,7 +23,7 @@ static Status trainer_init(Trainer *trainer, const Game *game, GameState *state,
     const Status status = cfr_mccfr_rng_seed(&trainer->mccfr_rng, seed);
     if (status != CFR_STATUS_SUCCESS)
         return status;
-    trainer->stats = TrainerStats{};
+    trainer->stats = (TrainerStats){0};
     return CFR_STATUS_SUCCESS;
 }
 
@@ -70,7 +70,7 @@ static Status run_player_traversal(Trainer *trainer, Player player,
                                    size_t iteration,
                                    MccfrWorkspace *mccfr_workspace,
                                    CfrFullTraversalWorkspace *full_workspace) {
-    TraversalStats traverse_stats = {};
+    TraversalStats traverse_stats = {0};
     Utility utility = 0.0;
     const Status status = trainer_traverse(
         trainer, player, iteration, &utility, &traverse_stats,
@@ -111,7 +111,7 @@ Status cfr_trainer_run(Trainer *trainer, size_t amount) {
         return validation_status;
     }
 
-    MccfrWorkspace mccfr_workspace = {};
+    MccfrWorkspace mccfr_workspace = {0};
     MccfrWorkspace *mccfr_workspace_pointer = NULL;
     CfrFullTraversalWorkspace *full_workspace = NULL;
     if (trainer->variant == CFR_TRAINER_VARIANT_MCCFR_EXTERNAL) {
@@ -177,6 +177,6 @@ Status cfr_trainer_get_stats(const Trainer *trainer, TrainerStats *stats_out) {
 Status cfr_trainer_reset_stats(Trainer *trainer) {
     if (trainer == NULL)
         return CFR_STATUS_INVALID_ARGUMENT;
-    trainer->stats = TrainerStats{};
+    trainer->stats = (TrainerStats){0};
     return CFR_STATUS_SUCCESS;
 }

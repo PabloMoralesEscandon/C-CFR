@@ -1,14 +1,14 @@
-# CFR, CFR+, and MCCFR with a C API and C++20 core
+# CFR, CFR+, and MCCFR in C17
 
 This project implements CFR, CFR+, and external-sampling Monte Carlo CFR for
 finite extensive-form games. The first version supports two-player zero-sum
 games.
 
-The public API, applications, and tests remain C17-compatible. The library
-implementation is compiled as C++20 so it can use compile-time tables,
-`constexpr`, `std::bit_cast`, and other type-safe standard-library facilities.
-Public headers carry C linkage when included from C++, so the static library
-has one C ABI for both C and C++ consumers.
+The public API, library implementation, applications, tests, and benchmarks
+are all C17. POSIX platforms additionally use guarded fast paths for stream
+operations; portable C fallbacks remain available on other systems. Public
+headers retain C linkage guards so C++ applications can consume the C library
+without changing its ABI.
 
 The repository includes complete Kuhn Poker, Leduc Poker, and blackjack
 adapters. Three independent applications train the games, and all adapters are
@@ -42,7 +42,8 @@ Run the commands from the repository root.
 make all
 ```
 
-The build requires a C17 compiler in `CC` and a C++20 compiler in `CXX`.
+The build requires only a C17 compiler in `CC`; it has no C++ build or runtime
+dependency.
 
 This target creates the following release artifacts:
 

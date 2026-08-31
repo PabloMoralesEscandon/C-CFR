@@ -3,10 +3,12 @@
 
 #include "cfr/leduc_poker.h"
 
-static constexpr int LEDUC_ANTE = 1;
-static constexpr int LEDUC_FIRST_ROUND_BET = 2;
-static constexpr int LEDUC_SECOND_ROUND_BET = 4;
-static constexpr size_t LEDUC_PUBLIC_DEAL_CARD_COUNT = 4;
+enum {
+    LEDUC_ANTE = 1,
+    LEDUC_FIRST_ROUND_BET = 2,
+    LEDUC_SECOND_ROUND_BET = 4,
+    LEDUC_PUBLIC_DEAL_CARD_COUNT = 4
+};
 
 typedef struct {
     LeducPokerPhase phase;
@@ -124,7 +126,7 @@ static Player other_player(Player player) {
 }
 
 static void model_init(LeducModel *model) {
-    *model = LeducModel{};
+    *model = (LeducModel){0};
     model->phase = CFR_LEDUC_POKER_PHASE_PRIVATE_DEAL;
     model->private_cards[0] = CFR_LEDUC_POKER_CARD_NOT_DEALT;
     model->private_cards[1] = CFR_LEDUC_POKER_CARD_NOT_DEALT;
@@ -405,7 +407,7 @@ static bool undo_entry_matches_model(const LeducPokerUndoEntry *entry,
 }
 
 static bool undo_entry_is_empty(const LeducPokerUndoEntry *entry) {
-    const LeducPokerUndoEntry empty = {};
+    const LeducPokerUndoEntry empty = {0};
 
     return entry->previous_phase == empty.previous_phase &&
            entry->previous_private_cards[0] ==
@@ -508,7 +510,7 @@ Status cfr_leduc_poker_state_init(LeducPokerState *state) {
 
     if (state == NULL)
         return CFR_STATUS_INVALID_ARGUMENT;
-    *state = LeducPokerState{};
+    *state = (LeducPokerState){0};
     model_init(&model);
     state_from_model(state, &model);
     return CFR_STATUS_SUCCESS;
@@ -660,7 +662,7 @@ static Status collect_legal_actions(const LeducModel *model, Action *actions,
     } else if (model->phase == CFR_LEDUC_POKER_PHASE_PUBLIC_DEAL) {
         for (LeducPokerCard rank = CFR_LEDUC_POKER_CARD_JACK;
              rank <= CFR_LEDUC_POKER_CARD_KING;
-             rank = static_cast<LeducPokerCard>(rank + 1)) {
+             rank = (LeducPokerCard)(rank + 1)) {
             if (remaining_rank_count(model, rank) > 0) {
                 temporary[count++] = CFR_LEDUC_POKER_ACTION_REVEAL_J +
                                      (Action)(rank -
@@ -793,7 +795,7 @@ static Status leduc_trusted_undo_action(const void *context,
     leduc->folded = entry.previous_folded;
     leduc->folded_player = entry.previous_folded_player;
     leduc->undo_count -= 1;
-    leduc->undo_history[leduc->undo_count] = LeducPokerUndoEntry{};
+    leduc->undo_history[leduc->undo_count] = (LeducPokerUndoEntry){0};
     return CFR_STATUS_SUCCESS;
 }
 
@@ -819,8 +821,8 @@ static Status chance_probability_for_model(const LeducModel *model,
         remaining = remaining_rank_count(model, card);
         if (remaining == 0)
             return CFR_STATUS_ILLEGAL_ACTION;
-        *result = static_cast<Probability>(remaining) /
-                  static_cast<Probability>(LEDUC_PUBLIC_DEAL_CARD_COUNT);
+        *result = (Probability)remaining /
+                  (Probability)LEDUC_PUBLIC_DEAL_CARD_COUNT;
         return CFR_STATUS_SUCCESS;
     }
     return CFR_STATUS_INVALID_ARGUMENT;

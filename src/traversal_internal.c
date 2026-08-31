@@ -4,8 +4,8 @@
 
 #include "traversal_internal.h"
 
-static constexpr double TRAVERSAL_REL_EPSILON = 1e-8;
-static constexpr double TRAVERSAL_ABS_EPSILON = 1e-12;
+static const double TRAVERSAL_REL_EPSILON = 1e-8;
+static const double TRAVERSAL_ABS_EPSILON = 1e-12;
 
 static bool probability_sum_is_one(double sum) {
     if (fabs(sum - 1.0) <= TRAVERSAL_ABS_EPSILON)
