@@ -2,9 +2,11 @@
 #define CFR_TRAINER_H
 
 #include <stddef.h>
+#include <stdint.h>
 
 #include "cfr/game.h"
 #include "cfr/info_store.h"
+#include "cfr/mccfr.h"
 
 /*
  * Contains a snapshot of the trainer's cumulative statistics.
@@ -28,7 +30,9 @@ typedef enum {
     /* Classic CFR with untruncated cumulative regrets and unit weight. */
     CFR_TRAINER_VARIANT_CFR,
     /* CFR+ with truncated regrets and linear averaging. */
-    CFR_TRAINER_VARIANT_CFR_PLUS
+    CFR_TRAINER_VARIANT_CFR_PLUS,
+    /* External-sampling Monte Carlo CFR. */
+    CFR_TRAINER_VARIANT_MCCFR_EXTERNAL
 } TrainerVariant;
 
 /*
@@ -60,6 +64,8 @@ typedef struct {
      * statistics. The counter saturates at SIZE_MAX.
      */
     size_t training_iterations;
+    /* Random stream used only by external-sampling MCCFR. */
+    MccfrRng mccfr_rng;
     /* Statistics owned by the trainer. */
     TrainerStats stats;
 } Trainer;
@@ -86,6 +92,19 @@ Status cfr_trainer_init_plus(Trainer *trainer, const Game *game,
                              GameState *state, InfoStore *store);
 
 /*
+ * Initializes trainer to run external-sampling MCCFR.
+ *
+ * seed selects a deterministic random stream. All seed values are valid.
+ * Equal roots, stores, and seeds produce equal samples and learning updates.
+ * The traversal samples chance and non-target actions, expands every target
+ * action, and keeps sampled opponent decisions consistent within each
+ * information set. Ownership and error handling match cfr_trainer_init.
+ */
+Status cfr_trainer_init_mccfr(Trainer *trainer, const Game *game,
+                              GameState *state, InfoStore *store,
+                              uint64_t seed);
+
+/*
  * Runs amount iterations with sequential per-player updates.
  *
  * trainer must be initialized. Its three borrowed objects must be valid. An
@@ -96,8 +115,10 @@ Status cfr_trainer_init_plus(Trainer *trainer, const Game *game,
  *
  * A trainer initialized with cfr_trainer_init uses classic CFR. A trainer
  * initialized with cfr_trainer_init_plus uses Regret Matching+ and weights the
- * strategies from iteration t with weight t. The weight depends on
- * training_iterations and continues across calls.
+ * strategies from iteration t with weight t. A trainer initialized with
+ * cfr_trainer_init_mccfr uses external-sampling MCCFR and advances its random
+ * stream after each successful traversal. Variant state continues across
+ * calls.
  *
  * Each traversal commits its own changes. If a later traversal fails, changes
  * from earlier traversals remain in store. iterations increases only after all
@@ -126,9 +147,9 @@ Status cfr_trainer_get_stats(const Trainer *trainer, TrainerStats *stats_out);
  * Resets all four trainer counters to zero.
  *
  * trainer must not be null. The function preserves game, state, and store. It
- * does not modify the game state, the learning data in the store, variant, or
- * training_iterations. Therefore, resetting statistics does not reset the CFR+
- * linear weights.
+ * does not modify the game state, the learning data in the store, variant,
+ * training_iterations, or the MCCFR random stream. Therefore, resetting
+ * statistics does not reset CFR+ linear weights or MCCFR sampling.
  */
 Status cfr_trainer_reset_stats(Trainer *trainer);
 

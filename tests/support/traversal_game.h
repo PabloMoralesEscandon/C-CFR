@@ -49,6 +49,7 @@ typedef struct {
     TraversalHistoryEntry history[2];
     size_t history_count;
     bool reverse_shared_root_actions;
+    bool reverse_right_shared_actions;
     bool fail_after_any_action;
     bool fail_after_selected_action;
     Action selected_failure_action;
@@ -62,6 +63,7 @@ Status traversal_game_state_init(TraversalGameState *state);
 Status traversal_game_state_init_reach(TraversalGameState *state);
 Status traversal_game_state_init_shared(TraversalGameState *state,
                                         bool reverse_root_actions);
+Status traversal_game_state_init_inconsistent_shared(TraversalGameState *state);
 Status traversal_game_state_init_atomic(TraversalGameState *state);
 Status traversal_game_state_init_terminal(TraversalGameState *state,
                                           Utility utility_player_0);

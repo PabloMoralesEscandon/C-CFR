@@ -80,6 +80,8 @@ require_text "$case_output" "--iterations N"
 require_text "$case_output" "--report-every N"
 require_text "$case_output" "--evaluate"
 require_text "$case_output" "--cfr-plus"
+require_text "$case_output" "--mccfr"
+require_text "$case_output" "--seed N"
 require_text "$case_output" "--load FILE"
 require_text "$case_output" "--save FILE"
 require_text "$case_output" "--export-strategy FILE"
@@ -226,6 +228,12 @@ run_case deal_training_cfr_plus --deal 10,6,9 --iterations 2 --cfr-plus
 require_status 0
 require_empty "$case_error"
 require_text "$case_output" "variant=cfr+"
+require_text "$case_output" "iterations=2 traversals=2"
+
+run_case deal_training_mccfr --deal 10,6,9 --iterations 2 --mccfr --seed 42
+require_status 0
+require_empty "$case_error"
+require_text "$case_output" "variant=mccfr-external"
 require_text "$case_output" "iterations=2 traversals=2"
 
 # A natural blackjack becomes terminal after the hidden hole-card chance node.

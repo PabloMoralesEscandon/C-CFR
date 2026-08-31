@@ -11,9 +11,10 @@
  * Writes a complete, resumable trainer checkpoint to stream.
  *
  * The checkpoint contains the trainer variant, training iteration counter,
- * statistics, cumulative regrets, and cumulative strategy sums. Records are
- * ordered by information-set key and encoded in a portable, versioned binary
- * format. The game descriptor must provide a valid strategy_schema_id.
+ * statistics, cumulative regrets, cumulative strategy sums, and the random
+ * stream state required to continue MCCFR exactly. Records are ordered by
+ * information-set key and encoded in a portable, versioned binary format. The
+ * game descriptor must provide a valid strategy_schema_id.
  *
  * The caller owns stream, must open it in binary mode, and remains responsible
  * for closing it. A successful call does not flush stream. A stream failure

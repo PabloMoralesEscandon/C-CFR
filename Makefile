@@ -22,6 +22,7 @@ LIB_SOURCES := \
 	src/info_store.c \
 	src/kuhn_poker.c \
 	src/leduc_poker.c \
+	src/mccfr.c \
 	src/trainer.c \
 	src/traversal.c
 
@@ -46,6 +47,7 @@ TEST_SOURCES := \
 	tests/test_chance_trainer.c \
 	tests/test_checkpoint.c \
 	tests/test_cfr_plus.c \
+	tests/test_mccfr.c \
 	tests/test_kuhn_poker.c \
 	tests/test_leduc_poker.c \
 	tests/test_evaluation.c \

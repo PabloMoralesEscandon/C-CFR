@@ -8,7 +8,8 @@ static bool strategic_player_count_is_valid(size_t count) {
 }
 
 static Status trainer_init(Trainer *trainer, const Game *game, GameState *state,
-                           InfoStore *store, TrainerVariant variant) {
+                           InfoStore *store, TrainerVariant variant,
+                           uint64_t seed) {
     if (trainer == NULL || game == NULL || state == NULL || store == NULL ||
         !strategic_player_count_is_valid(game->strategic_player_count))
         return CFR_STATUS_INVALID_ARGUMENT;
@@ -17,19 +18,28 @@ static Status trainer_init(Trainer *trainer, const Game *game, GameState *state,
     trainer->store = store;
     trainer->variant = variant;
     trainer->training_iterations = 0;
+    trainer->mccfr_rng.state = seed;
     trainer->stats = (TrainerStats){0};
     return CFR_STATUS_SUCCESS;
 }
 
 Status cfr_trainer_init(Trainer *trainer, const Game *game, GameState *state,
                         InfoStore *store) {
-    return trainer_init(trainer, game, state, store, CFR_TRAINER_VARIANT_CFR);
+    return trainer_init(trainer, game, state, store, CFR_TRAINER_VARIANT_CFR,
+                        0);
 }
 
 Status cfr_trainer_init_plus(Trainer *trainer, const Game *game,
                              GameState *state, InfoStore *store) {
     return trainer_init(trainer, game, state, store,
-                        CFR_TRAINER_VARIANT_CFR_PLUS);
+                        CFR_TRAINER_VARIANT_CFR_PLUS, 0);
+}
+
+Status cfr_trainer_init_mccfr(Trainer *trainer, const Game *game,
+                              GameState *state, InfoStore *store,
+                              uint64_t seed) {
+    return trainer_init(trainer, game, state, store,
+                        CFR_TRAINER_VARIANT_MCCFR_EXTERNAL, seed);
 }
 
 static Status trainer_traverse(Trainer *trainer, Player target_player,
@@ -44,6 +54,11 @@ static Status trainer_traverse(Trainer *trainer, Player target_player,
         return cfr_traverse_plus_with_stats(
             trainer->game, trainer->state, trainer->store, target_player,
             iteration, utility, stats);
+    }
+    if (trainer->variant == CFR_TRAINER_VARIANT_MCCFR_EXTERNAL) {
+        return cfr_mccfr_external_traverse_with_stats(
+            trainer->game, trainer->state, trainer->store, target_player,
+            &trainer->mccfr_rng, utility, stats);
     }
     return CFR_STATUS_INVALID_ARGUMENT;
 }
@@ -76,7 +91,8 @@ Status cfr_trainer_run(Trainer *trainer, size_t amount) {
         trainer->store == NULL || !strategic_player_count_is_valid(
                                       trainer->game->strategic_player_count) ||
         (trainer->variant != CFR_TRAINER_VARIANT_CFR &&
-         trainer->variant != CFR_TRAINER_VARIANT_CFR_PLUS))
+         trainer->variant != CFR_TRAINER_VARIANT_CFR_PLUS &&
+         trainer->variant != CFR_TRAINER_VARIANT_MCCFR_EXTERNAL))
         return CFR_STATUS_INVALID_ARGUMENT;
     for (size_t i = 0; i < amount; i++) {
         size_t iteration = trainer->training_iterations;

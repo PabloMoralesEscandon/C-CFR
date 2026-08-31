@@ -1079,7 +1079,11 @@ static TreeParse parse_options(int argc, char **argv, TreeOptions *options_out) 
 }
 
 static const char *variant_name(TrainerVariant variant) {
-    return variant == CFR_TRAINER_VARIANT_CFR_PLUS ? "cfr-plus" : "cfr";
+    if (variant == CFR_TRAINER_VARIANT_CFR_PLUS)
+        return "cfr-plus";
+    if (variant == CFR_TRAINER_VARIANT_MCCFR_EXTERNAL)
+        return "mccfr-external";
+    return "cfr";
 }
 
 int main(int argc, char **argv) {

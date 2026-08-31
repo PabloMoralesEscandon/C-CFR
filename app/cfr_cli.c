@@ -34,6 +34,8 @@ typedef struct {
     size_t report_every;
     bool print_strategy;
     bool cfr_plus;
+    bool mccfr;
+    uint64_t seed;
     bool evaluate;
     const char *load_path;
     const char *save_path;
@@ -53,7 +55,8 @@ static bool print_usage(FILE *stream, const char *program_name) {
 
     if (fprintf(stream,
                 "Usage: %s --iterations N [--report-every N] "
-                "[--print-strategy] [--cfr-plus] [--save FILE] "
+                "[--print-strategy] [--cfr-plus | --mccfr [--seed N]] "
+                "[--save FILE] "
                 "[--export-strategy FILE]\n"
                 "       %s --load FILE --iterations N [--report-every N] "
                 "[--print-strategy] [--save FILE] "
@@ -70,6 +73,8 @@ static bool print_usage(FILE *stream, const char *program_name) {
                 "  --print-strategy   Print the final average strategy.\n"
                 "  --cfr-plus         Use CFR+ with Regret Matching+ and linear "
                 "averaging.\n"
+                "  --mccfr            Use external-sampling Monte Carlo CFR.\n"
+                "  --seed N           MCCFR random seed; defaults to zero.\n"
                 "  --load FILE        Load a binary checkpoint before running.\n"
                 "  --save FILE        Save a binary checkpoint after training.\n"
                 "  --evaluate         Evaluate a loaded checkpoint without "
@@ -117,6 +122,28 @@ static bool parse_positive_size(const char *text, size_t *value_out) {
     return true;
 }
 
+static bool parse_u64(const char *text, uint64_t *value_out) {
+    const unsigned char *current;
+    char *end;
+    uintmax_t value;
+
+    if (text == NULL || value_out == NULL || text[0] == '\0')
+        return false;
+    current = (const unsigned char *)text;
+    while (*current != '\0') {
+        if (*current < (unsigned char)'0' || *current > (unsigned char)'9')
+            return false;
+        current += 1;
+    }
+    errno = 0;
+    end = NULL;
+    value = strtoumax(text, &end, 10);
+    if (errno == ERANGE || end == text || *end != '\0' || value > UINT64_MAX)
+        return false;
+    *value_out = (uint64_t)value;
+    return true;
+}
+
 static CliParseResult parse_options(int argc, char *const argv[],
                                     FILE *diagnostic, CliOptions *options_out) {
     CliOptions options = {0};
@@ -124,6 +151,8 @@ static CliParseResult parse_options(int argc, char *const argv[],
     bool report_every_seen = false;
     bool print_strategy_seen = false;
     bool cfr_plus_seen = false;
+    bool mccfr_seen = false;
+    bool seed_seen = false;
     bool evaluate_seen = false;
     bool load_seen = false;
     bool save_seen = false;
@@ -217,6 +246,38 @@ static CliParseResult parse_options(int argc, char *const argv[],
             continue;
         }
 
+        if (strcmp(argument, "--mccfr") == 0) {
+            if (mccfr_seen) {
+                (void)fprintf(diagnostic,
+                              "error: --mccfr was specified more than once\n");
+                return CLI_PARSE_ERROR;
+            }
+            options.mccfr = true;
+            mccfr_seen = true;
+            continue;
+        }
+
+        if (strcmp(argument, "--seed") == 0) {
+            if (seed_seen) {
+                (void)fprintf(diagnostic,
+                              "error: --seed was specified more than once\n");
+                return CLI_PARSE_ERROR;
+            }
+            if (index + 1 >= argc || argv[index + 1] == NULL) {
+                (void)fprintf(diagnostic, "error: missing value for --seed\n");
+                return CLI_PARSE_ERROR;
+            }
+            index += 1;
+            if (!parse_u64(argv[index], &options.seed)) {
+                (void)fprintf(diagnostic,
+                              "error: --seed requires an unsigned 64-bit "
+                              "decimal integer\n");
+                return CLI_PARSE_ERROR;
+            }
+            seed_seen = true;
+            continue;
+        }
+
         if (strcmp(argument, "--evaluate") == 0) {
             if (evaluate_seen) {
                 (void)fprintf(
@@ -301,6 +362,12 @@ static CliParseResult parse_options(int argc, char *const argv[],
                       "error: --evaluate cannot be combined with --cfr-plus\n");
         return CLI_PARSE_ERROR;
     }
+    if (options.evaluate && (mccfr_seen || seed_seen)) {
+        (void)fprintf(diagnostic,
+                      "error: --evaluate cannot be combined with --mccfr or "
+                      "--seed\n");
+        return CLI_PARSE_ERROR;
+    }
     if (options.evaluate && save_seen) {
         (void)fprintf(diagnostic,
                       "error: --evaluate cannot be combined with --save\n");
@@ -310,6 +377,22 @@ static CliParseResult parse_options(int argc, char *const argv[],
         (void)fprintf(diagnostic,
                       "error: --cfr-plus cannot be combined with --load; "
                       "the checkpoint selects the variant\n");
+        return CLI_PARSE_ERROR;
+    }
+    if (load_seen && (mccfr_seen || seed_seen)) {
+        (void)fprintf(diagnostic,
+                      "error: --mccfr and --seed cannot be combined with "
+                      "--load; the checkpoint selects the variant and random "
+                      "stream\n");
+        return CLI_PARSE_ERROR;
+    }
+    if (cfr_plus_seen && mccfr_seen) {
+        (void)fprintf(diagnostic,
+                      "error: --cfr-plus cannot be combined with --mccfr\n");
+        return CLI_PARSE_ERROR;
+    }
+    if (seed_seen && !mccfr_seen) {
+        (void)fprintf(diagnostic, "error: --seed requires --mccfr\n");
         return CLI_PARSE_ERROR;
     }
     if (save_seen && export_seen &&
@@ -722,6 +805,17 @@ static Status print_final_strategy(FILE *stream, const Game *game,
     return CFR_STATUS_SUCCESS;
 }
 
+static Status evaluate_trainer(const Game *game, GameState *state,
+                               const InfoStore *store,
+                               const Trainer *trainer,
+                               EvaluationMetrics *metrics) {
+    if (trainer->variant == CFR_TRAINER_VARIANT_MCCFR_EXTERNAL) {
+        return cfr_evaluation_metrics_with_unvisited_uniform(
+            game, state, store, metrics);
+    }
+    return cfr_evaluation_metrics(game, state, store, metrics);
+}
+
 static int run_training(const CliOptions *options, FILE *output,
                         FILE *diagnostic) {
     KuhnPokerState state = {0};
@@ -775,6 +869,9 @@ static int run_training(const CliOptions *options, FILE *output,
         if (options->cfr_plus)
             status =
                 cfr_trainer_init_plus(&trainer, game, game_state, &store);
+        else if (options->mccfr)
+            status = cfr_trainer_init_mccfr(
+                &trainer, game, game_state, &store, options->seed);
         else
             status = cfr_trainer_init(&trainer, game, game_state, &store);
         if (status != CFR_STATUS_SUCCESS) {
@@ -788,7 +885,8 @@ static int run_training(const CliOptions *options, FILE *output,
         EvaluationMetrics metrics;
         InfoStoreStats store_stats;
 
-        status = cfr_evaluation_metrics(game, game_state, &store, &metrics);
+        status =
+            evaluate_trainer(game, game_state, &store, &trainer, &metrics);
         if (status != CFR_STATUS_SUCCESS) {
             (void)print_status_error(diagnostic, "evaluate metrics", status);
             goto cleanup;
@@ -828,7 +926,8 @@ static int run_training(const CliOptions *options, FILE *output,
             }
             completed += block;
 
-            status = cfr_evaluation_metrics(game, game_state, &store, &metrics);
+            status =
+                evaluate_trainer(game, game_state, &store, &trainer, &metrics);
             if (status != CFR_STATUS_SUCCESS) {
                 (void)print_status_error(diagnostic, "evaluate metrics", status);
                 goto cleanup;

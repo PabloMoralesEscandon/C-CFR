@@ -73,6 +73,14 @@ Status traversal_game_state_init_shared(TraversalGameState *state,
     return status;
 }
 
+Status traversal_game_state_init_inconsistent_shared(TraversalGameState *state) {
+    const Status status = traversal_game_state_init_shared(state, false);
+
+    if (status == CFR_STATUS_SUCCESS)
+        state->reverse_right_shared_actions = true;
+    return status;
+}
+
 Status traversal_game_state_init_atomic(TraversalGameState *state) {
     return initialize_phase(state, TRAVERSAL_PHASE_ATOMIC_PLAYER_0);
 }
@@ -270,10 +278,20 @@ static Status traversal_legal_actions(const void *context,
         }
         break;
     case TRAVERSAL_PHASE_SHARED_LEFT_PLAYER_1:
-    case TRAVERSAL_PHASE_SHARED_RIGHT_PLAYER_1:
         status = write_actions(TRAVERSAL_ACTION_FIRST,
                                TRAVERSAL_ACTION_SECOND, actions, capacity,
                                required_count);
+        break;
+    case TRAVERSAL_PHASE_SHARED_RIGHT_PLAYER_1:
+        if (traversal_state->reverse_right_shared_actions) {
+            status = write_actions(TRAVERSAL_ACTION_SECOND,
+                                   TRAVERSAL_ACTION_FIRST, actions, capacity,
+                                   required_count);
+        } else {
+            status = write_actions(TRAVERSAL_ACTION_FIRST,
+                                   TRAVERSAL_ACTION_SECOND, actions, capacity,
+                                   required_count);
+        }
         break;
     case TRAVERSAL_PHASE_ATOMIC_PLAYER_0:
         status = write_actions(TRAVERSAL_ACTION_ATOMIC_POSITIVE,

@@ -202,7 +202,8 @@ static Status collect_nodes(const Trainer *trainer, const InfoNode ***nodes_out,
         trainer->store->capacity == 0 || trainer->game->max_legal_actions == 0 ||
         nodes_out == NULL || count_out == NULL ||
         (trainer->variant != CFR_TRAINER_VARIANT_CFR &&
-         trainer->variant != CFR_TRAINER_VARIANT_CFR_PLUS) ||
+         trainer->variant != CFR_TRAINER_VARIANT_CFR_PLUS &&
+         trainer->variant != CFR_TRAINER_VARIANT_MCCFR_EXTERNAL) ||
         !size_fits_u64(trainer->training_iterations) ||
         !size_fits_u64(trainer->stats.iterations) ||
         !size_fits_u64(trainer->stats.traversals) ||
@@ -311,6 +312,10 @@ Status cfr_checkpoint_write(FILE *stream, const Trainer *trainer) {
     WRITE_OR_CLEAN(write_bytes(stream, &checksum,
                                (const unsigned char *)schema_id, schema_length));
     WRITE_OR_CLEAN(write_u32(stream, &checksum, (uint32_t)trainer->variant));
+    if (trainer->variant == CFR_TRAINER_VARIANT_MCCFR_EXTERNAL) {
+        WRITE_OR_CLEAN(
+            write_u64(stream, &checksum, trainer->mccfr_rng.state));
+    }
     WRITE_OR_CLEAN(write_u64(stream, &checksum,
                              (uint64_t)trainer->training_iterations));
     WRITE_OR_CLEAN(
@@ -360,6 +365,7 @@ static Status read_size(FILE *stream, Checksum *checksum, size_t *value_out) {
 
 static Status read_header(FILE *stream, const Game *game, Checksum *checksum,
                           TrainerVariant *variant_out,
+                          MccfrRng *mccfr_rng_out,
                           size_t *training_iterations_out,
                           TrainerStats *stats_out, size_t *node_count_out) {
     unsigned char magic[sizeof(CHECKPOINT_MAGIC)];
@@ -395,10 +401,15 @@ static Status read_header(FILE *stream, const Game *game, Checksum *checksum,
     }
     READ_OR_RETURN(read_u32(stream, checksum, &variant));
     if (variant != (uint32_t)CFR_TRAINER_VARIANT_CFR &&
-        variant != (uint32_t)CFR_TRAINER_VARIANT_CFR_PLUS) {
+        variant != (uint32_t)CFR_TRAINER_VARIANT_CFR_PLUS &&
+        variant != (uint32_t)CFR_TRAINER_VARIANT_MCCFR_EXTERNAL) {
         return CFR_STATUS_FORMAT_ERROR;
     }
     *variant_out = (TrainerVariant)variant;
+    mccfr_rng_out->state = 0;
+    if (variant == (uint32_t)CFR_TRAINER_VARIANT_MCCFR_EXTERNAL) {
+        READ_OR_RETURN(read_u64(stream, checksum, &mccfr_rng_out->state));
+    }
     READ_OR_RETURN(read_size(stream, checksum, training_iterations_out));
     READ_OR_RETURN(read_size(stream, checksum, &stats_out->iterations));
     READ_OR_RETURN(read_size(stream, checksum, &stats_out->traversals));
@@ -471,6 +482,7 @@ Status cfr_checkpoint_read(FILE *stream, const Game *game, GameState *state,
     InfoStore temporary_store = {0};
     TrainerStats stats = {0};
     TrainerVariant variant = CFR_TRAINER_VARIANT_CFR;
+    MccfrRng mccfr_rng = {0};
     size_t training_iterations = 0;
     size_t node_count = 0;
     uint32_t stored_checksum;
@@ -487,7 +499,7 @@ Status cfr_checkpoint_read(FILE *stream, const Game *game, GameState *state,
     if (!binary64_is_supported())
         return CFR_STATUS_FORMAT_ERROR;
     checksum_init(&checksum);
-    status = read_header(stream, game, &checksum, &variant,
+    status = read_header(stream, game, &checksum, &variant, &mccfr_rng,
                          &training_iterations, &stats, &node_count);
     if (status != CFR_STATUS_SUCCESS)
         return status;
@@ -526,6 +538,7 @@ Status cfr_checkpoint_read(FILE *stream, const Game *game, GameState *state,
                              .store = store_out,
                              .variant = variant,
                              .training_iterations = training_iterations,
+                             .mccfr_rng = mccfr_rng,
                              .stats = stats};
     return CFR_STATUS_SUCCESS;
 
@@ -536,7 +549,11 @@ cleanup:
 }
 
 static const char *variant_name(TrainerVariant variant) {
-    return variant == CFR_TRAINER_VARIANT_CFR ? "cfr" : "cfr-plus";
+    if (variant == CFR_TRAINER_VARIANT_CFR)
+        return "cfr";
+    if (variant == CFR_TRAINER_VARIANT_CFR_PLUS)
+        return "cfr-plus";
+    return "mccfr-external";
 }
 
 Status cfr_strategy_write_text(FILE *stream, const Trainer *trainer) {

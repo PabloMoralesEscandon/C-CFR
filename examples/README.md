@@ -12,8 +12,9 @@ It also retains ownership of its game state.
 The applications are not part of the public library. See the main
 [`README.md`](../README.md) to build and use the executables.
 
-The example uses classic CFR by default. Pass `--cfr-plus` to use Regret
-Matching+ and linear strategy averaging.
+The examples use classic CFR by default. Pass `--cfr-plus` to use Regret
+Matching+ and linear strategy averaging, or `--mccfr [--seed N]` to use seeded
+external-sampling MCCFR.
 
 The application can save and resume the complete generic trainer state with
 `--save FILE` and `--load FILE`. Use `--load FILE --evaluate` to run the exact

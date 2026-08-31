@@ -145,6 +145,8 @@ require_text "$case_output" "--iterations N"
 require_text "$case_output" "--report-every N"
 require_text "$case_output" "--print-strategy"
 require_text "$case_output" "--cfr-plus"
+require_text "$case_output" "--mccfr"
+require_text "$case_output" "--seed N"
 require_text "$case_output" "--load FILE"
 require_text "$case_output" "--save FILE"
 require_text "$case_output" "--evaluate"
@@ -178,6 +180,11 @@ check_usage_error negative_sign "representable positive decimal integer" \
     --iterations -1
 check_usage_error positive_sign "representable positive decimal integer" \
     --iterations +1
+check_usage_error seed_without_mccfr "--seed requires --mccfr" \
+    --iterations 1 --seed 7
+check_usage_error variant_conflict \
+    "--cfr-plus cannot be combined with --mccfr" \
+    --iterations 1 --cfr-plus --mccfr
 check_usage_error invalid_suffix "representable positive decimal integer" \
     --iterations 100abc
 check_usage_error out_of_range "representable positive decimal integer" \
@@ -536,5 +543,10 @@ if ! awk '
 ' "$case_output"; then
     fail "the long run does not meet the documented thresholds"
 fi
+
+run_case mccfr_validation --iterations 1000 --report-every 1000 \
+    --mccfr --seed 42
+validate_only_reports "1000"
+require_text "$case_output" "information_sets=12"
 
 printf 'All CLI integration tests completed successfully.\n'

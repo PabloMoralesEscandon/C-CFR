@@ -87,6 +87,9 @@ typedef struct {
     size_t frame_capacity;
 
     size_t max_legal_actions;
+    InfoStore unvisited_store;
+    bool unvisited_store_initialized;
+    bool use_uniform_for_unvisited;
 } EvaluationWorkspace;
 
 static Status build(const Game *game, GameState *state, const InfoStore *store,
@@ -114,12 +117,15 @@ static void workspace_destroy(EvaluationWorkspace *workspace) {
     free(workspace->groups);
     free(workspace->edges);
     free(workspace->nodes);
+    if (workspace->unvisited_store_initialized)
+        (void)cfr_info_store_destroy(&workspace->unvisited_store);
 
     *workspace = (EvaluationWorkspace){0};
 }
 
 static Status workspace_init(EvaluationWorkspace *workspace,
-                             size_t max_legal_actions) {
+                             size_t max_legal_actions,
+                             bool use_uniform_for_unvisited) {
     if (workspace == NULL || max_legal_actions == 0)
         return CFR_STATUS_INVALID_ARGUMENT;
 
@@ -174,6 +180,16 @@ static Status workspace_init(EvaluationWorkspace *workspace,
     temporary.group_table_capacity = INITIAL_GROUP_TABLE_CAPACITY;
     temporary.frame_capacity = INITIAL_FRAME_CAPACITY;
     temporary.max_legal_actions = max_legal_actions;
+    temporary.use_uniform_for_unvisited = use_uniform_for_unvisited;
+    if (use_uniform_for_unvisited) {
+        const Status status =
+            cfr_info_store_init(&temporary.unvisited_store);
+        if (status != CFR_STATUS_SUCCESS) {
+            workspace_destroy(&temporary);
+            return status;
+        }
+        temporary.unvisited_store_initialized = true;
+    }
 
     *workspace = temporary;
     return CFR_STATUS_SUCCESS;
@@ -624,6 +640,7 @@ static Status workspace_find_or_create_group(EvaluationWorkspace *workspace,
 
 static Status workspace_build_snapshot(const Game *game, GameState *state,
                                        const InfoStore *store,
+                                       bool use_uniform_for_unvisited,
                                        EvaluationWorkspace *workspace_out,
                                        size_t *root_index_out) {
     if (game == NULL || state == NULL || store == NULL ||
@@ -643,7 +660,8 @@ static Status workspace_build_snapshot(const Game *game, GameState *state,
         trusted_game.trusted_operations = NULL;
         evaluation_game = &trusted_game;
     }
-    status = workspace_init(&temporary, game->max_legal_actions);
+    status = workspace_init(&temporary, game->max_legal_actions,
+                            use_uniform_for_unvisited);
     if (status != CFR_STATUS_SUCCESS)
         return status;
 
@@ -777,6 +795,15 @@ static Status build(const Game *game, GameState *state, const InfoStore *store,
             return status;
         const InfoNode *node;
         status = cfr_info_store_find_const(store, key, &node);
+        if (status == CFR_STATUS_NOT_FOUND &&
+            workspace->use_uniform_for_unvisited) {
+            InfoNode *temporary_node;
+
+            status = cfr_info_store_get_or_create(
+                &workspace->unvisited_store, key, required_amount,
+                &temporary_node);
+            node = temporary_node;
+        }
         if (status != CFR_STATUS_SUCCESS)
             return status;
         if (node->action_count != required_amount)
@@ -1239,7 +1266,8 @@ Status cfr_evaluation_profile_value(const Game *game, GameState *state,
     EvaluationWorkspace workspace = {0};
     size_t root_index;
     status =
-        workspace_build_snapshot(game, state, store, &workspace, &root_index);
+        workspace_build_snapshot(game, state, store, false, &workspace,
+                                 &root_index);
     if (status != CFR_STATUS_SUCCESS)
         return status;
     Utility profile_value_temp;
@@ -1262,7 +1290,8 @@ Status cfr_evaluation_best_response_value(const Game *game, GameState *state,
     EvaluationWorkspace workspace = {0};
     size_t root_index;
     status =
-        workspace_build_snapshot(game, state, store, &workspace, &root_index);
+        workspace_build_snapshot(game, state, store, false, &workspace,
+                                 &root_index);
     if (status != CFR_STATUS_SUCCESS)
         return status;
     Utility best_response_temp;
@@ -1284,7 +1313,8 @@ Status cfr_evaluation_metrics(const Game *game, GameState *state,
     EvaluationWorkspace workspace = {0};
     size_t root_index;
     status =
-        workspace_build_snapshot(game, state, store, &workspace, &root_index);
+        workspace_build_snapshot(game, state, store, false, &workspace,
+                                 &root_index);
     if (status != CFR_STATUS_SUCCESS)
         return status;
     EvaluationMetrics eval_temp = {0};
@@ -1293,5 +1323,25 @@ Status cfr_evaluation_metrics(const Game *game, GameState *state,
     if (status != CFR_STATUS_SUCCESS)
         return status;
     *eval_out = eval_temp;
+    return CFR_STATUS_SUCCESS;
+}
+
+Status cfr_evaluation_metrics_with_unvisited_uniform(
+    const Game *game, GameState *state, const InfoStore *store,
+    EvaluationMetrics *eval_out) {
+    if (game == NULL || state == NULL || store == NULL || eval_out == NULL)
+        return CFR_STATUS_INVALID_ARGUMENT;
+    EvaluationWorkspace workspace = {0};
+    size_t root_index;
+    Status status = workspace_build_snapshot(game, state, store, true,
+                                             &workspace, &root_index);
+    if (status != CFR_STATUS_SUCCESS)
+        return status;
+    EvaluationMetrics temporary = {0};
+    status = calculate_metrics(&workspace, root_index, &temporary);
+    workspace_destroy(&workspace);
+    if (status != CFR_STATUS_SUCCESS)
+        return status;
+    *eval_out = temporary;
     return CFR_STATUS_SUCCESS;
 }

@@ -136,4 +136,17 @@ Status cfr_evaluation_metrics(const Game *game, GameState *state,
                               const InfoStore *store,
                               EvaluationMetrics *eval_out);
 
+/*
+ * Computes all metrics while treating unvisited information sets as uniform.
+ *
+ * This operation is intended for sampled trainers, whose store can be sparse
+ * early in training. It has the cfr_evaluation_metrics contract except that a
+ * missing key uses a temporary uniform policy with the state's legal action
+ * count. The function does not add nodes to store. Different ordered legal
+ * actions for occurrences of the same missing key are rejected.
+ */
+Status cfr_evaluation_metrics_with_unvisited_uniform(
+    const Game *game, GameState *state, const InfoStore *store,
+    EvaluationMetrics *eval_out);
+
 #endif

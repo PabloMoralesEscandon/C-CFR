@@ -1,7 +1,8 @@
-# CFR and CFR+ in C17
+# CFR, CFR+, and MCCFR in C17
 
-This project implements a CFR and CFR+ library for finite extensive-form games.
-The first version supports two-player zero-sum games.
+This project implements CFR, CFR+, and external-sampling Monte Carlo CFR for
+finite extensive-form games. The first version supports two-player zero-sum
+games.
 
 The repository includes complete Kuhn Poker, Leduc Poker, and blackjack
 adapters. Three independent applications train the games, and all adapters are
@@ -78,7 +79,9 @@ make test
 ```
 
 The Kuhn and Leduc integration tests check arguments, reports, average
-strategies, resumable checkpoints, exact evaluation, and convergence. The
+strategies, resumable checkpoints, exact evaluation, and convergence. MCCFR
+tests additionally check seeded reproducibility, sampled traversal size,
+checkpoint continuation, convergence, and hidden-information isolation. The
 blackjack tests check its rules, integration with `Trainer` on a bounded
 subtree, and its interface without accidentally starting a full traversal. Run
 the Leduc CLI checks separately with:
@@ -138,7 +141,8 @@ build/release/cfr-kuhn -h
 The general form is:
 
 ```text
-cfr-kuhn --iterations N [--report-every N] [--print-strategy] [--cfr-plus]
+cfr-kuhn --iterations N [--report-every N] [--print-strategy]
+         [--cfr-plus | --mccfr [--seed N]]
          [--save FILE] [--export-strategy FILE]
 cfr-kuhn --load FILE --iterations N [--report-every N] [--print-strategy]
          [--save FILE] [--export-strategy FILE]
@@ -152,6 +156,8 @@ cfr-kuhn --load FILE --evaluate [--print-strategy]
 | `--report-every N` | Prints a report after each block of at most `N` iterations. |
 | `--print-strategy` | Prints the average strategy after the final report. |
 | `--cfr-plus` | Uses CFR+ instead of the default classic CFR. |
+| `--mccfr` | Uses external-sampling MCCFR instead of a full-tree traversal. |
+| `--seed N` | Selects the MCCFR random stream; the default is zero. |
 | `--load FILE` | Loads a binary checkpoint for evaluation or continued training. |
 | `--save FILE` | Saves a binary checkpoint after successful training. |
 | `--evaluate` | Exactly evaluates a loaded checkpoint without training. |
@@ -165,9 +171,9 @@ For example, use `--report-every 10000` with 100,000 iterations. The application
 will print ten reports. A lower interval increases evaluation overhead.
 
 When `--load` and `--iterations` are used together, `N` is the number of
-additional iterations. The checkpoint selects classic CFR or CFR+; do not pass
-`--cfr-plus` while loading. Reports from resumed training use the cumulative
-training iteration count.
+additional iterations. The checkpoint selects classic CFR, CFR+, or MCCFR; do
+not pass a variant or seed option while loading. Reports from resumed training
+use the cumulative training iteration count.
 
 ## Using Leduc Poker
 
@@ -175,7 +181,8 @@ The Leduc executable has the same training, reporting, checkpoint, evaluation,
 and export options as `cfr-kuhn`:
 
 ```text
-cfr-leduc --iterations N [--report-every N] [--print-strategy] [--cfr-plus]
+cfr-leduc --iterations N [--report-every N] [--print-strategy]
+          [--cfr-plus | --mccfr [--seed N]]
           [--save FILE] [--export-strategy FILE]
 cfr-leduc --load FILE --iterations N [--report-every N] [--print-strategy]
           [--save FILE] [--export-strategy FILE]
@@ -223,7 +230,9 @@ A binary checkpoint is the authoritative saved strategy. It contains both the
 cumulative strategy sums used for play and evaluation and the cumulative
 regrets needed to continue training. It also retains the trainer variant,
 completed training iteration count, and trainer statistics. CFR+ therefore
-continues with the correct linear averaging weight.
+continues with the correct linear averaging weight. An MCCFR checkpoint also
+stores its random-stream state, so resumed training is byte-for-byte identical
+to uninterrupted training.
 
 Train and save a checkpoint with:
 
@@ -327,6 +336,48 @@ To build a custom loop, pass the iteration number explicitly to
 `cfr_traverse_plus` and `cfr_traverse_plus_with_stats`. The value starts at one
 and must be the same for both players' traversals.
 
+### External-sampling MCCFR
+
+Use `--mccfr` when a full traversal is too expensive. `--seed` accepts any
+unsigned 64-bit decimal value and defaults to zero:
+
+```sh
+build/release/cfr-kuhn --iterations 100000 --mccfr --seed 42
+build/release/cfr-blackjack --deal 5,10,6 --iterations 10000 \
+    --mccfr --seed 42
+```
+
+The library entry point is `cfr_trainer_init_mccfr`. A lower-level caller can
+manage an `MccfrRng` and call `cfr_mccfr_external_traverse` directly; both are
+declared in `cfr/mccfr.h`.
+
+External sampling draws one chance outcome and one action at every opponent
+information set, while expanding every action of the player whose regrets are
+being updated. The sampled opponent choice is cached by information-set key
+for the complete traversal. If two hidden histories have the same key, they
+therefore receive the same sampled action. The traversal also rejects different
+ordered action mappings for the same sampled information set. Terminal utility
+can inspect the complete state, but policy lookup, sampling, regret storage,
+and average-policy storage use only the information-set node.
+
+An adapter remains responsible for the game model's information boundary:
+
+- Indistinguishable states for the acting player must return the same stable
+  `information_set_key`.
+- Every occurrence of an information set must expose the same ordered legal
+  actions.
+- Information sets must satisfy perfect recall, as required by CFR and MCCFR.
+
+Average-strategy deltas use inverse external-reach weighting, so they are
+unbiased estimates of the full CFR strategy sums. Failed traversals preserve
+the random stream and do not commit regret or strategy deltas.
+
+Early sampled runs can have information sets that have not been visited yet.
+The command-line reports evaluate those missing policies as uniform without
+adding them to the training store. Library users can request the same behavior
+with `cfr_evaluation_metrics_with_unvisited_uniform`; the original exact
+evaluation functions retain their strict missing-key errors.
+
 ### Exit codes
 
 | Code | Meaning |
@@ -402,8 +453,8 @@ solution.
 
 ## Reproducibility
 
-The trainer enumerates chance outcomes, so the program does not use a random
-seed.
+Classic CFR and CFR+ enumerate chance outcomes and do not use a random seed.
+MCCFR uses the explicit seed supplied with `--seed`, or zero when it is omitted.
 
 Two runs with the same arguments produce the same metrics. They also produce
 the same strategies in the same order.
@@ -463,10 +514,10 @@ The general form is:
 
 ```text
 cfr-blackjack --deal R,R,R --iterations N [--report-every N] [--evaluate]
-              [--cfr-plus | --load FILE] [--save FILE]
+              [--cfr-plus | --mccfr [--seed N] | --load FILE] [--save FILE]
               [--export-strategy FILE]
 cfr-blackjack --full-tree --iterations N [--report-every N] [--evaluate]
-              [--cfr-plus | --load FILE] [--save FILE]
+              [--cfr-plus | --mccfr [--seed N] | --load FILE] [--save FILE]
               [--export-strategy FILE]
 ```
 
@@ -478,6 +529,8 @@ cfr-blackjack --full-tree --iterations N [--report-every N] [--evaluate]
 | `--report-every N` | Reports statistics after each block of up to `N` iterations. |
 | `--evaluate` | Evaluates the average profile after training and reports its value and exploitability. |
 | `--cfr-plus` | Uses CFR+ with Regret Matching+ and linear averaging. |
+| `--mccfr` | Uses external-sampling MCCFR. |
+| `--seed N` | Selects the MCCFR random stream; the default is zero. |
 | `--load FILE` | Loads a binary checkpoint before additional training. |
 | `--save FILE` | Saves a resumable binary checkpoint after training. |
 | `--export-strategy FILE` | Exports the average strategy as deterministic, human-readable text. |
@@ -527,8 +580,8 @@ build/release/cfr-blackjack --deal 5,10,6 --load blackjack.cfr \
 
 Checkpoint and text exports are written through temporary sibling files and
 atomically replace their destinations only after successful training and
-serialization. A loaded checkpoint selects classic CFR or CFR+ automatically,
-so `--load` cannot be combined with `--cfr-plus`.
+serialization. A loaded checkpoint selects classic CFR, CFR+, or MCCFR
+automatically, so `--load` cannot be combined with a variant or seed option.
 
 ### Complete-tree cost
 

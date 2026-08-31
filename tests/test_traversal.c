@@ -47,6 +47,8 @@ static bool same_state(const TraversalGameState *left,
         left->history_count != right->history_count ||
         left->reverse_shared_root_actions !=
             right->reverse_shared_root_actions ||
+        left->reverse_right_shared_actions !=
+            right->reverse_right_shared_actions ||
         left->fail_after_any_action != right->fail_after_any_action ||
         left->fail_after_selected_action !=
             right->fail_after_selected_action ||

@@ -6,6 +6,7 @@
 #include "cfr/info_store.h"
 #include "cfr/kuhn_poker.h"
 #include "cfr/leduc_poker.h"
+#include "cfr/mccfr.h"
 #include "cfr/trainer.h"
 #include "cfr/traversal.h"
 #include "cfr/types.h"
@@ -26,8 +27,12 @@ int test_public_headers(void) {
     BlackjackState blackjack_state = {0};
     EvaluationMetrics evaluation_metrics = {0};
     TrainerVariant trainer_variant = CFR_TRAINER_VARIANT_CFR_PLUS;
+    MccfrRng mccfr_rng = {0};
     Status (*checkpoint_writer)(FILE *, const Trainer *) =
         cfr_checkpoint_write;
+    Status (*sparse_evaluator)(const Game *, GameState *, const InfoStore *,
+                               EvaluationMetrics *) =
+        cfr_evaluation_metrics_with_unvisited_uniform;
 
     return (actor.player == CFR_PLAYER_0 && action == key &&
             status == CFR_STATUS_SUCCESS && utility == 0.0 &&
@@ -37,7 +42,8 @@ int test_public_headers(void) {
             blackjack_state.player_hand.card_count == 0 &&
             evaluation_metrics.exploitability == 0.0 &&
             trainer_variant == CFR_TRAINER_VARIANT_CFR_PLUS &&
-            checkpoint_writer != NULL)
+            mccfr_rng.state == 0 && checkpoint_writer != NULL &&
+            sparse_evaluator != NULL)
                ? 0
                : 1;
 }

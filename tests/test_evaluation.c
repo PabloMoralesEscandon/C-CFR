@@ -1036,6 +1036,34 @@ static void test_missing_and_inconsistent_information(void) {
     }
 }
 
+static void test_unvisited_information_can_use_uniform_policy(void) {
+    const Game *game = traversal_game_descriptor();
+    TraversalGameState state;
+    TraversalGameState root;
+    InfoStore store;
+    EvaluationMetrics sparse = sentinel_metrics();
+    EvaluationMetrics populated = sentinel_metrics();
+
+    initialize_store(&store);
+    CHECK(traversal_game_state_init(&state) == CFR_STATUS_SUCCESS);
+    root = state;
+    CHECK(cfr_evaluation_metrics_with_unvisited_uniform(
+              game, traversal_game_state_as_public(&state), &store,
+              &sparse) == CFR_STATUS_SUCCESS);
+    CHECK(store.size == 0);
+    CHECK(same_traversal_state(&state, &root));
+
+    create_policy(&store, 100, 0.0, 0.0);
+    create_policy(&store, 200, 0.0, 0.0);
+    CHECK(cfr_evaluation_metrics(
+              game, traversal_game_state_as_public(&state), &store,
+              &populated) == CFR_STATUS_SUCCESS);
+    CHECK(same_metrics(&sparse, &populated));
+    CHECK(store.size == 2);
+    CHECK(same_traversal_state(&state, &root));
+    destroy_store(&store);
+}
+
 static void test_terminal_numeric_contract(void) {
     const InfoSetKey unused_key = 0;
     const Game *descriptor = traversal_game_descriptor();
@@ -1379,6 +1407,7 @@ int test_evaluation(void) {
     test_chance_distributions_and_depth();
     test_public_invalid_arguments();
     test_missing_and_inconsistent_information();
+    test_unvisited_information_can_use_uniform_policy();
     test_terminal_numeric_contract();
     test_negative_improvement_rounding_adjustment();
     test_error_restoration_and_undo_priority();
