@@ -407,6 +407,61 @@ static void test_order_independence(void) {
     destroy_store(&reverse);
 }
 
+typedef struct {
+    InfoSetKey keys[8];
+    size_t count;
+    size_t stop_after;
+} VisitContext;
+
+static Status collect_visited_key(const InfoNode *node, void *raw_context) {
+    VisitContext *context = raw_context;
+
+    if (node == NULL || context == NULL || context->count >= 8)
+        return CFR_STATUS_INVALID_ARGUMENT;
+    context->keys[context->count] = node->key;
+    context->count += 1;
+    if (context->stop_after != 0 && context->count == context->stop_after)
+        return CFR_STATUS_IO_ERROR;
+    return CFR_STATUS_SUCCESS;
+}
+
+static void test_sorted_visit(void) {
+    InfoStore store = {0};
+    InfoNode *node = NULL;
+    const InfoSetKey insertion_order[] = {7, -4, 99, 0};
+    const InfoSetKey sorted_order[] = {-4, 0, 7, 99};
+    VisitContext context = {0};
+    size_t index;
+
+    CHECK(cfr_info_store_visit_sorted(NULL, collect_visited_key, &context) ==
+          CFR_STATUS_INVALID_ARGUMENT);
+    CHECK(cfr_info_store_visit_sorted(&store, collect_visited_key, &context) ==
+          CFR_STATUS_INVALID_ARGUMENT);
+    initialize_store(&store);
+    CHECK(cfr_info_store_visit_sorted(&store, NULL, &context) ==
+          CFR_STATUS_INVALID_ARGUMENT);
+    CHECK(cfr_info_store_visit_sorted(&store, collect_visited_key, &context) ==
+          CFR_STATUS_SUCCESS);
+    CHECK(context.count == 0);
+
+    for (index = 0; index < sizeof(insertion_order) / sizeof(insertion_order[0]);
+         index += 1) {
+        CHECK(cfr_info_store_get_or_create(&store, insertion_order[index], 2,
+                                           &node) == CFR_STATUS_SUCCESS);
+    }
+    CHECK(cfr_info_store_visit_sorted(&store, collect_visited_key, &context) ==
+          CFR_STATUS_SUCCESS);
+    CHECK(context.count == 4);
+    for (index = 0; index < context.count; index += 1)
+        CHECK(context.keys[index] == sorted_order[index]);
+
+    context = (VisitContext){.stop_after = 2};
+    CHECK(cfr_info_store_visit_sorted(&store, collect_visited_key, &context) ==
+          CFR_STATUS_IO_ERROR);
+    CHECK(context.count == 2);
+    destroy_store(&store);
+}
+
 #ifdef CFR_TEST_WRAP_ALLOCATOR
 static void check_failed_creation(InfoStore *store,
                                   size_t successful_allocations) {
@@ -487,6 +542,18 @@ static void test_allocation_failures(void) {
     initialize_store(&store);
     CHECK(cfr_info_store_get_or_create(&store, 42, 3, &node) ==
           CFR_STATUS_SUCCESS);
+    {
+        VisitContext context = {0};
+        const size_t visit_live_before = test_allocator_live_allocations();
+
+        test_allocator_fail_after(0);
+        CHECK(cfr_info_store_visit_sorted(&store, collect_visited_key,
+                                          &context) ==
+              CFR_STATUS_OUT_OF_MEMORY);
+        CHECK(context.count == 0);
+        test_allocator_disable_failures();
+        CHECK(test_allocator_live_allocations() == visit_live_before);
+    }
     destroy_store(&store);
     CHECK(test_allocator_live_allocations() == 0);
 }
@@ -503,6 +570,7 @@ int test_info_store(void) {
     test_exact_load_boundary();
     test_high_bit_hash_quality();
     test_order_independence();
+    test_sorted_visit();
 #ifdef CFR_TEST_WRAP_ALLOCATOR
     test_allocation_failures();
     CHECK(test_allocator_live_allocations() == 0);

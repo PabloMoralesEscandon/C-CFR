@@ -17,6 +17,18 @@ typedef enum {
     LOCATE_STORE_FULL
 } LocateResult;
 
+static int compare_node_keys(const void *left_pointer,
+                             const void *right_pointer) {
+    const InfoNode *left = *(const InfoNode *const *)left_pointer;
+    const InfoNode *right = *(const InfoNode *const *)right_pointer;
+
+    if (left->key < right->key)
+        return -1;
+    if (left->key > right->key)
+        return 1;
+    return 0;
+}
+
 static uint64_t disperse(InfoSetKey key) {
     uint64_t value = (uint64_t)key;
     return value * HASH_MULTIPLIER;
@@ -244,4 +256,58 @@ Status cfr_info_store_find_const(const InfoStore *info_store, InfoSetKey key,
         return CFR_STATUS_NOT_FOUND;
     } else
         return CFR_STATUS_INVALID_ARGUMENT;
+}
+
+Status cfr_info_store_visit_sorted(const InfoStore *info_store,
+                                   InfoStoreConstVisitor visitor,
+                                   void *context) {
+    const InfoNode **nodes = NULL;
+    size_t count = 0;
+    size_t index;
+    Status status = CFR_STATUS_SUCCESS;
+
+    if (info_store == NULL || info_store->entries == NULL ||
+        info_store->capacity == 0 || visitor == NULL ||
+        info_store->size > info_store->capacity ||
+        info_store->size > SIZE_MAX / sizeof(*nodes)) {
+        return CFR_STATUS_INVALID_ARGUMENT;
+    }
+    if (info_store->size > 0) {
+        nodes = malloc(info_store->size * sizeof(*nodes));
+        if (nodes == NULL)
+            return CFR_STATUS_OUT_OF_MEMORY;
+    }
+    for (index = 0; index < info_store->capacity; index += 1) {
+        const InfoNode *node = info_store->entries[index].node;
+
+        if (node == NULL)
+            continue;
+        if (count == info_store->size) {
+            status = CFR_STATUS_INVALID_ARGUMENT;
+            goto cleanup;
+        }
+        nodes[count] = node;
+        count += 1;
+    }
+    if (count != info_store->size) {
+        status = CFR_STATUS_INVALID_ARGUMENT;
+        goto cleanup;
+    }
+    if (count > 1)
+        qsort(nodes, count, sizeof(*nodes), compare_node_keys);
+    for (index = 1; index < count; index += 1) {
+        if (nodes[index - 1]->key == nodes[index]->key) {
+            status = CFR_STATUS_INVALID_ARGUMENT;
+            goto cleanup;
+        }
+    }
+    for (index = 0; index < count; index += 1) {
+        status = visitor(nodes[index], context);
+        if (status != CFR_STATUS_SUCCESS)
+            break;
+    }
+
+cleanup:
+    free(nodes);
+    return status;
 }

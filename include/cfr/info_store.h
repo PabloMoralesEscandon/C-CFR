@@ -50,6 +50,15 @@ typedef struct {
 } InfoStoreStats;
 
 /*
+ * Receives one borrowed learning node while visiting a store.
+ *
+ * The callback must not retain or modify node. context belongs to the caller
+ * and can be null. Returning an error stops the visit and propagates that
+ * status to the caller.
+ */
+typedef Status (*InfoStoreConstVisitor)(const InfoNode *node, void *context);
+
+/*
  * Initializes info_store and allocates the initial table.
  *
  * info_store must be zero-initialized or previously destroyed. The function
@@ -137,5 +146,22 @@ Status cfr_info_store_get_stats(const InfoStore *info_store,
  */
 Status cfr_info_store_find_const(const InfoStore *info_store, InfoSetKey key,
                                  const InfoNode **node_out);
+
+/*
+ * Visits every node in strictly increasing information-set key order.
+ *
+ * info_store must be initialized and visitor must not be null. The function
+ * borrows every node only for the duration of its callback. It does not modify
+ * the store or its statistics. Temporary pointer storage is allocated when
+ * the store is nonempty.
+ *
+ * Success visits every node exactly once. A callback error is returned
+ * unchanged after the completed callbacks. Invalid arguments produce
+ * CFR_STATUS_INVALID_ARGUMENT; temporary allocation failure produces
+ * CFR_STATUS_OUT_OF_MEMORY.
+ */
+Status cfr_info_store_visit_sorted(const InfoStore *info_store,
+                                   InfoStoreConstVisitor visitor,
+                                   void *context);
 
 #endif

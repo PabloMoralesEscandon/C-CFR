@@ -33,6 +33,8 @@ int test_public_headers(void) {
     Status (*sparse_evaluator)(const Game *, GameState *, const InfoStore *,
                                EvaluationMetrics *) =
         cfr_evaluation_metrics_with_unvisited_uniform;
+    Status (*sorted_store_visitor)(const InfoStore *, InfoStoreConstVisitor,
+                                   void *) = cfr_info_store_visit_sorted;
 
     return (actor.player == CFR_PLAYER_0 && action == key &&
             status == CFR_STATUS_SUCCESS && utility == 0.0 &&
@@ -43,7 +45,7 @@ int test_public_headers(void) {
             evaluation_metrics.exploitability == 0.0 &&
             trainer_variant == CFR_TRAINER_VARIANT_CFR_PLUS &&
             mccfr_rng.state == 0 && checkpoint_writer != NULL &&
-            sparse_evaluator != NULL)
+            sparse_evaluator != NULL && sorted_store_visitor != NULL)
                ? 0
                : 1;
 }
