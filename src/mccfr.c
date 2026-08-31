@@ -1,4 +1,3 @@
-#include <float.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -35,6 +34,7 @@ typedef struct {
     const GameOperations *operations;
     const void *context;
     size_t max_legal_actions;
+    size_t strategic_player_count;
 } MccfrAdapter;
 
 typedef struct {
@@ -65,8 +65,7 @@ typedef struct {
 
 static Status traverse_branch(const MccfrAdapter *adapter, GameState *state,
                               InfoStore *store, Player target_player,
-                              size_t depth, long double own_reach,
-                              long double external_sample_reach,
+                              size_t depth, Probability own_reach,
                               MccfrWorkspace *workspace,
                               Utility *utility_out);
 
@@ -491,74 +490,115 @@ static Status workspace_apply_deltas(MccfrWorkspace *workspace) {
     return CFR_STATUS_SUCCESS;
 }
 
+/*
+ * Records sampled counterfactual regrets for a target-player information set.
+ *
+ * External sampling draws the chance and opponent actions from their own
+ * probabilities, so the sampling distribution already supplies the external
+ * reach that weights a counterfactual regret. The per-visit difference is
+ * therefore recorded without any importance weight.
+ *
+ * accumulate_strategy adds the own-reach-weighted strategy for a game with a
+ * single strategic player, where no opponent node can carry the average. Only
+ * chance then separates the traversal from the information set, and chance
+ * does not depend on the strategy, so the expected delta stays proportional to
+ * the full CFR strategy sums. A second strategic player makes that factor
+ * strategy-dependent, so the caller leaves the average to that player's own
+ * traversal instead.
+ */
 static Status record_target_deltas(MccfrWorkspace *workspace, InfoNode *node,
                                    const MccfrFrame *frame,
                                    size_t action_count, Utility node_utility,
-                                   long double own_reach,
-                                   long double external_sample_reach) {
+                                   bool accumulate_strategy,
+                                   Probability own_reach) {
     size_t entry_index;
     Status status = find_or_create_delta(workspace, node, action_count,
                                          &entry_index);
 
     if (status != CFR_STATUS_SUCCESS)
         return status;
-    if (!(external_sample_reach > 0.0L) ||
-        !isfinite(external_sample_reach) || !isfinite(own_reach)) {
+    if (accumulate_strategy && (!isfinite(own_reach) || own_reach < 0.0))
         return CFR_STATUS_NUMERIC_ERROR;
-    }
 
     DeltaEntry *entry = &workspace->delta_entries[entry_index];
     Utility *delta_regret = workspace->arena + entry->arena_offset;
     double *delta_strategy = delta_regret + action_count;
-    const long double average_weight = own_reach / external_sample_reach;
 
-    if (!isfinite(average_weight) || average_weight < 0.0L ||
-        average_weight > DBL_MAX) {
-        return CFR_STATUS_NUMERIC_ERROR;
-    }
     for (size_t action = 0; action < action_count; action += 1) {
         const Utility regret_change =
             frame->utilities[action] - node_utility;
-        const long double strategy_change =
-            average_weight * (long double)frame->probabilities[action];
 
-        if (!isfinite(regret_change) || !isfinite(strategy_change) ||
-            strategy_change > DBL_MAX) {
+        if (!isfinite(regret_change))
             return CFR_STATUS_NUMERIC_ERROR;
-        }
         delta_regret[action] += regret_change;
-        delta_strategy[action] += (double)strategy_change;
-        if (!isfinite(delta_regret[action]) ||
-            !isfinite(delta_strategy[action])) {
+        if (!isfinite(delta_regret[action]))
             return CFR_STATUS_NUMERIC_ERROR;
-        }
+        if (!accumulate_strategy)
+            continue;
+        delta_strategy[action] += own_reach * frame->probabilities[action];
+        if (!isfinite(delta_strategy[action]))
+            return CFR_STATUS_NUMERIC_ERROR;
+    }
+    return CFR_STATUS_SUCCESS;
+}
+
+/*
+ * Records an average-strategy contribution for a sampled player's information
+ * set.
+ *
+ * The traversal reaches a history of this information set with exactly the
+ * probability that the sampled player and chance reach it, so accumulating the
+ * unweighted strategy reproduces the full CFR strategy sums up to one constant
+ * per information set. cfr_info_node_average_strategy normalizes that constant
+ * away.
+ */
+static Status record_sampled_strategy(MccfrWorkspace *workspace,
+                                      InfoNode *node, const MccfrFrame *frame,
+                                      size_t action_count) {
+    size_t entry_index;
+    Status status = find_or_create_delta(workspace, node, action_count,
+                                         &entry_index);
+
+    if (status != CFR_STATUS_SUCCESS)
+        return status;
+
+    DeltaEntry *entry = &workspace->delta_entries[entry_index];
+    double *delta_strategy =
+        workspace->arena + entry->arena_offset + action_count;
+
+    for (size_t action = 0; action < action_count; action += 1) {
+        const Probability probability = frame->probabilities[action];
+
+        if (!isfinite(probability) || probability < 0.0)
+            return CFR_STATUS_NUMERIC_ERROR;
+        delta_strategy[action] += probability;
+        if (!isfinite(delta_strategy[action]))
+            return CFR_STATUS_NUMERIC_ERROR;
     }
     return CFR_STATUS_SUCCESS;
 }
 
 static Status traverse_target_node(
     const MccfrAdapter *adapter, GameState *state, InfoStore *store,
-    Player target_player, size_t depth, long double own_reach,
-    long double external_sample_reach, MccfrWorkspace *workspace,
-    InfoNode *node, size_t action_count, Utility *utility_out) {
+    Player target_player, size_t depth, Probability own_reach,
+    MccfrWorkspace *workspace, InfoNode *node, size_t action_count,
+    Utility *utility_out) {
     Utility node_utility = 0.0;
 
     for (size_t action = 0; action < action_count; action += 1) {
         MccfrFrame *frame = &workspace->frames[depth];
-        const long double child_own_reach =
-            own_reach * (long double)frame->probabilities[action];
-
-        if (!isfinite(child_own_reach))
-            return CFR_STATUS_NUMERIC_ERROR;
+        const Probability child_own_reach =
+            own_reach * frame->probabilities[action];
         Status status = adapter->operations->apply_action(
             adapter->context, state, frame->actions[action]);
+
         if (status != CFR_STATUS_SUCCESS)
             return status;
 
         Utility branch_utility;
-        const Status branch_status = traverse_branch(
-            adapter, state, store, target_player, depth + 1, child_own_reach,
-            external_sample_reach, workspace, &branch_utility);
+        const Status branch_status =
+            traverse_branch(adapter, state, store, target_player, depth + 1,
+                            child_own_reach, workspace, &branch_utility);
         status = adapter->operations->undo_action(adapter->context, state);
         if (status != CFR_STATUS_SUCCESS)
             return status;
@@ -576,7 +616,7 @@ static Status traverse_target_node(
 
     const Status status = record_target_deltas(
         workspace, node, &workspace->frames[depth], action_count, node_utility,
-        own_reach, external_sample_reach);
+        adapter->strategic_player_count == 1, own_reach);
     if (status != CFR_STATUS_SUCCESS)
         return status;
     *utility_out = node_utility;
@@ -585,9 +625,9 @@ static Status traverse_target_node(
 
 static Status traverse_opponent_node(
     const MccfrAdapter *adapter, GameState *state, InfoStore *store,
-    Player target_player, size_t depth, long double own_reach,
-    long double external_sample_reach, MccfrWorkspace *workspace,
-    const InfoNode *node, size_t action_count, Utility *utility_out) {
+    Player target_player, size_t depth, Probability own_reach,
+    MccfrWorkspace *workspace, InfoNode *node, size_t action_count,
+    Utility *utility_out) {
     MccfrFrame *frame = &workspace->frames[depth];
     size_t sampled_action;
     Status status = get_sampled_action(
@@ -596,22 +636,21 @@ static Status traverse_opponent_node(
 
     if (status != CFR_STATUS_SUCCESS)
         return status;
-    const Probability probability = frame->probabilities[sampled_action];
-    const long double child_sample_reach =
-        external_sample_reach * (long double)probability;
-    if (!(probability > 0.0) || !(child_sample_reach > 0.0L) ||
-        !isfinite(child_sample_reach)) {
+    if (!(frame->probabilities[sampled_action] > 0.0))
         return CFR_STATUS_NUMERIC_ERROR;
-    }
+    status = record_sampled_strategy(workspace, node, frame, action_count);
+    if (status != CFR_STATUS_SUCCESS)
+        return status;
+    frame = &workspace->frames[depth];
     status = adapter->operations->apply_action(
         adapter->context, state, frame->actions[sampled_action]);
     if (status != CFR_STATUS_SUCCESS)
         return status;
 
     Utility branch_utility;
-    const Status branch_status = traverse_branch(
-        adapter, state, store, target_player, depth + 1, own_reach,
-        child_sample_reach, workspace, &branch_utility);
+    const Status branch_status =
+        traverse_branch(adapter, state, store, target_player, depth + 1,
+                        own_reach, workspace, &branch_utility);
     status = adapter->operations->undo_action(adapter->context, state);
     if (status != CFR_STATUS_SUCCESS)
         return status;
@@ -623,9 +662,8 @@ static Status traverse_opponent_node(
 
 static Status traverse_chance_node(
     const MccfrAdapter *adapter, GameState *state, InfoStore *store,
-    Player target_player, size_t depth, long double own_reach,
-    long double external_sample_reach, MccfrWorkspace *workspace,
-    Utility *utility_out) {
+    Player target_player, size_t depth, Probability own_reach,
+    MccfrWorkspace *workspace, Utility *utility_out) {
     Status status = ensure_frame(workspace, depth);
     if (status != CFR_STATUS_SUCCESS)
         return status;
@@ -672,22 +710,17 @@ static Status traverse_chance_node(
                           &sampled_action);
     if (status != CFR_STATUS_SUCCESS)
         return status;
-    const Probability probability = frame->probabilities[sampled_action];
-    const long double child_sample_reach =
-        external_sample_reach * (long double)probability;
-    if (!(probability > 0.0) || !(child_sample_reach > 0.0L) ||
-        !isfinite(child_sample_reach)) {
+    if (!(frame->probabilities[sampled_action] > 0.0))
         return CFR_STATUS_NUMERIC_ERROR;
-    }
 
     status = adapter->operations->apply_action(
         adapter->context, state, frame->actions[sampled_action]);
     if (status != CFR_STATUS_SUCCESS)
         return status;
     Utility branch_utility;
-    const Status branch_status = traverse_branch(
-        adapter, state, store, target_player, depth + 1, own_reach,
-        child_sample_reach, workspace, &branch_utility);
+    const Status branch_status =
+        traverse_branch(adapter, state, store, target_player, depth + 1,
+                        own_reach, workspace, &branch_utility);
     status = adapter->operations->undo_action(adapter->context, state);
     if (status != CFR_STATUS_SUCCESS)
         return status;
@@ -699,8 +732,7 @@ static Status traverse_chance_node(
 
 static Status traverse_branch(const MccfrAdapter *adapter, GameState *state,
                               InfoStore *store, Player target_player,
-                              size_t depth, long double own_reach,
-                              long double external_sample_reach,
+                              size_t depth, Probability own_reach,
                               MccfrWorkspace *workspace,
                               Utility *utility_out) {
     if (workspace->visits != SIZE_MAX)
@@ -729,9 +761,8 @@ static Status traverse_branch(const MccfrAdapter *adapter, GameState *state,
     if (status != CFR_STATUS_SUCCESS)
         return status;
     if (actor.kind == CFR_ACTOR_CHANCE) {
-        return traverse_chance_node(
-            adapter, state, store, target_player, depth, own_reach,
-            external_sample_reach, workspace, utility_out);
+        return traverse_chance_node(adapter, state, store, target_player,
+                                    depth, own_reach, workspace, utility_out);
     }
     if (actor.kind != CFR_ACTOR_PLAYER ||
         (actor.player != CFR_PLAYER_0 && actor.player != CFR_PLAYER_1)) {
@@ -766,13 +797,13 @@ static Status traverse_branch(const MccfrAdapter *adapter, GameState *state,
         return status;
 
     if (actor.player == target_player) {
-        return traverse_target_node(
-            adapter, state, store, target_player, depth, own_reach,
-            external_sample_reach, workspace, node, action_count, utility_out);
+        return traverse_target_node(adapter, state, store, target_player,
+                                    depth, own_reach, workspace, node,
+                                    action_count, utility_out);
     }
-    return traverse_opponent_node(
-        adapter, state, store, target_player, depth, own_reach,
-        external_sample_reach, workspace, node, action_count, utility_out);
+    return traverse_opponent_node(adapter, state, store, target_player, depth,
+                                  own_reach, workspace, node, action_count,
+                                  utility_out);
 }
 
 Status cfr_mccfr_external_traverse(const Game *game, GameState *state,
@@ -790,6 +821,8 @@ Status cfr_mccfr_external_traverse_with_stats(
         utility_out == NULL || stats_out == NULL ||
         game->max_legal_actions == 0 ||
         game->max_legal_actions > CFR_TRAVERSAL_MAX_ACTIONS ||
+        game->strategic_player_count == 0 ||
+        game->strategic_player_count > 2 ||
         (target_player != CFR_PLAYER_0 && target_player != CFR_PLAYER_1)) {
         return CFR_STATUS_INVALID_ARGUMENT;
     }
@@ -810,10 +843,12 @@ Status cfr_mccfr_external_traverse_with_stats(
     const MccfrAdapter adapter = {.operations = operations,
                                    .context = game->context,
                                    .max_legal_actions =
-                                       game->max_legal_actions};
+                                       game->max_legal_actions,
+                                   .strategic_player_count =
+                                       game->strategic_player_count};
     Utility temporary_utility;
-    status = traverse_branch(&adapter, state, store, target_player, 0, 1.0L,
-                             1.0L, &workspace, &temporary_utility);
+    status = traverse_branch(&adapter, state, store, target_player, 0, 1.0,
+                             &workspace, &temporary_utility);
     if (status == CFR_STATUS_SUCCESS)
         status = workspace_check_deltas(&workspace);
     if (status == CFR_STATUS_SUCCESS)

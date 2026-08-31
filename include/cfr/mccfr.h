@@ -31,8 +31,25 @@ Status cfr_mccfr_rng_seed(MccfrRng *rng, uint64_t seed);
  * opponent cannot distinguish cannot receive different sampled decisions as a
  * consequence of hidden state.
  *
- * Average-strategy deltas for target_player use inverse external-reach
- * weighting, making them unbiased estimates of the full CFR strategy sums.
+ * The traversal updates regrets for target_player and average strategies for
+ * the sampled player. Sampling supplies the external reach that weights a
+ * counterfactual regret, so regret deltas carry no importance weight. A
+ * sampled player's information set is reached with exactly the probability
+ * that the player and chance reach it, so its strategy delta is the unweighted
+ * current strategy. Each information set therefore accumulates the full CFR
+ * strategy sums scaled by one constant, and cfr_info_node_average_strategy
+ * normalizes that constant away. With two strategic players, a complete
+ * iteration must traverse once for each player so that both average strategies
+ * advance. cfr_trainer_run does so.
+ *
+ * A game with one strategic player has no sampled player to carry the average.
+ * The traversal then accumulates the own-reach-weighted strategy at
+ * target_player's own information sets, which remains proportional to the full
+ * CFR strategy sums because only chance separates the traversal from the
+ * information set and chance does not depend on the strategy.
+ *
+ * game->strategic_player_count must be one or two.
+ *
  * Regret and strategy deltas are committed only after a successful traversal.
  * New zero-valued nodes can remain after an error, matching cfr_traverse.
  *

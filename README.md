@@ -360,6 +360,15 @@ ordered action mappings for the same sampled information set. Terminal utility
 can inspect the complete state, but policy lookup, sampling, regret storage,
 and average-policy storage use only the information-set node.
 
+A traversal updates regrets for the player it targets and the average strategy
+for the sampled player. Sampling already supplies the reach that weights a
+counterfactual regret, so neither update carries an importance weight. A
+complete iteration therefore traverses once per player, which `cfr_trainer_run`
+does. A game with a single strategic player has no sampled player to carry the
+average, so the traversal weights the target's own strategy by its reach
+instead; only chance separates it from the information set, and chance does not
+depend on the strategy.
+
 An adapter remains responsible for the game model's information boundary:
 
 - Indistinguishable states for the acting player must return the same stable
