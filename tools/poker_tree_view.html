@@ -1,0 +1,917 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Poker Decision Tree</title>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+:root {
+  color-scheme: dark;
+  --bg: #0f1218;
+  --panel: #161a23;
+  --panel-2: #1d2230;
+  --line: #2a3040;
+  --text: #e6e9f0;
+  --muted: #939cb0;
+  --faint: #6b7488;
+  --accent: #6ea8fe;
+  --chance: #8b93a7;
+  --p0: #5b9cf8;
+  --p1: #f0a742;
+  --win: #4ec98a;
+  --loss: #ef6a72;
+  --hl: #d6b04a;
+  --sans: "IBM Plex Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+/*
+ * Dark is this page's default look, so the bare :root block above holds the
+ * dark tokens and the two blocks below hold the light set: one for a viewer
+ * whose system prefers light and has stamped nothing, one for an explicit
+ * light choice. Every component reads these tokens and never declares a
+ * colour inside a theme block, so all four states resolve as a set.
+ */
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+  color-scheme: light;
+  --bg: #f7f8fa;
+  --panel: #ffffff;
+  --panel-2: #eef1f6;
+  --line: #d5dae3;
+  --text: #141821;
+  --muted: #586072;
+  --faint: #8b93a3;
+  --accent: #1f6feb;
+  --chance: #6f778a;
+  --p0: #2b6fd4;
+  --p1: #a86a12;
+  --win: #16855a;
+  --loss: #c4353d;
+  --hl: #96700a;
+  }
+}
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg: #f7f8fa;
+  --panel: #ffffff;
+  --panel-2: #eef1f6;
+  --line: #d5dae3;
+  --text: #141821;
+  --muted: #586072;
+  --faint: #8b93a3;
+  --accent: #1f6feb;
+  --chance: #6f778a;
+  --p0: #2b6fd4;
+  --p1: #a86a12;
+  --win: #16855a;
+  --loss: #c4353d;
+  --hl: #96700a;
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font: 13px/1.45 var(--sans);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* ---------------------------------------------------------------- bar --- */
+header {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  padding: 9px 14px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+}
+h1 {
+  font-size: 14px;
+  font-weight: 600;
+  margin: 0;
+  letter-spacing: .2px;
+  white-space: nowrap;
+}
+h1 .game { color: var(--accent); text-transform: capitalize; }
+.meta { color: var(--muted); font-size: 12px; display: flex; gap: 12px; flex-wrap: wrap; }
+.meta b { color: var(--text); font: 500 12px/1 var(--mono); }
+.spacer { flex: 1 1 auto; }
+.group { display: flex; align-items: center; gap: 6px; }
+label.ctl { color: var(--muted); font-size: 12px; white-space: nowrap; }
+button, select, input[type="text"] {
+  font: inherit;
+  color: var(--text);
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 4px 9px;
+}
+button { cursor: pointer; }
+:is(button, select, input):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+button:hover { border-color: var(--accent); }
+button:active { transform: translateY(1px); }
+input[type="range"] { width: 108px; accent-color: var(--accent); }
+input[type="text"] { width: 150px; }
+input[type="checkbox"] { accent-color: var(--accent); }
+.count {
+  color: var(--faint);
+  font: 500 11.5px/1 var(--mono);
+  font-variant-numeric: tabular-nums;
+  min-width: 44px;
+}
+
+/* --------------------------------------------------------------- main --- */
+main { flex: 1 1 auto; display: flex; min-height: 0; }
+#canvas { flex: 1 1 auto; position: relative; overflow: hidden; cursor: grab; }
+#canvas.dragging { cursor: grabbing; }
+svg { width: 100%; height: 100%; display: block; }
+.legend {
+  position: absolute;
+  left: 12px;
+  bottom: 12px;
+  display: flex;
+  gap: 12px;
+  padding: 6px 10px;
+  background: color-mix(in srgb, var(--panel) 88%, transparent);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  font-size: 11px;
+  color: var(--muted);
+  pointer-events: none;
+}
+.legend i { width: 9px; height: 9px; border-radius: 2px; display: inline-block; margin-right: 5px; }
+
+/* tree marks */
+.link { fill: none; }
+.link-label {
+  font: 400 10px var(--mono);
+  fill: var(--muted);
+  paint-order: stroke;
+  stroke: var(--bg);
+  stroke-width: 3px;
+}
+.link-label.dim { fill: var(--faint); }
+.node { cursor: pointer; }
+.node rect.box { stroke-width: 1.2px; }
+.node text.name {
+  font: 600 11px var(--sans);
+  dominant-baseline: middle;
+  text-anchor: start;
+  pointer-events: none;
+}
+.node text.ev {
+  font: 500 9.5px var(--mono);
+  dominant-baseline: middle;
+  text-anchor: end;
+  pointer-events: none;
+  font-variant-numeric: tabular-nums;
+  opacity: .72;
+}
+.node.selected rect.box { stroke: var(--accent); stroke-width: 2.4px; }
+.node.peer rect.box { stroke: var(--hl); stroke-width: 2px; stroke-dasharray: 3 2; }
+.node.match rect.box { stroke: var(--hl); stroke-width: 2.2px; }
+.collapsed-badge { font: 500 9px var(--mono); fill: var(--bg); text-anchor: middle; dominant-baseline: middle; pointer-events: none; font-weight: 700; }
+
+/* ------------------------------------------------------------ details --- */
+aside {
+  width: 320px;
+  flex: 0 0 320px;
+  background: var(--panel);
+  border-left: 1px solid var(--line);
+  overflow-y: auto;
+  padding: 14px;
+}
+aside h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .7px; color: var(--muted); margin: 0 0 8px; font-weight: 600; }
+aside h2:not(:first-child) { margin-top: 20px; }
+.kv { display: grid; grid-template-columns: 96px 1fr; gap: 3px 10px; font-size: 12px; }
+.kv dt { color: var(--muted); }
+.kv dd {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  word-break: break-word;
+}
+.pill {
+  display: inline-block;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  border: 1px solid;
+}
+.path { font-size: 12px; color: var(--muted); line-height: 1.7; }
+.path .step { color: var(--text); }
+.path .prob { color: var(--faint); font: 400 11.5px var(--mono); font-variant-numeric: tabular-nums; }
+.bars { display: flex; flex-direction: column; gap: 6px; }
+.bar-row { display: grid; grid-template-columns: 54px 1fr 56px; gap: 8px; align-items: center; font-size: 12px; }
+.bar-track { height: 9px; background: var(--panel-2); border-radius: 4px; overflow: hidden; }
+.bar-fill { height: 100%; border-radius: 4px; }
+.bar-val {
+  text-align: right;
+  font: 400 11.5px var(--mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+}
+.hint { color: var(--faint); font-size: 12px; }
+
+/* --------------------------------------------------------- breadcrumb --- */
+#crumbs {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-wrap: wrap;
+  padding: 6px 14px;
+  background: var(--panel-2);
+  border-bottom: 1px solid var(--line);
+  font-size: 12px;
+  color: var(--faint);
+  min-height: 30px;
+}
+#crumbs .crumb {
+  background: none;
+  border: none;
+  padding: 1px 5px;
+  border-radius: 4px;
+  color: var(--muted);
+  cursor: pointer;
+}
+#crumbs .crumb:hover { color: var(--text); background: var(--panel); }
+#crumbs .crumb.here { color: var(--accent); font-weight: 600; cursor: default; }
+#crumbs .crumb.here:hover { background: none; }
+#crumbs .sep { color: var(--line); }
+#crumbs .tip { margin-left: auto; }
+
+/* ---------------------------------------------------------- drop zone --- */
+#drop {
+  position: absolute;
+  inset: 0;
+  display: none;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  background: var(--bg);
+  text-align: center;
+  padding: 24px;
+}
+#drop.show { display: flex; }
+#drop h3 { margin: 0; font-size: 15px; }
+#drop p { margin: 0; color: var(--muted); max-width: 460px; }
+#drop code {
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  padding: 2px 6px;
+  font-size: 12px;
+}
+#drop.over { outline: 2px dashed var(--accent); outline-offset: -14px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Decision tree · <span class="game" id="game-name">—</span></h1>
+  <div class="meta" id="meta"></div>
+  <div class="spacer"></div>
+  <div class="group">
+    <label class="ctl" for="depth">depth</label>
+    <input type="range" id="depth" min="0" max="12" step="1" value="2">
+    <span class="count" id="depth-value">2</span>
+  </div>
+  <div class="group">
+    <label class="ctl" for="reach">min reach</label>
+    <input type="range" id="reach" min="0" max="100" step="1" value="0">
+    <span class="count" id="reach-value">0</span>
+  </div>
+  <div class="group">
+    <input type="text" id="search" placeholder="find infoset…" autocomplete="off">
+    <span class="count" id="search-count"></span>
+    <button id="search-prev" title="Previous match">‹</button>
+    <button id="search-next" title="Next match">›</button>
+  </div>
+  <div class="group">
+    <label class="ctl"><input type="checkbox" id="hide-zero"> hide 0%</label>
+    <button id="fit">Fit</button>
+    <button id="theme" title="Toggle light and dark">◐</button>
+  </div>
+</header>
+
+<nav id="crumbs" aria-label="Focused subtree"></nav>
+
+<main>
+  <div id="canvas">
+    <svg id="svg">
+      <g id="viewport">
+        <g id="links"></g>
+        <g id="nodes"></g>
+      </g>
+    </svg>
+    <div class="legend">
+      <span><i style="background:var(--chance)"></i>chance</span>
+      <span><i style="background:var(--p0)"></i>player 0</span>
+      <span><i style="background:var(--p1)"></i>player 1</span>
+      <span><i style="background:var(--win)"></i>P0 wins</span>
+      <span><i style="background:var(--loss)"></i>P0 loses</span>
+    </div>
+    <div id="drop">
+      <h3>Load a decision tree</h3>
+      <p>Drop a JSON file written by <code>poker-tree-export</code> here, or pick one below.
+         The launcher <code>tools/poker-tree-view</code> embeds the data for you.</p>
+      <input type="file" id="file" accept=".json,application/json">
+    </div>
+  </div>
+
+  <aside id="inspector">
+    <h2>Node</h2>
+    <p class="hint">Select a node in the tree to inspect it. Click a node to fold or unfold its subtree.</p>
+  </aside>
+</main>
+
+<script id="tree-data" type="application/json">__CFR_TREE_DATA__</script>
+<script>
+"use strict";
+
+/* Geometry of one laid-out row and column of the tree. */
+const NODE_W = 116;
+const NODE_H = 26;
+const ROW_GAP = 11;
+const COL_GAP = 138;
+/* Edge and node labels stop being legible below this zoom factor. */
+const LABEL_ZOOM = 0.42;
+/* Fitting never shrinks past this, so a tall tree stays readable and pans. */
+const MIN_FIT_ZOOM = 0.5;
+
+const svg = document.getElementById("svg");
+const viewport = document.getElementById("viewport");
+const linkLayer = document.getElementById("links");
+const nodeLayer = document.getElementById("nodes");
+const canvas = document.getElementById("canvas");
+const inspector = document.getElementById("inspector");
+const dropZone = document.getElementById("drop");
+
+let tree = null;          /* the parsed document */
+let viewRoot = null;      /* the node currently drawn as the tree root */
+let allNodes = [];        /* every node, in walk order */
+let visible = [];         /* nodes placed by the last layout pass */
+let selected = null;
+let matches = [];
+let matchSet = new Set();
+let matchIndex = 0;
+let view = { x: 60, y: 0, k: 1 };
+let maxTerminalMagnitude = 1;
+
+/* ------------------------------------------------------------ helpers --- */
+
+const escapeHtml = (text) =>
+  String(text).replace(/[&<>"']/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+const percent = (p) =>
+  p === 0 ? "0%" : p >= 0.9995 ? "100%" : (p * 100).toFixed(p < 0.001 ? 3 : 1) + "%";
+
+const signed = (v) => (v >= 0 ? "+" : "−") + Math.abs(v).toFixed(3);
+
+/* Blends between the loss and win colours so a terminal shows its payoff. */
+function terminalColor(ev) {
+  const t = Math.max(-1, Math.min(1, ev / maxTerminalMagnitude));
+  if (Math.abs(t) < 0.02) return "var(--chance)";
+  const strength = 0.35 + 0.65 * Math.abs(t);
+  const base = t > 0 ? "var(--win)" : "var(--loss)";
+  return `color-mix(in srgb, ${base} ${Math.round(strength * 100)}%, var(--panel-2))`;
+}
+
+function actorColor(node) {
+  if (node.kind === "chance") return "var(--chance)";
+  if (node.kind === "terminal") return terminalColor(node.ev);
+  return node.player === 0 ? "var(--p0)" : "var(--p1)";
+}
+
+/* --------------------------------------------------------- preparation --- */
+
+/*
+ * Links every node to its parent, measures each subtree, and groups the nodes
+ * that share an information set so the viewer can show what a player cannot
+ * distinguish.
+ */
+function prepare(root) {
+  allNodes = [];
+  maxTerminalMagnitude = 1;
+  let id = 0;
+
+  (function walk(node, parent, edge, depth) {
+    node.id = id++;
+    node.parent = parent;
+    node.edge = edge;
+    node.depth = depth;
+    node.collapsed = depth >= 2 && node.children && node.children.length > 0;
+    node.size = 1;
+    allNodes.push(node);
+    if (node.kind === "terminal")
+      maxTerminalMagnitude = Math.max(maxTerminalMagnitude, Math.abs(node.ev));
+    for (const child of node.children || []) {
+      walk(child.node, node, child, depth + 1);
+      node.size += child.node.size;
+    }
+  })(root, null, null, 0);
+
+  const groups = new Map();
+  for (const node of allNodes) {
+    if (node.kind !== "player") continue;
+    if (!groups.has(node.key)) groups.set(node.key, []);
+    groups.get(node.key).push(node);
+  }
+  for (const [, group] of groups)
+    for (const node of group) node.peers = group;
+}
+
+/* ------------------------------------------------------------- layout --- */
+
+function edgeIsHidden(edge) {
+  if (document.getElementById("hide-zero").checked && edge.p === 0) return true;
+  return edge.node.reach < reachThreshold();
+}
+
+function reachThreshold() {
+  const slider = Number(document.getElementById("reach").value);
+  /* The slider is perceptually logarithmic: 0 keeps everything. */
+  return slider === 0 ? -1 : Math.pow(10, -6 + (slider / 100) * 6);
+}
+
+function childrenOf(node) {
+  if (node.collapsed || !node.children) return [];
+  return node.children.filter((edge) => !edgeIsHidden(edge));
+}
+
+/* Places every visible node: one column per depth, one row per visible leaf. */
+function layout() {
+  visible = [];
+  let row = 0;
+
+  (function place(node) {
+    node.x = node.depth * (NODE_W + COL_GAP);
+    const kids = childrenOf(node);
+    node.visibleChildren = kids;
+    if (kids.length === 0) {
+      node.y = row * (NODE_H + ROW_GAP);
+      row += 1;
+    } else {
+      for (const edge of kids) place(edge.node);
+      node.y = (kids[0].node.y + kids[kids.length - 1].node.y) / 2;
+    }
+    visible.push(node);
+  })(viewRoot);
+
+  return { width: 0, height: row * (NODE_H + ROW_GAP) };
+}
+
+/* -------------------------------------------------------------- render --- */
+
+function render() {
+  layout();
+  const showLabels = view.k >= LABEL_ZOOM;
+  const links = [];
+  const nodes = [];
+
+  for (const node of visible) {
+    for (const edge of node.visibleChildren) {
+      const child = edge.node;
+      const x1 = node.x + NODE_W;
+      const y1 = node.y + NODE_H / 2;
+      const x2 = child.x;
+      const y2 = child.y + NODE_H / 2;
+      const bend = Math.max(24, (x2 - x1) * 0.45);
+      const width = (0.7 + 3.3 * edge.p).toFixed(2);
+      const opacity = (0.18 + 0.62 * Math.min(1, Math.sqrt(edge.p))).toFixed(3);
+      const dash = edge.p === 0 ? ' stroke-dasharray="2 3"' : "";
+
+      links.push(
+        `<path class="link" d="M${x1},${y1} C${x1 + bend},${y1} ${x2 - bend},${y2} ${x2},${y2}"` +
+        ` stroke="${actorColor(node)}" stroke-width="${width}" stroke-opacity="${opacity}"${dash}/>`
+      );
+      if (showLabels) {
+        links.push(
+          `<text class="link-label${edge.p === 0 ? " dim" : ""}" x="${x1 + (x2 - x1) / 2}"` +
+          ` y="${y1 + (y2 - y1) / 2 - 4}" text-anchor="middle">` +
+          `${escapeHtml(edge.action)} ${percent(edge.p)}</text>`
+        );
+      }
+    }
+  }
+
+  for (const node of visible) {
+    const classes = ["node"];
+    if (selected === node) classes.push("selected");
+    else if (selected && selected.kind === "player" && node.kind === "player" &&
+             node.key === selected.key) classes.push("peer");
+    if (matchSet.has(node)) classes.push("match");
+
+    const fill = actorColor(node);
+    const hidden = node.children && node.children.length > 0 && node.collapsed;
+    let body =
+      `<rect class="box" width="${NODE_W}" height="${NODE_H}" rx="6" fill="${fill}"` +
+      ` fill-opacity="${node.kind === "terminal" ? 0.9 : 0.86}" stroke="${fill}"/>`;
+
+    if (showLabels) {
+      body +=
+        `<text class="name" x="9" y="${NODE_H / 2}" fill="var(--bg)">` +
+        `${escapeHtml(node.label)}</text>` +
+        `<text class="ev" x="${NODE_W - 8}" y="${NODE_H / 2}" fill="var(--bg)">` +
+        `${signed(node.ev)}</text>`;
+      if (node.kind === "player") body += strategyBar(node);
+    }
+    if (hidden) {
+      body +=
+        `<circle cx="${NODE_W + 9}" cy="${NODE_H / 2}" r="8" fill="${fill}" fill-opacity="0.9"/>` +
+        `<text class="collapsed-badge" x="${NODE_W + 9}" y="${NODE_H / 2 + 0.5}">` +
+        `${node.size - 1 > 999 ? "999+" : node.size - 1}</text>`;
+    }
+    nodes.push(
+      `<g class="${classes.join(" ")}" data-id="${node.id}" transform="translate(${node.x},${node.y})">${body}</g>`
+    );
+  }
+
+  linkLayer.innerHTML = links.join("");
+  nodeLayer.innerHTML = nodes.join("");
+  applyTransform();
+}
+
+/* Draws the average strategy of a player node as a stacked bar under the box. */
+function strategyBar(node) {
+  const palette = ["#5b9cf8", "#f0a742", "#4ec98a", "#c98ade", "#ef6a72"];
+  let offset = 0;
+  let out = "";
+
+  for (let index = 0; index < node.children.length; index++) {
+    const width = node.children[index].p * NODE_W;
+    if (width > 0.4) {
+      out +=
+        `<rect x="${offset.toFixed(2)}" y="${NODE_H + 1.5}" width="${width.toFixed(2)}"` +
+        ` height="3.5" fill="${palette[index % palette.length]}" rx="1.75"/>`;
+    }
+    offset += width;
+  }
+  return out;
+}
+
+function applyTransform() {
+  viewport.setAttribute("transform", `translate(${view.x},${view.y}) scale(${view.k})`);
+}
+
+/* ---------------------------------------------------------- inspector --- */
+
+function pathTo(node) {
+  const steps = [];
+  for (let cursor = node; cursor && cursor.parent; cursor = cursor.parent)
+    steps.unshift({ action: cursor.edge.action, p: cursor.edge.p, actor: cursor.parent });
+  return steps;
+}
+
+function describe(node) {
+  const detail = node.detail || {};
+  const rows = [];
+  const kindLabel =
+    node.kind === "player" ? `Player ${node.player}` :
+    node.kind === "chance" ? "Chance" : "Terminal";
+  const kindColor = actorColor(node);
+
+  rows.push(`<dt>node</dt><dd><span class="pill" style="color:${kindColor};border-color:${kindColor}">${kindLabel}</span></dd>`);
+  rows.push(`<dt>label</dt><dd>${escapeHtml(node.label)}</dd>`);
+  rows.push(`<dt>reach</dt><dd>${percent(node.reach)} <span class="hint">(${node.reach.toExponential(3)})</span></dd>`);
+  rows.push(`<dt>${node.kind === "terminal" ? "payoff P0" : "EV for P0"}</dt><dd>${signed(node.ev)}</dd>`);
+  if (detail.phase) rows.push(`<dt>phase</dt><dd>${escapeHtml(detail.phase)}</dd>`);
+  if (detail.private) rows.push(`<dt>private</dt><dd>P0 ${escapeHtml(detail.private[0])} · P1 ${escapeHtml(detail.private[1])}</dd>`);
+  if (detail.board) rows.push(`<dt>board</dt><dd>${escapeHtml(detail.board)}</dd>`);
+  if (detail.pot !== undefined) rows.push(`<dt>pot</dt><dd>${detail.pot}</dd>`);
+  if (detail.contributions) rows.push(`<dt>committed</dt><dd>P0 ${detail.contributions[0]} · P1 ${detail.contributions[1]}</dd>`);
+  if (detail.history) rows.push(`<dt>history</dt><dd>${detail.history.length ? escapeHtml(detail.history.join(" · ")) : "—"}</dd>`);
+
+  let html = `<h2>Node</h2><dl class="kv">${rows.join("")}</dl>`;
+
+  if (node.kind === "player") {
+    const peers = node.peers ? node.peers.length : 1;
+    html +=
+      `<h2>Information set</h2><dl class="kv">` +
+      `<dt>label</dt><dd>${escapeHtml(node.infoset)}</dd>` +
+      `<dt>key</dt><dd>${node.key}</dd>` +
+      `<dt>trained</dt><dd>${node.known ? "yes" : "no — uniform fallback"}</dd>` +
+      `<dt>states</dt><dd>${peers} indistinguishable ${peers === 1 ? "state" : "states"}</dd>` +
+      `</dl>`;
+  }
+
+  if (node.children && node.children.length > 0) {
+    const palette = ["#5b9cf8", "#f0a742", "#4ec98a", "#c98ade", "#ef6a72"];
+    const heading = node.kind === "chance" ? "Chance outcomes" : "Average strategy";
+    const bars = node.children.map((edge, index) =>
+      `<div class="bar-row"><span>${escapeHtml(edge.action)}</span>` +
+      `<span class="bar-track"><span class="bar-fill" style="width:${(edge.p * 100).toFixed(2)}%;` +
+      `background:${node.kind === "chance" ? "var(--chance)" : palette[index % palette.length]}"></span></span>` +
+      `<span class="bar-val">${percent(edge.p)}</span></div>`).join("");
+    html += `<h2>${heading}</h2><div class="bars">${bars}</div>`;
+  }
+
+  const steps = pathTo(node);
+  html += `<h2>Path from root</h2>`;
+  html += steps.length === 0
+    ? `<p class="hint">This is the root.</p>`
+    : `<div class="path">` + steps.map((step, index) =>
+        `${index + 1}. <span class="step">${escapeHtml(step.action)}</span> ` +
+        `<span class="prob">${percent(step.p)}</span>`).join("<br>") + `</div>`;
+
+  inspector.innerHTML = html;
+}
+
+function select(node) {
+  selected = node;
+  describe(node);
+  render();
+}
+
+/* ------------------------------------------------------- interactions --- */
+
+/*
+ * Draws node as the root of the visible tree.
+ *
+ * Focusing keeps the whole document loaded; it only changes where the layout
+ * starts, which is what makes the Leduc tree navigable one branch at a time.
+ */
+function focusSubtree(node) {
+  viewRoot = node;
+  const slider = document.getElementById("depth");
+  const remaining = tree.stats.depth - node.depth;
+
+  slider.max = String(Math.max(1, remaining));
+  slider.value = String(Math.min(2, Math.max(1, remaining)));
+  setDepth(Number(slider.value));
+  drawCrumbs();
+  select(node);
+  fit();
+}
+
+function drawCrumbs() {
+  const chain = [];
+  for (let cursor = viewRoot; cursor; cursor = cursor.parent) chain.unshift(cursor);
+
+  const parts = chain.map((node, index) => {
+    const name = index === 0 ? "root" : node.edge.action;
+    const here = node === viewRoot ? " here" : "";
+    return `<button class="crumb${here}" data-id="${node.id}">${escapeHtml(name)}</button>`;
+  });
+  document.getElementById("crumbs").innerHTML =
+    parts.join('<span class="sep">›</span>') +
+    `<span class="tip">double-click a node to focus its subtree</span>`;
+}
+
+document.getElementById("crumbs").addEventListener("click", (event) => {
+  const button = event.target.closest(".crumb");
+  if (!button) return;
+  const node = allNodes[Number(button.dataset.id)];
+  if (node !== viewRoot) focusSubtree(node);
+});
+
+function expandAncestors(node) {
+  for (let cursor = node.parent; cursor; cursor = cursor.parent)
+    cursor.collapsed = false;
+}
+
+/* Collapses everything deeper than depth levels below the focused root. */
+function setDepth(depth) {
+  const base = viewRoot ? viewRoot.depth : 0;
+
+  for (const node of allNodes)
+    node.collapsed = node.depth >= base + depth && !!(node.children && node.children.length);
+  document.getElementById("depth-value").textContent = depth;
+}
+
+/* Centres the view on one node without changing the zoom factor. */
+function focusOn(node) {
+  const box = canvas.getBoundingClientRect();
+  view.x = box.width / 2 - (node.x + NODE_W / 2) * view.k;
+  view.y = box.height / 2 - (node.y + NODE_H / 2) * view.k;
+  applyTransform();
+}
+
+/*
+ * Frames the visible tree.
+ *
+ * The measurement uses the rendered geometry, so it accounts for edge labels
+ * and collapse badges as well as the boxes. A deep tree is taller than any
+ * window, so the zoom stops at MIN_FIT_ZOOM and the view anchors on the
+ * selected node instead of shrinking the labels away.
+ */
+function fit() {
+  render();
+  let box;
+  try {
+    box = viewport.getBBox();
+  } catch (error) {
+    return;
+  }
+  if (box.width === 0 || box.height === 0) return;
+
+  const frame = canvas.getBoundingClientRect();
+  const pad = 34;
+  const usableWidth = frame.width - pad * 2;
+  const usableHeight = frame.height - pad * 2;
+  const previous = view.k;
+
+  view.k = Math.max(MIN_FIT_ZOOM,
+    Math.min(1.6, Math.min(usableWidth / box.width, usableHeight / box.height)));
+  view.x = pad - box.x * view.k;
+
+  const scaledHeight = box.height * view.k;
+  if (scaledHeight <= usableHeight) {
+    view.y = pad - box.y * view.k + (usableHeight - scaledHeight) / 2;
+  } else {
+    const anchor = selected && visible.includes(selected) ? selected : viewRoot;
+    view.y = frame.height / 2 - (anchor.y + NODE_H / 2) * view.k;
+  }
+  /* A changed zoom can cross the label threshold, so lay the marks out again. */
+  if ((previous >= LABEL_ZOOM) !== (view.k >= LABEL_ZOOM)) render();
+  else applyTransform();
+}
+
+nodeLayer.addEventListener("click", (event) => {
+  const group = event.target.closest(".node");
+  if (!group) return;
+  const node = allNodes[Number(group.dataset.id)];
+  /* A double-click also raises two clicks, so defer the fold until it is not. */
+  clearTimeout(node.foldTimer);
+  node.foldTimer = setTimeout(() => {
+    if (node.children && node.children.length > 0) node.collapsed = !node.collapsed;
+    select(node);
+  }, 190);
+});
+
+nodeLayer.addEventListener("dblclick", (event) => {
+  const group = event.target.closest(".node");
+  if (!group) return;
+  const node = allNodes[Number(group.dataset.id)];
+  clearTimeout(node.foldTimer);
+  if (node.children && node.children.length > 0) focusSubtree(node);
+});
+
+let drag = null;
+canvas.addEventListener("pointerdown", (event) => {
+  if (event.target.closest(".node")) return;
+  drag = { x: event.clientX - view.x, y: event.clientY - view.y };
+  canvas.classList.add("dragging");
+  canvas.setPointerCapture(event.pointerId);
+});
+canvas.addEventListener("pointermove", (event) => {
+  if (!drag) return;
+  view.x = event.clientX - drag.x;
+  view.y = event.clientY - drag.y;
+  applyTransform();
+});
+canvas.addEventListener("pointerup", () => { drag = null; canvas.classList.remove("dragging"); });
+canvas.addEventListener("pointercancel", () => { drag = null; canvas.classList.remove("dragging"); });
+
+canvas.addEventListener("wheel", (event) => {
+  event.preventDefault();
+  const box = canvas.getBoundingClientRect();
+  const px = event.clientX - box.left;
+  const py = event.clientY - box.top;
+  const previous = view.k;
+  const factor = Math.exp(-event.deltaY * 0.0015);
+  view.k = Math.max(0.04, Math.min(3, view.k * factor));
+  view.x = px - (px - view.x) * (view.k / previous);
+  view.y = py - (py - view.y) * (view.k / previous);
+  /* Labels appear and disappear at a zoom threshold, so re-render there. */
+  if ((previous >= LABEL_ZOOM) !== (view.k >= LABEL_ZOOM)) render();
+  else applyTransform();
+}, { passive: false });
+
+document.getElementById("depth").addEventListener("input", (event) => {
+  setDepth(Number(event.target.value));
+  render();
+});
+document.getElementById("reach").addEventListener("input", (event) => {
+  const value = Number(event.target.value);
+  document.getElementById("reach-value").textContent =
+    value === 0 ? "0" : percent(reachThreshold());
+  render();
+});
+document.getElementById("hide-zero").addEventListener("change", render);
+document.getElementById("fit").addEventListener("click", fit);
+document.getElementById("theme").addEventListener("click", () => {
+  const stamped = document.documentElement.getAttribute("data-theme");
+  const effective = stamped ||
+    (window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark");
+  document.documentElement.setAttribute("data-theme",
+    effective === "light" ? "dark" : "light");
+  /* Node fills are resolved at draw time, so redraw them in the new palette. */
+  render();
+});
+
+function runSearch() {
+  const query = document.getElementById("search").value.trim().toLowerCase();
+  matches = query === "" ? [] : allNodes.filter((node) =>
+    (node.infoset && node.infoset.toLowerCase().includes(query)) ||
+    node.label.toLowerCase().includes(query));
+  matchSet = new Set(matches);
+  matchIndex = 0;
+  document.getElementById("search-count").textContent =
+    query === "" ? "" : matches.length === 0 ? "none" : `1/${matches.length}`;
+  if (matches.length > 0) revealMatch(0);
+  else render();
+}
+
+/* Reports whether node lies inside the focused subtree. */
+function withinView(node) {
+  for (let cursor = node; cursor; cursor = cursor.parent)
+    if (cursor === viewRoot) return true;
+  return false;
+}
+
+function revealMatch(index) {
+  if (matches.length === 0) return;
+  matchIndex = (index + matches.length) % matches.length;
+  const node = matches[matchIndex];
+  if (!withinView(node)) {
+    viewRoot = tree.root;
+    document.getElementById("depth").max = String(tree.stats.depth);
+    drawCrumbs();
+  }
+  expandAncestors(node);
+  document.getElementById("search-count").textContent = `${matchIndex + 1}/${matches.length}`;
+  select(node);
+  focusOn(node);
+}
+
+document.getElementById("search").addEventListener("input", runSearch);
+document.getElementById("search-next").addEventListener("click", () => revealMatch(matchIndex + 1));
+document.getElementById("search-prev").addEventListener("click", () => revealMatch(matchIndex - 1));
+
+/* ------------------------------------------------------------ loading --- */
+
+function load(document_) {
+  tree = document_;
+  prepare(tree.root);
+  viewRoot = tree.root;
+  selected = null;
+  matches = [];
+  matchSet = new Set();
+
+  document.getElementById("game-name").textContent = tree.game;
+  /* Name the tab after the game, unless the page was given its own name. */
+  if (document.title === "Poker Decision Tree")
+    document.title = `Decision tree · ${tree.game}`;
+  document.getElementById("meta").innerHTML =
+    `<span>strategy <b>${escapeHtml(tree.source)}</b></span>` +
+    `<span>variant <b>${escapeHtml(tree.variant)}</b></span>` +
+    `<span>iterations <b>${tree.trainingIterations.toLocaleString()}</b></span>` +
+    `<span>nodes <b>${tree.stats.nodes.toLocaleString()}</b></span>` +
+    `<span>infosets <b>${new Set(allNodes.filter((n) => n.kind === "player").map((n) => n.key)).size}</b></span>` +
+    `<span>root EV <b>${signed(tree.root.ev)}</b></span>`;
+
+  const depthSlider = document.getElementById("depth");
+  depthSlider.max = String(tree.stats.depth);
+  depthSlider.value = String(Math.min(2, tree.stats.depth));
+  setDepth(Number(depthSlider.value));
+
+  dropZone.classList.remove("show");
+  drawCrumbs();
+  select(tree.root);
+  fit();
+}
+
+function loadText(text) {
+  try {
+    load(JSON.parse(text));
+  } catch (error) {
+    dropZone.classList.add("show");
+    dropZone.querySelector("p").textContent = "That file is not a valid tree export: " + error.message;
+  }
+}
+
+document.getElementById("file").addEventListener("change", (event) => {
+  const file = event.target.files[0];
+  if (file) file.text().then(loadText);
+});
+for (const name of ["dragenter", "dragover"])
+  canvas.addEventListener(name, (event) => { event.preventDefault(); dropZone.classList.add("over"); });
+canvas.addEventListener("dragleave", () => dropZone.classList.remove("over"));
+canvas.addEventListener("drop", (event) => {
+  event.preventDefault();
+  dropZone.classList.remove("over");
+  const file = event.dataTransfer.files[0];
+  if (file) file.text().then(loadText);
+});
+
+window.addEventListener("resize", applyTransform);
+
+const embedded = document.getElementById("tree-data").textContent.trim();
+if (embedded && !embedded.startsWith("__CFR")) loadText(embedded);
+else dropZone.classList.add("show");
+</script>
+</body>
+</html>

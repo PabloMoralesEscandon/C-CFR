@@ -96,6 +96,13 @@ make test-blackjack
 Use `make test-blackjack-cli` to check only the executable's arguments and help
 output.
 
+The development tools in `tools/` are not part of `make test`. Check the
+decision-tree exporter separately with:
+
+```sh
+make test-poker-tree-export
+```
+
 Run allocation fault injection:
 
 ```sh
@@ -423,6 +430,26 @@ A temporary probe measured the child process with `CLOCK_MONOTONIC` and
 
 This measurement is a reference, not a performance guarantee. The result can
 change with the compiler, hardware, and system load.
+
+## Inspecting a poker strategy as a decision tree
+
+`tools/` holds development aids that live outside the library and the
+applications. One of them draws a trained Kuhn or Leduc Poker strategy as an
+interactive decision tree in a browser tab:
+
+```sh
+tools/poker-tree-view kuhn
+tools/poker-tree-view leduc --load leduc.bin
+```
+
+The launcher trains or loads a strategy, walks the complete tree through the
+public `cfr_game_*` operations, and opens the graph. Every edge is labelled
+with the probability the acting entity gives that action, and every node shows
+the expected utility of player zero below it, so the root node repeats the
+`average_value_player_0` that training reports.
+
+See [`tools/README.md`](tools/README.md) for the controls, the underlying
+`poker-tree-export` program, and the JSON it writes.
 
 ## Using blackjack
 

@@ -29,9 +29,11 @@ APP_SOURCE := app/cfr_cli.c
 LEDUC_APP_SOURCE := app/leduc_cli.c
 BLACKJACK_APP_SOURCE := app/blackjack_cli.c
 BLACKJACK_COMPACT_EVAL_SOURCE := tools/blackjack_compact_eval.c
+POKER_TREE_EXPORT_SOURCE := tools/poker_tree_export.c
 CLI_TEST_SCRIPT := tests/test_cli.sh
 LEDUC_CLI_TEST_SCRIPT := tests/test_leduc_cli.sh
 BLACKJACK_CLI_TEST_SCRIPT := tests/test_blackjack_cli.sh
+POKER_TREE_EXPORT_TEST_SCRIPT := tools/test_poker_tree_export.sh
 
 TEST_SOURCES := \
 	tests/test_main.c \
@@ -65,6 +67,8 @@ RELEASE_BLACKJACK_APP_OBJECT := \
 	$(patsubst %.c,$(RELEASE_DIR)/%.o,$(BLACKJACK_APP_SOURCE))
 RELEASE_BLACKJACK_COMPACT_EVAL_OBJECT := \
 	$(patsubst %.c,$(RELEASE_DIR)/%.o,$(BLACKJACK_COMPACT_EVAL_SOURCE))
+RELEASE_POKER_TREE_EXPORT_OBJECT := \
+	$(patsubst %.c,$(RELEASE_DIR)/%.o,$(POKER_TREE_EXPORT_SOURCE))
 DEBUG_BLACKJACK_APP_OBJECT := \
 	$(patsubst %.c,$(DEBUG_DIR)/%.o,$(BLACKJACK_APP_SOURCE))
 
@@ -80,6 +84,7 @@ DEBUG_LEDUC_BINARY := $(DEBUG_DIR)/cfr-leduc
 RELEASE_BLACKJACK_BINARY := $(RELEASE_DIR)/cfr-blackjack
 RELEASE_BLACKJACK_COMPACT_EVAL_BINARY := \
 	$(RELEASE_DIR)/blackjack-compact-eval
+RELEASE_POKER_TREE_EXPORT_BINARY := $(RELEASE_DIR)/poker-tree-export
 DEBUG_BLACKJACK_BINARY := $(DEBUG_DIR)/cfr-blackjack
 
 DEPENDENCY_FILES := \
@@ -93,9 +98,11 @@ DEPENDENCY_FILES := \
 	$(DEBUG_LEDUC_APP_OBJECT:.o=.d) \
 	$(RELEASE_BLACKJACK_APP_OBJECT:.o=.d) \
 	$(RELEASE_BLACKJACK_COMPACT_EVAL_OBJECT:.o=.d) \
+	$(RELEASE_POKER_TREE_EXPORT_OBJECT:.o=.d) \
 	$(DEBUG_BLACKJACK_APP_OBJECT:.o=.d)
 
-.PHONY: all leduc blackjack blackjack-compact-eval test test-leduc-cli \
+.PHONY: all leduc blackjack blackjack-compact-eval poker-tree-export \
+	test test-leduc-cli test-poker-tree-export \
 	test-blackjack test-blackjack-cli test-alloc \
 	test-alloc-run test-asan test-ubsan test-sanitize debug clean
 
@@ -108,12 +115,20 @@ blackjack: $(RELEASE_BLACKJACK_BINARY)
 
 blackjack-compact-eval: $(RELEASE_BLACKJACK_COMPACT_EVAL_BINARY)
 
+poker-tree-export: $(RELEASE_POKER_TREE_EXPORT_BINARY)
+
 test: $(TEST_BINARY) $(DEBUG_BINARY) $(DEBUG_LEDUC_BINARY) \
 	$(DEBUG_BLACKJACK_BINARY)
 	$(TEST_ENV) ./$(TEST_BINARY)
 	$(TEST_ENV) ./$(CLI_TEST_SCRIPT) ./$(DEBUG_BINARY)
 	$(TEST_ENV) ./$(LEDUC_CLI_TEST_SCRIPT) ./$(DEBUG_LEDUC_BINARY)
 	$(TEST_ENV) ./$(BLACKJACK_CLI_TEST_SCRIPT) ./$(DEBUG_BLACKJACK_BINARY)
+
+test-poker-tree-export: $(RELEASE_POKER_TREE_EXPORT_BINARY) \
+		$(RELEASE_BINARY) $(RELEASE_LEDUC_BINARY)
+	$(TEST_ENV) ./$(POKER_TREE_EXPORT_TEST_SCRIPT) \
+		./$(RELEASE_POKER_TREE_EXPORT_BINARY) ./$(RELEASE_BINARY) \
+		./$(RELEASE_LEDUC_BINARY)
 
 test-leduc-cli: $(DEBUG_LEDUC_BINARY)
 	$(TEST_ENV) ./$(LEDUC_CLI_TEST_SCRIPT) ./$(DEBUG_LEDUC_BINARY)
@@ -205,6 +220,12 @@ $(RELEASE_BLACKJACK_COMPACT_EVAL_BINARY): \
 		$(RELEASE_BLACKJACK_COMPACT_EVAL_OBJECT) $(RELEASE_LIBRARY)
 	@mkdir -p $(dir $@)
 	$(CC) $(LDFLAGS) $(RELEASE_BLACKJACK_COMPACT_EVAL_OBJECT) \
+		$(RELEASE_LIBRARY) $(LDLIBS) -o $@
+
+$(RELEASE_POKER_TREE_EXPORT_BINARY): $(RELEASE_POKER_TREE_EXPORT_OBJECT) \
+		$(RELEASE_LIBRARY)
+	@mkdir -p $(dir $@)
+	$(CC) $(LDFLAGS) $(RELEASE_POKER_TREE_EXPORT_OBJECT) \
 		$(RELEASE_LIBRARY) $(LDLIBS) -o $@
 
 $(DEBUG_BLACKJACK_BINARY): $(DEBUG_BLACKJACK_APP_OBJECT) $(DEBUG_LIBRARY)

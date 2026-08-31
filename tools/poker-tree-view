@@ -1,0 +1,148 @@
+#!/bin/sh
+#
+# Opens the Kuhn Poker or Leduc Poker decision tree in a browser tab.
+#
+# The script builds the exporter if needed, obtains an average strategy, walks
+# the game tree, embeds the resulting JSON in a copy of the viewer page, and
+# hands that page to the browser. Nothing is written inside the repository.
+#
+# Usage:
+#   tools/poker-tree-view kuhn
+#   tools/poker-tree-view leduc --load leduc.bin
+#   tools/poker-tree-view kuhn --iterations 500000 --cfr-plus
+#   tools/poker-tree-view leduc --strategy leduc-strategy.txt --no-open
+
+set -eu
+
+program_name=$(basename "$0")
+repository_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+viewer_template="$repository_root/tools/poker_tree_view.html"
+exporter="$repository_root/build/release/poker-tree-export"
+
+game=""
+checkpoint=""
+strategy=""
+iterations=""
+cfr_plus=""
+output=""
+open_browser="yes"
+
+usage() {
+    cat >&2 <<USAGE
+Usage: $program_name kuhn|leduc [options]
+
+Options:
+  --load FILE        Use the average strategy in a binary checkpoint.
+  --strategy FILE    Use the average strategy in an --export-strategy text file.
+  --iterations N     Train for N iterations first instead of loading a strategy.
+  --cfr-plus         Train the new strategy with CFR+.
+  --output FILE      Write the page to FILE instead of a temporary file.
+  --no-open          Write the page but do not launch a browser.
+  --help, -h         Display this help.
+
+Without --load, --strategy, or --iterations the script trains a default run:
+200000 iterations for Kuhn Poker and 20000 for Leduc Poker.
+USAGE
+}
+
+fail() {
+    printf '%s: %s\n' "$program_name" "$1" >&2
+    exit 2
+}
+
+if [ "$#" -eq 0 ]; then
+    usage
+    exit 2
+fi
+
+case "$1" in
+    kuhn|leduc) game="$1"; shift ;;
+    --help|-h) usage; exit 0 ;;
+    *) fail "first argument must be kuhn or leduc" ;;
+esac
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --load) [ "$#" -ge 2 ] || fail "--load requires a value"; checkpoint="$2"; shift 2 ;;
+        --strategy) [ "$#" -ge 2 ] || fail "--strategy requires a value"; strategy="$2"; shift 2 ;;
+        --iterations) [ "$#" -ge 2 ] || fail "--iterations requires a value"; iterations="$2"; shift 2 ;;
+        --output) [ "$#" -ge 2 ] || fail "--output requires a value"; output="$2"; shift 2 ;;
+        --cfr-plus) cfr_plus="--cfr-plus"; shift ;;
+        --no-open) open_browser="no"; shift ;;
+        --help|-h) usage; exit 0 ;;
+        *) fail "unknown option '$1'" ;;
+    esac
+done
+
+if [ -n "$checkpoint" ] && [ -n "$strategy" ]; then
+    fail "--load and --strategy are mutually exclusive"
+fi
+if [ -n "$iterations" ] && { [ -n "$checkpoint" ] || [ -n "$strategy" ]; }; then
+    fail "--iterations cannot be combined with --load or --strategy"
+fi
+[ -f "$viewer_template" ] || fail "missing viewer page '$viewer_template'"
+
+work_directory=$(mktemp -d "${TMPDIR:-/tmp}/poker-tree-view.XXXXXX")
+cleanup() { rm -rf -- "$work_directory"; }
+trap cleanup EXIT INT TERM
+
+# The exporter and, when training is needed, the matching CLI.
+make -C "$repository_root" poker-tree-export >&2
+if [ -z "$checkpoint" ] && [ -z "$strategy" ]; then
+    if [ "$game" = kuhn ]; then
+        trainer="$repository_root/build/release/cfr-kuhn"
+        make -C "$repository_root" build/release/cfr-kuhn >&2
+        : "${iterations:=200000}"
+    else
+        trainer="$repository_root/build/release/cfr-leduc"
+        make -C "$repository_root" leduc >&2
+        : "${iterations:=20000}"
+    fi
+    checkpoint="$work_directory/strategy.bin"
+    printf '%s: training %s for %s iterations...\n' "$program_name" "$game" \
+        "$iterations" >&2
+    # shellcheck disable=SC2086
+    "$trainer" --iterations "$iterations" $cfr_plus --save "$checkpoint" >&2
+fi
+
+tree_json="$work_directory/tree.json"
+if [ -n "$strategy" ]; then
+    "$exporter" --game "$game" --strategy "$strategy" --output "$tree_json"
+else
+    "$exporter" --game "$game" --load "$checkpoint" --output "$tree_json"
+fi
+
+# The page outlives the script so the browser can still read it, and it is
+# written outside the repository unless the caller asks for another location.
+if [ -z "$output" ]; then
+    output="${TMPDIR:-/tmp}/poker-tree-$game.html"
+fi
+
+# Splice the JSON into the viewer in place of its placeholder line. awk avoids
+# the shell and sed limits on very large, backslash-bearing replacements.
+awk -v data_file="$tree_json" '
+    /__CFR_TREE_DATA__/ {
+        prefix = substr($0, 1, index($0, "__CFR_TREE_DATA__") - 1)
+        suffix = substr($0, index($0, "__CFR_TREE_DATA__") + length("__CFR_TREE_DATA__"))
+        printf "%s", prefix
+        while ((getline line < data_file) > 0) printf "%s", line
+        close(data_file)
+        print suffix
+        next
+    }
+    { print }
+' "$viewer_template" > "$output"
+
+printf '%s: wrote %s\n' "$program_name" "$output" >&2
+
+if [ "$open_browser" = yes ]; then
+    for opener in "${BROWSER:-}" xdg-open open sensible-browser; do
+        [ -n "$opener" ] || continue
+        if command -v "$opener" >/dev/null 2>&1; then
+            "$opener" "$output" >/dev/null 2>&1 &
+            exit 0
+        fi
+    done
+    printf '%s: no browser launcher found; open %s manually\n' "$program_name" \
+        "$output" >&2
+fi
