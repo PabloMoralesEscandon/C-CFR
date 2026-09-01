@@ -4,6 +4,7 @@
 #include <stdlib.h>
 
 #include "cfr/info_store.h"
+#include "info_node_internal.h"
 #include "info_store_internal.h"
 
 enum { INITIAL_STORE_CAPACITY = 8 };
@@ -197,15 +198,9 @@ Status cfr_info_store_get_or_create(InfoStore *info_store, InfoSetKey key,
         *node_out = info_store->entries[index].node;
         return CFR_STATUS_SUCCESS;
     }
-    InfoNode *temp = malloc(sizeof(InfoNode));
-    if (temp == NULL)
-        return CFR_STATUS_OUT_OF_MEMORY;
-    *temp = (InfoNode){0};
-    Status init = cfr_info_node_init(temp, key, action_count);
+    InfoNode *temp = NULL;
+    Status init = cfr_info_node_create(key, action_count, &temp);
     if (init != CFR_STATUS_SUCCESS) {
-        cfr_info_node_destroy(temp);
-        free(temp);
-        temp = NULL;
         return init;
     }
     if (result == LOCATE_STORE_FULL ||

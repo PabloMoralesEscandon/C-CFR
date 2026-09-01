@@ -464,6 +464,7 @@ static void test_sorted_visit(void) {
 
 #ifdef CFR_TEST_WRAP_ALLOCATOR
 static void check_failed_creation(InfoStore *store,
+                                  size_t action_count,
                                   size_t successful_allocations) {
     const InfoStoreStats before = get_stats(store);
     const size_t live_before = test_allocator_live_allocations();
@@ -471,7 +472,7 @@ static void check_failed_creation(InfoStore *store,
     InfoStoreStats after;
 
     test_allocator_fail_after(successful_allocations);
-    CHECK(cfr_info_store_get_or_create(store, 1234567, 3, &output) ==
+    CHECK(cfr_info_store_get_or_create(store, 1234567, action_count, &output) ==
           CFR_STATUS_OUT_OF_MEMORY);
     CHECK(output == sentinel_node());
     test_allocator_disable_failures();
@@ -497,9 +498,10 @@ static void test_allocation_failures(void) {
 
     test_allocator_disable_failures();
     initialize_store(&store);
-    check_failed_creation(&store, 0);
-    check_failed_creation(&store, 1);
-    check_failed_creation(&store, 2);
+    check_failed_creation(&store, 3, 0);
+    check_failed_creation(&store, 4, 0);
+    check_failed_creation(&store, 4, 1);
+    check_failed_creation(&store, 4, 2);
 
     before = get_stats(&store);
     live_before = test_allocator_live_allocations();
@@ -542,6 +544,7 @@ static void test_allocation_failures(void) {
     initialize_store(&store);
     CHECK(cfr_info_store_get_or_create(&store, 42, 3, &node) ==
           CFR_STATUS_SUCCESS);
+    CHECK(test_allocator_live_allocations() == 2);
     {
         VisitContext context = {0};
         const size_t visit_live_before = test_allocator_live_allocations();
