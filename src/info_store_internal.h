@@ -5,6 +5,7 @@
 
 struct CfrInfoStoreEntry {
     InfoNode *node;
+    InfoSetKey key;
 };
 
 #endif

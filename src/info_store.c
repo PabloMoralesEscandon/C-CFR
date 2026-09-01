@@ -58,12 +58,12 @@ static LocateResult locate(const InfoStore *info_store, size_t *collision_count,
     size_t index = initial_index(key, info_store->capacity);
     for (size_t i = 0; i < info_store->capacity; i++) {
         size_t current_index = (index + i) & (info_store->capacity - 1);
-        InfoStoreEntry slot = info_store->entries[current_index];
-        if (slot.node == NULL) {
+        const InfoStoreEntry *slot = &info_store->entries[current_index];
+        if (slot->node == NULL) {
             *index_out = current_index;
             return LOCATE_EMPTY_SLOT_FOUND;
         }
-        if (slot.node->key == key) {
+        if (slot->key == key) {
             *index_out = current_index;
             return LOCATE_ENTRY_FOUND;
         }
@@ -88,7 +88,7 @@ static Status resize(InfoStore *info_store) {
     if (temp_entries == NULL)
         return CFR_STATUS_OUT_OF_MEMORY;
     for (size_t i = 0; i < new_capacity; i++)
-        temp_entries[i].node = NULL;
+        temp_entries[i] = (InfoStoreEntry){0};
     InfoStore temp_store = {0};
     temp_store.capacity = new_capacity;
     temp_store.entries = temp_entries;
@@ -96,14 +96,14 @@ static Status resize(InfoStore *info_store) {
     for (size_t i = 0; i < info_store->capacity; i++) {
         if (info_store->entries[i].node != NULL) {
             size_t index;
-            LocateResult result = locate(
-                &temp_store, NULL, info_store->entries[i].node->key, &index);
+            LocateResult result = locate(&temp_store, NULL,
+                                         info_store->entries[i].key, &index);
             if (result != LOCATE_EMPTY_SLOT_FOUND) {
                 free(temp_entries);
                 return CFR_STATUS_INVALID_ARGUMENT;
             }
 
-            temp_entries[index].node = info_store->entries[i].node;
+            temp_entries[index] = info_store->entries[i];
             ++temp_store.size;
         }
     }
@@ -128,7 +128,7 @@ Status cfr_info_store_init(InfoStore *info_store) {
     if (temp == NULL)
         return CFR_STATUS_OUT_OF_MEMORY;
     for (size_t i = 0; i < INITIAL_STORE_CAPACITY; i++)
-        temp[i].node = NULL;
+        temp[i] = (InfoStoreEntry){0};
     info_store->capacity = INITIAL_STORE_CAPACITY;
     info_store->growth_count = 0;
     info_store->collision_count = 0;
@@ -145,6 +145,7 @@ Status cfr_info_store_destroy(InfoStore *info_store) {
             cfr_info_node_destroy(info_store->entries[i].node);
             free(info_store->entries[i].node);
             info_store->entries[i].node = NULL;
+            info_store->entries[i].key = 0;
         }
     }
     free(info_store->entries);
@@ -225,6 +226,7 @@ Status cfr_info_store_get_or_create(InfoStore *info_store, InfoSetKey key,
             return CFR_STATUS_INVALID_ARGUMENT;
         }
     }
+    info_store->entries[index].key = key;
     info_store->entries[index].node = temp;
     ++info_store->size;
     *node_out = info_store->entries[index].node;
