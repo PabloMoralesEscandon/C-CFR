@@ -76,12 +76,10 @@ static LocateResult locate(const InfoStore *info_store, size_t *collision_count,
     return LOCATE_STORE_FULL;
 }
 
-static Status resize(InfoStore *info_store) {
-    if (info_store == NULL)
+static Status rebuild(InfoStore *info_store, size_t new_capacity) {
+    if (info_store == NULL || info_store->entries == NULL ||
+        info_store->capacity == 0 || new_capacity <= info_store->capacity)
         return CFR_STATUS_INVALID_ARGUMENT;
-    if (info_store->capacity > (SIZE_MAX / 2))
-        return CFR_STATUS_OUT_OF_MEMORY;
-    size_t new_capacity = 2 * info_store->capacity;
     if (new_capacity > (SIZE_MAX / sizeof(InfoStoreEntry)))
         return CFR_STATUS_OUT_OF_MEMORY;
     InfoStoreEntry *temp_entries =
@@ -119,6 +117,14 @@ static Status resize(InfoStore *info_store) {
     return CFR_STATUS_SUCCESS;
 }
 
+static Status resize(InfoStore *info_store) {
+    if (info_store == NULL)
+        return CFR_STATUS_INVALID_ARGUMENT;
+    if (info_store->capacity > (SIZE_MAX / 2))
+        return CFR_STATUS_OUT_OF_MEMORY;
+    return rebuild(info_store, 2 * info_store->capacity);
+}
+
 Status cfr_info_store_init(InfoStore *info_store) {
     if (info_store == NULL)
         return CFR_STATUS_INVALID_ARGUMENT;
@@ -136,6 +142,23 @@ Status cfr_info_store_init(InfoStore *info_store) {
     info_store->size = 0;
     info_store->entries = temp;
     return CFR_STATUS_SUCCESS;
+}
+
+Status cfr_info_store_reserve(InfoStore *info_store,
+                              size_t minimum_node_capacity) {
+    if (info_store == NULL || info_store->entries == NULL ||
+        info_store->capacity == 0) {
+        return CFR_STATUS_INVALID_ARGUMENT;
+    }
+    size_t target = info_store->capacity;
+    while (minimum_node_capacity > target - target / 4) {
+        if (target > SIZE_MAX / 2)
+            return CFR_STATUS_OUT_OF_MEMORY;
+        target *= 2;
+    }
+    if (target == info_store->capacity)
+        return CFR_STATUS_SUCCESS;
+    return rebuild(info_store, target);
 }
 
 Status cfr_info_store_destroy(InfoStore *info_store) {

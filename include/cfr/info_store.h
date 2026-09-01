@@ -70,6 +70,19 @@ typedef Status (*InfoStoreConstVisitor)(const InfoNode *node, void *context);
 Status cfr_info_store_init(InfoStore *info_store);
 
 /*
+ * Ensures that info_store can hold minimum_node_capacity nodes without growth.
+ *
+ * info_store must be initialized. The function preserves all nodes and their
+ * addresses. It does not reduce the current capacity. A zero minimum is a
+ * successful no-op. A successful capacity increase counts as one growth.
+ *
+ * An invalid argument produces CFR_STATUS_INVALID_ARGUMENT. An allocation
+ * failure produces CFR_STATUS_OUT_OF_MEMORY and preserves the store.
+ */
+Status cfr_info_store_reserve(InfoStore *info_store,
+                              size_t minimum_node_capacity);
+
+/*
  * Destroys info_store and sets all its fields to zero.
  *
  * The function frees the cells, nodes, and nodes' internal arrays. A
