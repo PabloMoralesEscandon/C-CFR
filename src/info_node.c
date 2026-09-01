@@ -24,6 +24,16 @@ Status cfr_info_node_init(InfoNode *node, InfoSetKey key, size_t action_count) {
         return CFR_STATUS_INVALID_ARGUMENT;
     if (action_count > (SIZE_MAX / sizeof(double)))
         return CFR_STATUS_INVALID_ARGUMENT;
+
+    if (action_count <= CFR_INFO_NODE_INLINE_ACTION_CAPACITY) {
+        *node = (InfoNode){0};
+        node->key = key;
+        node->action_count = action_count;
+        node->regret_sums = node->inline_regret_sums;
+        node->strategy_sums = node->inline_strategy_sums;
+        return CFR_STATUS_SUCCESS;
+    }
+
     Utility *regret_sums = malloc(sizeof(Utility) * action_count);
     if (regret_sums == NULL)
         return CFR_STATUS_OUT_OF_MEMORY;
@@ -47,12 +57,12 @@ Status cfr_info_node_init(InfoNode *node, InfoSetKey key, size_t action_count) {
 Status cfr_info_node_destroy(InfoNode *node) {
     if (node == NULL)
         return CFR_STATUS_INVALID_ARGUMENT;
-    free(node->regret_sums);
-    node->regret_sums = NULL;
-    free(node->strategy_sums);
-    node->strategy_sums = NULL;
-    node->key = 0;
-    node->action_count = 0;
+
+    if (node->regret_sums != node->inline_regret_sums)
+        free(node->regret_sums);
+    if (node->strategy_sums != node->inline_strategy_sums)
+        free(node->strategy_sums);
+    *node = (InfoNode){0};
 
     return CFR_STATUS_SUCCESS;
 }

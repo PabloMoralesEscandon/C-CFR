@@ -518,7 +518,7 @@ static void test_allocation_failures(void) {
     before = get_stats(&store);
     live_before = test_allocator_live_allocations();
     node = sentinel_node();
-    test_allocator_fail_after(3);
+    test_allocator_fail_after(1);
     CHECK(cfr_info_store_get_or_create(&store, 9999, 2, &node) ==
           CFR_STATUS_OUT_OF_MEMORY);
     CHECK(node == sentinel_node());
