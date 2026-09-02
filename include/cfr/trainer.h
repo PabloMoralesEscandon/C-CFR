@@ -50,6 +50,11 @@ typedef CFR_ENUM_INT(CfrTrainerVariant) {
  * The trainer does not own the three borrowed objects. cfr_trainer_init does
  * not allocate memory. The trainer also does not retain a copy of the root
  * state.
+ *
+ * A Trainer is not synchronized internally. Concurrent MCCFR workers use one
+ * Trainer and one mutable GameState per thread, with independent seeds, and
+ * may share one InfoStore. A caller must not use the same Trainer or GameState
+ * from multiple threads at once.
  */
 typedef struct {
     /* Borrowed const game descriptor. */
@@ -101,13 +106,15 @@ Status cfr_trainer_init_plus(Trainer *trainer, const Game *game,
  * The traversal samples chance and non-target actions, expands every target
  * action, and keeps sampled opponent decisions consistent within each
  * information set. Ownership and error handling match cfr_trainer_init.
+ * Deterministic replay applies to a single trainer. Scheduling changes the
+ * strategy snapshots observed by trainers that update one shared store.
  */
 Status cfr_trainer_init_mccfr(Trainer *trainer, const Game *game,
                               GameState *state, InfoStore *store,
                               uint64_t seed);
 
 /*
- * Runs amount iterations with sequential per-player updates.
+ * Runs amount iterations with sequential per-player updates in this trainer.
  *
  * trainer must be initialized. Its three borrowed objects must be valid. An
  * iteration runs one traversal, in order, for each player declared strategic

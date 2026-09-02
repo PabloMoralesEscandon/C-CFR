@@ -15,6 +15,7 @@
 #endif
 
 #include "cfr/checkpoint.h"
+#include "info_node_internal.h"
 #include "info_store_internal.h"
 
 #define CHECKPOINT_VERSION UINT32_C(1)
@@ -236,17 +237,6 @@ static Status read_checksum(FILE *stream, uint32_t *value_out) {
     return CFR_STATUS_SUCCESS;
 }
 
-static int compare_nodes(const void *left_pointer, const void *right_pointer) {
-    const InfoNode *left = *(const InfoNode *const *)left_pointer;
-    const InfoNode *right = *(const InfoNode *const *)right_pointer;
-
-    if (left->key < right->key)
-        return -1;
-    if (left->key > right->key)
-        return 1;
-    return 0;
-}
-
 static Status validate_node(const InfoNode *node, size_t max_legal_actions,
                             TrainerVariant variant) {
     if (node == NULL || node->regret_sums == NULL ||
@@ -272,13 +262,12 @@ static Status validate_node(const InfoNode *node, size_t max_legal_actions,
 
 static Status collect_nodes(const Trainer *trainer, const InfoNode ***nodes_out,
                             size_t *count_out) {
-    const InfoStore *store;
     const InfoNode **nodes = NULL;
-    size_t count = 0;
+    size_t count;
+    Status status;
 
     if (trainer == NULL || trainer->game == NULL || trainer->state == NULL ||
-        trainer->store == NULL || trainer->store->entries == NULL ||
-        trainer->store->capacity == 0 || trainer->game->max_legal_actions == 0 ||
+        trainer->store == NULL || trainer->game->max_legal_actions == 0 ||
         nodes_out == NULL || count_out == NULL ||
         (trainer->variant != CFR_TRAINER_VARIANT_CFR &&
          trainer->variant != CFR_TRAINER_VARIANT_CFR_PLUS &&
@@ -290,46 +279,21 @@ static Status collect_nodes(const Trainer *trainer, const InfoNode ***nodes_out,
         !size_fits_u64(trainer->stats.errors)) {
         return CFR_STATUS_INVALID_ARGUMENT;
     }
-    store = trainer->store;
-    if (!size_fits_u64(store->size) ||
-        (store->size > 0 &&
-         store->size > SIZE_MAX / sizeof(const InfoNode *))) {
-        return CFR_STATUS_INVALID_ARGUMENT;
-    }
-    if (store->size > 0) {
-        nodes = malloc(store->size * sizeof(*nodes));
-        if (nodes == NULL)
-            return CFR_STATUS_OUT_OF_MEMORY;
-    }
-    for (size_t index = 0; index < store->capacity; index += 1) {
-        const InfoNode *node = store->entries[index].node;
-        Status status;
-
-        if (node == NULL)
-            continue;
-        if (count == store->size) {
-            free(nodes);
-            return CFR_STATUS_INVALID_ARGUMENT;
-        }
-        status = validate_node(node, trainer->game->max_legal_actions,
-                               trainer->variant);
-        if (status != CFR_STATUS_SUCCESS) {
-            free(nodes);
-            return status;
-        }
-        nodes[count] = node;
-        count += 1;
-    }
-    if (count != store->size) {
+    status = cfr_info_store_snapshot_sorted(trainer->store, &nodes, &count);
+    if (status != CFR_STATUS_SUCCESS)
+        return status;
+    if (!size_fits_u64(count)) {
         free(nodes);
         return CFR_STATUS_INVALID_ARGUMENT;
     }
-    if (count > 1)
-        qsort(nodes, count, sizeof(*nodes), compare_nodes);
-    for (size_t index = 1; index < count; index += 1) {
-        if (nodes[index - 1]->key == nodes[index]->key) {
+    for (size_t index = 0; index < count; index += 1) {
+        cfr_info_node_lock(nodes[index]);
+        status = validate_node(nodes[index], trainer->game->max_legal_actions,
+                               trainer->variant);
+        cfr_info_node_unlock(nodes[index]);
+        if (status != CFR_STATUS_SUCCESS) {
             free(nodes);
-            return CFR_STATUS_INVALID_ARGUMENT;
+            return status;
         }
     }
     *nodes_out = nodes;
@@ -359,6 +323,7 @@ static InfoSetKey decode_key(uint64_t encoded) {
 
 Status cfr_checkpoint_write(FILE *stream, const Trainer *trainer) {
     const InfoNode **nodes = NULL;
+    const InfoNode *locked_node = NULL;
     const char *schema_id;
     size_t schema_length;
     size_t node_count = 0;
@@ -411,6 +376,8 @@ Status cfr_checkpoint_write(FILE *stream, const Trainer *trainer) {
     for (size_t node_index = 0; node_index < node_count; node_index += 1) {
         const InfoNode *node = nodes[node_index];
 
+        cfr_info_node_lock(node);
+        locked_node = node;
         WRITE_OR_CLEAN(write_u64(stream, &checksum, (uint64_t)node->key));
         WRITE_OR_CLEAN(
             write_u64(stream, &checksum, (uint64_t)node->action_count));
@@ -422,10 +389,14 @@ Status cfr_checkpoint_write(FILE *stream, const Trainer *trainer) {
             WRITE_OR_CLEAN(write_u64(
                 stream, &checksum, double_bits(node->strategy_sums[action])));
         }
+        cfr_info_node_unlock(node);
+        locked_node = NULL;
     }
     status = write_checksum(stream, checksum_value(&checksum));
 
 cleanup:
+    if (locked_node != NULL)
+        cfr_info_node_unlock(locked_node);
     stream_unlock(stream);
     free(nodes);
 #undef WRITE_OR_CLEAN
@@ -613,7 +584,20 @@ Status cfr_checkpoint_read(FILE *stream, const Game *game, GameState *state,
             goto cleanup;
         }
     }
-    *store_out = temporary_store;
+    store_out->entries = temporary_store.entries;
+    store_out->size = temporary_store.size;
+    store_out->capacity = temporary_store.capacity;
+    atomic_init(&store_out->collision_count,
+                atomic_load_explicit(&temporary_store.collision_count,
+                                     memory_order_relaxed));
+    store_out->growth_count = temporary_store.growth_count;
+    atomic_init(&store_out->synchronization, 0);
+    atomic_init(&store_out->writer_gate, false);
+    temporary_store.entries = NULL;
+    temporary_store.size = 0;
+    temporary_store.capacity = 0;
+    atomic_init(&temporary_store.collision_count, 0);
+    temporary_store.growth_count = 0;
     store_initialized = false;
     *trainer_out = (Trainer){.game = game,
                              .state = state,

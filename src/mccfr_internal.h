@@ -24,6 +24,13 @@ typedef struct {
     Action actions[CFR_TRAVERSAL_MAX_ACTIONS];
 } MccfrSampleEntry;
 
+#define CFR_MCCFR_NODE_CACHE_CAPACITY 512
+
+typedef struct {
+    InfoSetKey key;
+    InfoNode *node;
+} MccfrNodeCacheEntry;
+
 typedef struct {
     MccfrFrame *frames;
     size_t frame_capacity;
@@ -48,6 +55,11 @@ typedef struct {
 
     size_t visits;
     MccfrRng rng;
+
+    /* Traversal-local lookup cache; borrowed nodes remain owned by the store. */
+    InfoStore *cached_store;
+    size_t node_cache_count;
+    MccfrNodeCacheEntry node_cache[CFR_MCCFR_NODE_CACHE_CAPACITY];
 } MccfrWorkspace;
 
 Status cfr_mccfr_workspace_init(MccfrWorkspace *workspace,

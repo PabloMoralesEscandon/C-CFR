@@ -1,6 +1,8 @@
 #include <float.h>
 #include <math.h>
+#include <pthread.h>
 #include <stdint.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -744,6 +746,97 @@ static void test_kuhn_converges(void) {
     destroy_store(&store);
 }
 
+enum {
+    PARALLEL_MCCFR_THREAD_COUNT = 4,
+    PARALLEL_MCCFR_ITERATIONS = 2000
+};
+
+typedef struct {
+    atomic_size_t *ready_count;
+    atomic_bool *start;
+    Trainer trainer;
+    KuhnPokerState state;
+    Status status;
+} ParallelMccfrWorker;
+
+static void *run_parallel_mccfr_worker(void *raw_worker) {
+    ParallelMccfrWorker *worker = raw_worker;
+
+    atomic_fetch_add_explicit(worker->ready_count, 1, memory_order_release);
+    while (!atomic_load_explicit(worker->start, memory_order_acquire)) {
+    }
+    worker->status =
+        cfr_trainer_run(&worker->trainer, PARALLEL_MCCFR_ITERATIONS);
+    return NULL;
+}
+
+static void test_parallel_trainers_share_store(void) {
+    const Game *game = cfr_kuhn_poker_descriptor();
+    InfoStore store;
+    ParallelMccfrWorker workers[PARALLEL_MCCFR_THREAD_COUNT];
+    pthread_t threads[PARALLEL_MCCFR_THREAD_COUNT];
+    atomic_size_t ready_count;
+    atomic_bool start;
+    size_t created = 0;
+
+    initialize_store(&store);
+    atomic_init(&ready_count, 0);
+    atomic_init(&start, false);
+    for (size_t index = 0; index < PARALLEL_MCCFR_THREAD_COUNT; index += 1) {
+        workers[index] = (ParallelMccfrWorker){
+            .ready_count = &ready_count,
+            .start = &start,
+            .status = CFR_STATUS_INVALID_ARGUMENT,
+        };
+        CHECK(cfr_kuhn_poker_state_init(&workers[index].state) ==
+              CFR_STATUS_SUCCESS);
+        CHECK(cfr_trainer_init_mccfr(
+                  &workers[index].trainer, game,
+                  cfr_kuhn_poker_state_as_game_state(&workers[index].state),
+                  &store, UINT64_C(1000) + index) == CFR_STATUS_SUCCESS);
+        if (pthread_create(&threads[index], NULL, run_parallel_mccfr_worker,
+                           &workers[index]) != 0) {
+            CHECK(false);
+            break;
+        }
+        created += 1;
+    }
+    while (atomic_load_explicit(&ready_count, memory_order_acquire) < created) {
+    }
+    atomic_store_explicit(&start, true, memory_order_release);
+    for (size_t index = 0; index < created; index += 1) {
+        CHECK(pthread_join(threads[index], NULL) == 0);
+        CHECK(workers[index].status == CFR_STATUS_SUCCESS);
+        CHECK(workers[index].trainer.stats.iterations ==
+              PARALLEL_MCCFR_ITERATIONS);
+        CHECK(workers[index].trainer.stats.traversals ==
+              2 * PARALLEL_MCCFR_ITERATIONS);
+    }
+    CHECK(created == PARALLEL_MCCFR_THREAD_COUNT);
+
+    InfoStoreStats store_stats = {0};
+    CHECK(cfr_info_store_get_stats(&store, &store_stats) ==
+          CFR_STATUS_SUCCESS);
+    CHECK(store_stats.size == 12);
+    for (InfoSetKey key = 0; key < 21; key += 1) {
+        const InfoNode *node = NULL;
+        Probability strategy[2] = {0.0, 0.0};
+        const Status find_status =
+            cfr_info_store_find_const(&store, key, &node);
+
+        if (find_status == CFR_STATUS_NOT_FOUND)
+            continue;
+        CHECK(find_status == CFR_STATUS_SUCCESS);
+        CHECK(node != NULL);
+        CHECK(cfr_info_node_average_strategy(node, strategy, 2) ==
+              CFR_STATUS_SUCCESS);
+        CHECK(isfinite(strategy[0]));
+        CHECK(isfinite(strategy[1]));
+        CHECK(near(strategy[0] + strategy[1], 1.0));
+    }
+    destroy_store(&store);
+}
+
 static void test_leduc_converges_across_seeds(void) {
     static const uint64_t seeds[] = {UINT64_C(0), UINT64_C(1), UINT64_C(2)};
     const Game *game = cfr_leduc_poker_descriptor();
@@ -944,6 +1037,7 @@ int test_mccfr(void) {
     test_sampled_player_average_matches_exact_cfr();
     test_single_strategic_player_accumulates_average();
     test_kuhn_converges();
+    test_parallel_trainers_share_store();
     test_leduc_converges_across_seeds();
     test_checkpoint_restores_random_stream();
 #ifdef CFR_TEST_WRAP_ALLOCATOR

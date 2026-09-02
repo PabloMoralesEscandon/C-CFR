@@ -9,6 +9,7 @@ RELEASE_LINK_FLAGS :=
 DEBUG_FLAGS := -O0 -g3
 DEPENDENCY_FLAGS := -MMD -MP
 SANITIZER_TEST_ENV ?= ASAN_OPTIONS=detect_leaks=0
+THREAD_FLAGS ?= -pthread
 
 BUILD_DIR := build
 RELEASE_DIR := $(BUILD_DIR)/release
@@ -124,7 +125,7 @@ DEPENDENCY_FILES := \
 .PHONY: all leduc blackjack blackjack-compact-eval poker-tree-export benchmark \
 	test test-leduc-cli test-poker-tree-export \
 	test-blackjack test-blackjack-cli test-alloc \
-	test-alloc-run test-asan test-ubsan test-sanitize debug clean
+	test-alloc-run test-asan test-ubsan test-tsan test-sanitize debug clean
 
 all: $(RELEASE_LIBRARY) $(RELEASE_BINARY) $(RELEASE_LEDUC_BINARY) \
 	$(RELEASE_BLACKJACK_BINARY)
@@ -185,6 +186,12 @@ test-ubsan:
 		LDFLAGS='$(LDFLAGS) -fsanitize=undefined' \
 		test
 
+test-tsan:
+	$(MAKE) BUILD_DIR=$(BUILD_DIR)/test-tsan \
+		CFLAGS='$(CFLAGS) -fsanitize=thread -fno-omit-frame-pointer' \
+		LDFLAGS='$(LDFLAGS) -fsanitize=thread' \
+		test
+
 test-sanitize:
 	$(MAKE) BUILD_DIR=$(BUILD_DIR)/test-sanitize \
 		CFLAGS='$(CFLAGS) -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer' \
@@ -204,7 +211,8 @@ $(DEBUG_LIBRARY): $(DEBUG_OBJECTS)
 
 $(TEST_BINARY): $(TEST_OBJECTS) $(DEBUG_LIBRARY)
 	@mkdir -p $(dir $@)
-	$(CC) $(LDFLAGS) $(TEST_OBJECTS) $(DEBUG_LIBRARY) $(LDLIBS) -o $@
+	$(CC) $(LDFLAGS) $(THREAD_FLAGS) $(TEST_OBJECTS) $(DEBUG_LIBRARY) \
+		$(LDLIBS) -o $@
 
 $(BLACKJACK_TEST_BINARY): $(BLACKJACK_TEST_OBJECT) $(DEBUG_LIBRARY)
 	@mkdir -p $(dir $@)
@@ -215,6 +223,8 @@ $(BLACKJACK_TEST_OBJECT): tests/test_blackjack.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(C_STANDARD) $(C_WARNINGS) \
 		$(DEBUG_FLAGS) $(DEPENDENCY_FLAGS) \
 		-DCFR_TEST_BLACKJACK_STANDALONE -c $< -o $@
+
+$(TEST_OBJECTS): CFLAGS += $(THREAD_FLAGS)
 
 $(RELEASE_BINARY): $(RELEASE_APP_OBJECT) $(RELEASE_LIBRARY)
 	@mkdir -p $(dir $@)

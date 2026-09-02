@@ -96,7 +96,8 @@ Status cfr_mccfr_workspace_init(MccfrWorkspace *workspace,
     return CFR_STATUS_SUCCESS;
 }
 
-static void workspace_reset(MccfrWorkspace *workspace, const MccfrRng *rng) {
+static void workspace_reset(MccfrWorkspace *workspace, const MccfrRng *rng,
+                            InfoStore *store) {
     for (size_t index = 0; index < workspace->delta_entry_count; index += 1) {
         workspace->delta_table[workspace->delta_entries[index].table_cell] =
             MCCFR_CELL_EMPTY;
@@ -112,6 +113,50 @@ static void workspace_reset(MccfrWorkspace *workspace, const MccfrRng *rng) {
     workspace->arena_used = 0;
     workspace->visits = 0;
     workspace->rng = *rng;
+    if (workspace->cached_store != store) {
+        for (size_t index = 0; index < CFR_MCCFR_NODE_CACHE_CAPACITY;
+             index += 1) {
+            workspace->node_cache[index] = (MccfrNodeCacheEntry){0};
+        }
+        workspace->node_cache_count = 0;
+        workspace->cached_store = store;
+    }
+}
+
+static Status workspace_get_or_create_node(MccfrWorkspace *workspace,
+                                           InfoStore *store, InfoSetKey key,
+                                           size_t action_count,
+                                           InfoNode **node_out) {
+    const size_t mask = CFR_MCCFR_NODE_CACHE_CAPACITY - 1;
+    size_t cell =
+        ((uint64_t)key * UINT64_C(11400714819323198485)) & mask;
+
+    while (workspace->node_cache[cell].node != NULL) {
+        if (workspace->node_cache[cell].key == key) {
+            InfoNode *node = workspace->node_cache[cell].node;
+
+            if (node->action_count != action_count)
+                return CFR_STATUS_INVALID_ARGUMENT;
+            *node_out = node;
+            return CFR_STATUS_SUCCESS;
+        }
+        cell = (cell + 1) & mask;
+    }
+
+    InfoNode *node;
+    Status status =
+        cfr_info_store_get_or_create(store, key, action_count, &node);
+
+    if (status != CFR_STATUS_SUCCESS)
+        return status;
+    if (workspace->node_cache_count <
+        CFR_MCCFR_NODE_CACHE_CAPACITY - CFR_MCCFR_NODE_CACHE_CAPACITY / 4) {
+        workspace->node_cache[cell] =
+            (MccfrNodeCacheEntry){.key = key, .node = node};
+        workspace->node_cache_count += 1;
+    }
+    *node_out = node;
+    return CFR_STATUS_SUCCESS;
 }
 
 static Status ensure_frame(MccfrWorkspace *workspace, size_t depth) {
@@ -439,12 +484,52 @@ static Status get_sampled_action(MccfrWorkspace *workspace,
     return CFR_STATUS_SUCCESS;
 }
 
-static Status workspace_check_deltas(const MccfrWorkspace *workspace) {
+static int compare_delta_entries(const void *left_pointer,
+                                 const void *right_pointer) {
+    const MccfrDeltaEntry *left = left_pointer;
+    const MccfrDeltaEntry *right = right_pointer;
+
+    if (left->node->key < right->node->key)
+        return -1;
+    if (left->node->key > right->node->key)
+        return 1;
+    if ((uintptr_t)left->node < (uintptr_t)right->node)
+        return -1;
+    if ((uintptr_t)left->node > (uintptr_t)right->node)
+        return 1;
+    return 0;
+}
+
+static void sort_delta_entries(MccfrWorkspace *workspace) {
+    if (workspace->delta_entry_count < 2)
+        return;
+    if (workspace->delta_entry_count > 16) {
+        qsort(workspace->delta_entries, workspace->delta_entry_count,
+              sizeof(*workspace->delta_entries), compare_delta_entries);
+        return;
+    }
+    for (size_t index = 1; index < workspace->delta_entry_count; index += 1) {
+        const MccfrDeltaEntry entry = workspace->delta_entries[index];
+        size_t position = index;
+
+        while (position > 0 &&
+               compare_delta_entries(&entry,
+                                     &workspace->delta_entries[position - 1]) <
+                   0) {
+            workspace->delta_entries[position] =
+                workspace->delta_entries[position - 1];
+            position -= 1;
+        }
+        workspace->delta_entries[position] = entry;
+    }
+}
+
+static Status workspace_check_locked_deltas(const MccfrWorkspace *workspace) {
     for (size_t index = 0; index < workspace->delta_entry_count; index += 1) {
         const MccfrDeltaEntry *entry = &workspace->delta_entries[index];
         const Utility *regret = workspace->arena + entry->arena_offset;
         const double *strategy = regret + entry->action_count;
-        const Status status = cfr_info_node_check_deltas(
+        const Status status = cfr_info_node_check_deltas_locked(
             entry->node, regret, strategy, entry->action_count);
 
         if (status != CFR_STATUS_SUCCESS)
@@ -453,7 +538,7 @@ static Status workspace_check_deltas(const MccfrWorkspace *workspace) {
     return CFR_STATUS_SUCCESS;
 }
 
-static Status workspace_apply_deltas(MccfrWorkspace *workspace) {
+static void workspace_apply_locked_deltas(MccfrWorkspace *workspace) {
     for (size_t index = 0; index < workspace->delta_entry_count; index += 1) {
         MccfrDeltaEntry *entry = &workspace->delta_entries[index];
         Utility *regret = workspace->arena + entry->arena_offset;
@@ -461,7 +546,25 @@ static Status workspace_apply_deltas(MccfrWorkspace *workspace) {
         cfr_info_node_apply_validated_deltas(
             entry->node, regret, strategy, entry->action_count);
     }
-    return CFR_STATUS_SUCCESS;
+}
+
+static Status workspace_commit_deltas(MccfrWorkspace *workspace) {
+    Status status;
+
+    sort_delta_entries(workspace);
+    size_t locked_count = 0;
+    for (; locked_count < workspace->delta_entry_count; locked_count += 1)
+        cfr_info_node_lock(workspace->delta_entries[locked_count].node);
+
+    status = workspace_check_locked_deltas(workspace);
+    if (status == CFR_STATUS_SUCCESS)
+        workspace_apply_locked_deltas(workspace);
+
+    while (locked_count > 0) {
+        locked_count -= 1;
+        cfr_info_node_unlock(workspace->delta_entries[locked_count].node);
+    }
+    return status;
 }
 
 /*
@@ -734,7 +837,8 @@ static Status traverse_branch(const CfrTraversalAdapter *adapter,
     if (status != CFR_STATUS_SUCCESS)
         return status;
     InfoNode *node;
-    status = cfr_info_store_get_or_create(store, key, action_count, &node);
+    status = workspace_get_or_create_node(workspace, store, key, action_count,
+                                          &node);
     if (status != CFR_STATUS_SUCCESS)
         return status;
     status = cfr_info_node_current_strategy(node, frame->probabilities,
@@ -795,14 +899,12 @@ static Status traverse_in_workspace(
     const CfrTraversalAdapter *adapter, GameState *state, InfoStore *store,
     Player target_player, MccfrRng *rng, Utility *utility_out,
     TraversalStats *stats_out, MccfrWorkspace *workspace) {
-    workspace_reset(workspace, rng);
+    workspace_reset(workspace, rng, store);
     Utility temporary_utility;
     Status status = traverse_branch(adapter, state, store, target_player, 0,
                                     1.0, workspace, &temporary_utility);
     if (status == CFR_STATUS_SUCCESS)
-        status = workspace_check_deltas(workspace);
-    if (status == CFR_STATUS_SUCCESS)
-        status = workspace_apply_deltas(workspace);
+        status = workspace_commit_deltas(workspace);
     if (status == CFR_STATUS_SUCCESS) {
         *rng = workspace->rng;
         *utility_out = temporary_utility;

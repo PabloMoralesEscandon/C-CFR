@@ -2,6 +2,13 @@
 #define CFR_INFO_NODE_H
 
 #include <stddef.h>
+#ifdef __cplusplus
+#include <atomic>
+typedef std::atomic_bool CfrAtomicBool;
+#else
+#include <stdatomic.h>
+typedef atomic_bool CfrAtomicBool;
+#endif
 
 #include "cfr/types.h"
 
@@ -28,6 +35,10 @@ CFR_EXTERN_C_BEGIN
  * the input and output arrays. An operation that returns an error preserves the
  * node and output arrays.
  *
+ * All cfr_info_node_* operations can run concurrently on an initialized node.
+ * Direct access to the fields or arrays is not synchronized. Initialization
+ * and destruction require exclusive ownership of the node.
+ *
  * A non-finite numeric argument produces CFR_STATUS_INVALID_ARGUMENT. A
  * non-finite accumulator or arithmetic result produces
  * CFR_STATUS_NUMERIC_ERROR.
@@ -44,6 +55,8 @@ typedef struct {
     /* Inline storage used by nodes with at most two actions. */
     Utility inline_regret_sums[CFR_INFO_NODE_INLINE_ACTION_CAPACITY];
     double inline_strategy_sums[CFR_INFO_NODE_INLINE_ACTION_CAPACITY];
+    /* Private spin lock. The caller must not access this field. */
+    CfrAtomicBool synchronization;
 } InfoNode;
 
 /*

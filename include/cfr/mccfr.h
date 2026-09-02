@@ -57,6 +57,15 @@ Status cfr_mccfr_rng_seed(MccfrRng *rng, uint64_t seed);
  *
  * rng advances only when the complete traversal and delta commit succeed.
  * state restoration and all other game contracts match cfr_traverse.
+ *
+ * Multiple threads can traverse concurrently into the same initialized store.
+ * Each thread must supply its own mutable state, random stream, outputs, and
+ * any mutable game context. The game operations must be safe to call
+ * concurrently. Store initialization and destruction must not overlap a
+ * traversal. Each successful traversal commits its deltas atomically; a
+ * strategy used during traversal is a consistent per-information-set snapshot
+ * and can observe an earlier concurrent commit at one information set than at
+ * another.
  */
 Status cfr_mccfr_external_traverse(const Game *game, GameState *state,
                                    InfoStore *store, Player target_player,

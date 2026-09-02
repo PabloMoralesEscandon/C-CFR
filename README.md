@@ -381,6 +381,23 @@ The library entry point is `cfr_trainer_init_mccfr`. A lower-level caller can
 manage an `MccfrRng` and call `cfr_mccfr_external_traverse` directly; both are
 declared in `cfr/mccfr.h`.
 
+MCCFR can train one shared `InfoStore` from multiple threads. Give every worker
+its own `Trainer`, mutable root `GameState`, and seed, then call
+`cfr_trainer_run` in each worker. The game descriptor can be shared when its
+operations and context are safe for concurrent calls. Do not share a `Trainer`,
+`GameState`, or `MccfrRng`, and do not initialize or destroy the store while a
+worker is using it. Pause the workers before writing a resumable checkpoint so
+that trainer counters, random streams, and the shared learning state describe
+one coordinated boundary.
+
+The shared table uses concurrent reader access and takes an exclusive lock only
+when publishing a new information set or growing the table. Learning arrays use
+one lock per information set. A traversal collects deltas without holding store
+locks, then locks only the nodes in its commit in a stable order. This keeps
+unrelated traversals independent while preserving all-or-nothing commits and
+avoiding lock-order deadlocks. A per-worker node cache removes shared table
+lookups after warm-up.
+
 External sampling draws one chance outcome and one action at every opponent
 information set, while expanding every action of the player whose regrets are
 being updated. The sampled opponent choice is cached by information-set key

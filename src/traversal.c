@@ -155,7 +155,44 @@ static Status ensure_frame(WorkSpace *workspace, size_t depth) {
     return status;
 }
 
-static Status workspace_check_deltas(const WorkSpace *workspace) {
+static int compare_entries(const void *left_pointer, const void *right_pointer) {
+    const Entry *left = left_pointer;
+    const Entry *right = right_pointer;
+
+    if (left->node->key < right->node->key)
+        return -1;
+    if (left->node->key > right->node->key)
+        return 1;
+    if ((uintptr_t)left->node < (uintptr_t)right->node)
+        return -1;
+    if ((uintptr_t)left->node > (uintptr_t)right->node)
+        return 1;
+    return 0;
+}
+
+static void sort_entries(WorkSpace *workspace) {
+    if (workspace->used_entries < 2)
+        return;
+    if (workspace->used_entries > 16) {
+        qsort(workspace->entries, workspace->used_entries,
+              sizeof(*workspace->entries), compare_entries);
+        return;
+    }
+    for (size_t index = 1; index < workspace->used_entries; index += 1) {
+        const Entry entry = workspace->entries[index];
+        size_t position = index;
+
+        while (position > 0 &&
+               compare_entries(&entry, &workspace->entries[position - 1]) <
+                   0) {
+            workspace->entries[position] = workspace->entries[position - 1];
+            position -= 1;
+        }
+        workspace->entries[position] = entry;
+    }
+}
+
+static Status workspace_check_locked_deltas(const WorkSpace *workspace) {
     if (workspace == NULL)
         return CFR_STATUS_INVALID_ARGUMENT;
 
@@ -170,7 +207,7 @@ static Status workspace_check_deltas(const WorkSpace *workspace) {
 
         const double *delta_strategy = delta_regret + entry->action_count;
 
-        Status status = cfr_info_node_check_deltas(
+        Status status = cfr_info_node_check_deltas_locked(
             entry->node, delta_regret, delta_strategy, entry->action_count);
 
         if (status != CFR_STATUS_SUCCESS)
@@ -180,10 +217,7 @@ static Status workspace_check_deltas(const WorkSpace *workspace) {
     return CFR_STATUS_SUCCESS;
 }
 
-static Status workspace_apply_deltas(WorkSpace *workspace) {
-    if (workspace == NULL)
-        return CFR_STATUS_INVALID_ARGUMENT;
-
+static void workspace_apply_locked_deltas(WorkSpace *workspace) {
     for (size_t i = 0; i < workspace->used_entries; i++) {
         Entry *entry = &workspace->entries[i];
 
@@ -202,7 +236,27 @@ static Status workspace_apply_deltas(WorkSpace *workspace) {
         }
     }
 
-    return CFR_STATUS_SUCCESS;
+}
+
+static Status workspace_commit_deltas(WorkSpace *workspace) {
+    Status status;
+
+    if (workspace == NULL)
+        return CFR_STATUS_INVALID_ARGUMENT;
+    sort_entries(workspace);
+    size_t locked_count = 0;
+    for (; locked_count < workspace->used_entries; locked_count += 1)
+        cfr_info_node_lock(workspace->entries[locked_count].node);
+
+    status = workspace_check_locked_deltas(workspace);
+    if (status == CFR_STATUS_SUCCESS)
+        workspace_apply_locked_deltas(workspace);
+
+    while (locked_count > 0) {
+        locked_count -= 1;
+        cfr_info_node_unlock(workspace->entries[locked_count].node);
+    }
+    return status;
 }
 
 static Status grow_table(WorkSpace *ws) {
@@ -583,9 +637,7 @@ static Status traverse_in_workspace(const Game *game, GameState *state,
     status = cfr_traverse_branch(&adapter, state, store, target_player, 0, 1.0,
                                  1.0, 1.0, workspace, &temp_utility);
     if (status == CFR_STATUS_SUCCESS)
-        status = workspace_check_deltas(workspace);
-    if (status == CFR_STATUS_SUCCESS)
-        status = workspace_apply_deltas(workspace);
+        status = workspace_commit_deltas(workspace);
     if (status == CFR_STATUS_SUCCESS) {
         *utility_out = temp_utility;
         stats_out->visited_nodes = workspace->visits;

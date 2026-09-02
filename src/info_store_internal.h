@@ -8,4 +8,8 @@ struct CfrInfoStoreEntry {
     InfoSetKey key;
 };
 
+Status cfr_info_store_snapshot_sorted(const InfoStore *info_store,
+                                      const InfoNode ***nodes_out,
+                                      size_t *count_out);
+
 #endif

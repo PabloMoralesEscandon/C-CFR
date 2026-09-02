@@ -2,6 +2,13 @@
 #define CFR_INFO_STORE_H
 
 #include <stddef.h>
+#ifdef __cplusplus
+#include <atomic>
+typedef std::atomic_size_t CfrAtomicSize;
+#else
+#include <stdatomic.h>
+typedef atomic_size_t CfrAtomicSize;
+#endif
 
 #include "cfr/info_node.h"
 #include "cfr/types.h"
@@ -22,6 +29,12 @@ typedef struct CfrInfoStoreEntry InfoStoreEntry;
  *
  * The store does not support deleting individual nodes. cfr_info_store_destroy
  * frees all resources owned by the store.
+ *
+ * After initialization, lookup, insertion, statistics, and sorted visits can
+ * run concurrently. Existing-key lookups share a reader lock; insertion and
+ * table growth take the writer lock. Initialization and destruction require
+ * exclusive ownership. During concurrent use, callers must use the public
+ * operations instead of reading the fields directly.
  */
 typedef struct {
     /* Owned array of private cells. The caller does not use this pointer. */
@@ -31,9 +44,12 @@ typedef struct {
     /* Number of cells allocated in the array. */
     size_t capacity;
     /* Cells with other keys encountered by find and get_or_create. */
-    size_t collision_count;
+    CfrAtomicSize collision_count;
     /* Number of successful growth operations. */
     size_t growth_count;
+    /* Private reader/writer lock state. The caller must not access it. */
+    CfrAtomicSize synchronization;
+    CfrAtomicBool writer_gate;
 } InfoStore;
 
 /* Contains a snapshot of the store statistics. */
@@ -160,7 +176,8 @@ Status cfr_info_store_find_const(const InfoStore *info_store, InfoSetKey key,
  * Success visits every node exactly once. A callback error is returned
  * unchanged after the completed callbacks. Invalid arguments produce
  * CFR_STATUS_INVALID_ARGUMENT; temporary allocation failure produces
- * CFR_STATUS_OUT_OF_MEMORY.
+ * CFR_STATUS_OUT_OF_MEMORY. A concurrent insertion can appear either in this
+ * visit or in the next one; the structural snapshot itself is consistent.
  */
 Status cfr_info_store_visit_sorted(const InfoStore *info_store,
                                    InfoStoreConstVisitor visitor,
