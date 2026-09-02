@@ -335,6 +335,40 @@ static void test_exact_load_boundary(void) {
     destroy_store(&store);
 }
 
+static void test_reserve(void) {
+    InfoStore uninitialized = {0};
+    InfoStore store;
+    InfoNode *first = NULL;
+    InfoNode *second = NULL;
+    InfoNode *found = NULL;
+    InfoStoreStats stats;
+
+    CHECK(cfr_info_store_reserve(NULL, 200) == CFR_STATUS_INVALID_ARGUMENT);
+    CHECK(cfr_info_store_reserve(&uninitialized, 200) ==
+          CFR_STATUS_INVALID_ARGUMENT);
+    initialize_store(&store);
+    CHECK(cfr_info_store_reserve(&store, 0) == CFR_STATUS_SUCCESS);
+    CHECK(cfr_info_store_get_or_create(&store, 11, 2, &first) ==
+          CFR_STATUS_SUCCESS);
+    CHECK(cfr_info_store_get_or_create(&store, 29, 3, &second) ==
+          CFR_STATUS_SUCCESS);
+    CHECK(cfr_info_store_reserve(&store, 200) == CFR_STATUS_SUCCESS);
+    stats = get_stats(&store);
+    CHECK(stats.size == 2);
+    CHECK(stats.capacity == 512);
+    CHECK(stats.growth_count == 1);
+    CHECK(cfr_info_store_find(&store, 11, &found) == CFR_STATUS_SUCCESS);
+    CHECK(found == first);
+    CHECK(cfr_info_store_find(&store, 29, &found) == CFR_STATUS_SUCCESS);
+    CHECK(found == second);
+    CHECK(cfr_info_store_reserve(&store, 100) == CFR_STATUS_SUCCESS);
+    CHECK(get_stats(&store).growth_count == 1);
+    CHECK(cfr_info_store_reserve(&store, SIZE_MAX) ==
+          CFR_STATUS_OUT_OF_MEMORY);
+    CHECK(get_stats(&store).capacity == 512);
+    destroy_store(&store);
+}
+
 static void test_high_bit_hash_quality(void) {
     enum { NODE_COUNT = 200, COLLISION_LIMIT = 2000 };
     InfoStore store;
@@ -464,6 +498,7 @@ static void test_sorted_visit(void) {
 
 #ifdef CFR_TEST_WRAP_ALLOCATOR
 static void check_failed_creation(InfoStore *store,
+                                  size_t action_count,
                                   size_t successful_allocations) {
     const InfoStoreStats before = get_stats(store);
     const size_t live_before = test_allocator_live_allocations();
@@ -471,7 +506,7 @@ static void check_failed_creation(InfoStore *store,
     InfoStoreStats after;
 
     test_allocator_fail_after(successful_allocations);
-    CHECK(cfr_info_store_get_or_create(store, 1234567, 3, &output) ==
+    CHECK(cfr_info_store_get_or_create(store, 1234567, action_count, &output) ==
           CFR_STATUS_OUT_OF_MEMORY);
     CHECK(output == sentinel_node());
     test_allocator_disable_failures();
@@ -497,9 +532,17 @@ static void test_allocation_failures(void) {
 
     test_allocator_disable_failures();
     initialize_store(&store);
-    check_failed_creation(&store, 0);
-    check_failed_creation(&store, 1);
-    check_failed_creation(&store, 2);
+    check_failed_creation(&store, 3, 0);
+    check_failed_creation(&store, 4, 0);
+
+    before = get_stats(&store);
+    live_before = test_allocator_live_allocations();
+    test_allocator_fail_after(0);
+    CHECK(cfr_info_store_reserve(&store, 200) == CFR_STATUS_OUT_OF_MEMORY);
+    test_allocator_disable_failures();
+    after = get_stats(&store);
+    check_same_structural_stats(&before, &after);
+    CHECK(test_allocator_live_allocations() == live_before);
 
     before = get_stats(&store);
     live_before = test_allocator_live_allocations();
@@ -518,7 +561,7 @@ static void test_allocation_failures(void) {
     before = get_stats(&store);
     live_before = test_allocator_live_allocations();
     node = sentinel_node();
-    test_allocator_fail_after(1);
+    test_allocator_fail_after(0);
     CHECK(cfr_info_store_get_or_create(&store, 9999, 2, &node) ==
           CFR_STATUS_OUT_OF_MEMORY);
     CHECK(node == sentinel_node());
@@ -542,6 +585,7 @@ static void test_allocation_failures(void) {
     initialize_store(&store);
     CHECK(cfr_info_store_get_or_create(&store, 42, 3, &node) ==
           CFR_STATUS_SUCCESS);
+    CHECK(test_allocator_live_allocations() == 2);
     {
         VisitContext context = {0};
         const size_t visit_live_before = test_allocator_live_allocations();
@@ -568,6 +612,7 @@ int test_info_store(void) {
     test_extreme_signed_keys();
     test_growth_preserves_nodes();
     test_exact_load_boundary();
+    test_reserve();
     test_high_bit_hash_quality();
     test_order_independence();
     test_sorted_visit();

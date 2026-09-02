@@ -26,6 +26,17 @@ CFR_EXTERN_C_BEGIN
 Status cfr_checkpoint_write(FILE *stream, const Trainer *trainer);
 
 /*
+ * Writes the same checkpoint payload as cfr_checkpoint_write in a Zstandard
+ * frame at compression level 1. The raw payload retains its version and CRC,
+ * and decompression reproduces cfr_checkpoint_write output byte for byte.
+ *
+ * The caller owns stream, must open it in binary mode, and remains responsible
+ * for closing it. A successful call completes the Zstandard frame but does not
+ * flush stream.
+ */
+Status cfr_checkpoint_write_zstd(FILE *stream, const Trainer *trainer);
+
+/*
  * Reads a complete checkpoint and binds a restored trainer to game and state.
  *
  * store_out must be zero-initialized or previously destroyed. state must be a
@@ -39,6 +50,16 @@ Status cfr_checkpoint_write(FILE *stream, const Trainer *trainer);
  */
 Status cfr_checkpoint_read(FILE *stream, const Game *game, GameState *state,
                            InfoStore *store_out, Trainer *trainer_out);
+
+/*
+ * Reads one Zstandard-framed checkpoint written by
+ * cfr_checkpoint_write_zstd. Concatenated frames and trailing data are
+ * rejected. The ownership and transactional guarantees are the same as for
+ * cfr_checkpoint_read.
+ */
+Status cfr_checkpoint_read_zstd(FILE *stream, const Game *game,
+                                GameState *state, InfoStore *store_out,
+                                Trainer *trainer_out);
 
 /*
  * Writes a deterministic, human-readable snapshot of the average strategy.

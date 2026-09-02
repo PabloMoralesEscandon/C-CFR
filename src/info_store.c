@@ -4,9 +4,12 @@
 #include <stdlib.h>
 
 #include "cfr/info_store.h"
+#include "info_node_internal.h"
 #include "info_store_internal.h"
 
 enum { INITIAL_STORE_CAPACITY = 8 };
+
+#define INFO_ARENA_BLOCK_CAPACITY ((size_t)1048576)
 
 #define HASH_MULTIPLIER UINT64_C(11400714819323198485)
 
@@ -88,16 +91,128 @@ static void add_collisions(InfoStore *info_store, size_t amount) {
         memory_order_relaxed));
 }
 
-static int compare_node_keys(const void *left_pointer,
-                             const void *right_pointer) {
-    const InfoNode *left = *(const InfoNode *const *)left_pointer;
-    const InfoNode *right = *(const InfoNode *const *)right_pointer;
+typedef struct {
+    InfoArenaBlock *block;
+    size_t used;
+} ArenaMark;
 
-    if (left->key < right->key)
-        return -1;
-    if (left->key > right->key)
-        return 1;
-    return 0;
+static ArenaMark arena_mark(const InfoStore *info_store) {
+    InfoArenaBlock *block = info_store->node_blocks;
+
+    return (ArenaMark){.block = block,
+                       .used = block == NULL ? 0 : block->used};
+}
+
+static void arena_rollback(InfoStore *info_store, ArenaMark mark) {
+    InfoArenaBlock *block = info_store->node_blocks;
+
+    while (block != mark.block) {
+        InfoArenaBlock *next = block->next;
+
+        free(block);
+        block = next;
+    }
+    info_store->node_blocks = block;
+    if (block != NULL)
+        block->used = mark.used;
+}
+
+static Status arena_allocate_node(InfoStore *info_store, InfoSetKey key,
+                                  size_t action_count,
+                                  InfoNode **node_out) {
+    const size_t alignment = _Alignof(InfoNode);
+    size_t node_size;
+    size_t offset;
+    Status status = cfr_info_node_owned_size(action_count, &node_size);
+
+    if (status != CFR_STATUS_SUCCESS)
+        return status;
+    InfoArenaBlock *block = info_store->node_blocks;
+    if (block == NULL) {
+        offset = 0;
+    } else {
+        if (block->used > SIZE_MAX - (alignment - 1))
+            return CFR_STATUS_OUT_OF_MEMORY;
+        offset = (block->used + alignment - 1) & ~(alignment - 1);
+    }
+    if (block == NULL || offset > block->capacity ||
+        node_size > block->capacity - offset) {
+        const size_t capacity =
+            node_size > INFO_ARENA_BLOCK_CAPACITY
+                ? node_size
+                : INFO_ARENA_BLOCK_CAPACITY;
+
+        if (capacity > SIZE_MAX - sizeof(*block))
+            return CFR_STATUS_OUT_OF_MEMORY;
+        InfoArenaBlock *created = malloc(sizeof(*created) + capacity);
+        if (created == NULL)
+            return CFR_STATUS_OUT_OF_MEMORY;
+        created->next = block;
+        created->used = 0;
+        created->capacity = capacity;
+        info_store->node_blocks = created;
+        block = created;
+        offset = 0;
+    }
+    status = cfr_info_node_init_owned(block->data + offset,
+                                      block->capacity - offset, key,
+                                      action_count, node_out);
+    if (status != CFR_STATUS_SUCCESS)
+        return status;
+    block->used = offset + node_size;
+    return CFR_STATUS_SUCCESS;
+}
+
+static uint64_t sortable_node_key(const InfoNode *node) {
+    return ((uint64_t)node->key) ^ (UINT64_C(1) << 63);
+}
+
+static Status radix_sort_nodes(const InfoNode **nodes, size_t count) {
+    enum { RADIX_BITS = 8, RADIX_SIZE = 1 << RADIX_BITS };
+    const InfoNode **temporary;
+    const InfoNode **source = nodes;
+    const InfoNode **destination;
+
+    if (count < 2)
+        return CFR_STATUS_SUCCESS;
+    if (count > SIZE_MAX / sizeof(*temporary))
+        return CFR_STATUS_INVALID_ARGUMENT;
+    temporary = malloc(count * sizeof(*temporary));
+    if (temporary == NULL)
+        return CFR_STATUS_OUT_OF_MEMORY;
+    destination = temporary;
+    for (unsigned int shift = 0; shift < 64; shift += RADIX_BITS) {
+        size_t positions[RADIX_SIZE] = {0};
+        size_t next = 0;
+
+        for (size_t index = 0; index < count; index += 1) {
+            const size_t digit =
+                (size_t)((sortable_node_key(source[index]) >> shift) &
+                         (RADIX_SIZE - 1));
+
+            positions[digit] += 1;
+        }
+        for (size_t digit = 0; digit < RADIX_SIZE; digit += 1) {
+            const size_t amount = positions[digit];
+
+            positions[digit] = next;
+            next += amount;
+        }
+        for (size_t index = 0; index < count; index += 1) {
+            const size_t digit =
+                (size_t)((sortable_node_key(source[index]) >> shift) &
+                         (RADIX_SIZE - 1));
+
+            destination[positions[digit]] = source[index];
+            positions[digit] += 1;
+        }
+        const InfoNode **swap = source;
+
+        source = destination;
+        destination = swap;
+    }
+    free(temporary);
+    return CFR_STATUS_SUCCESS;
 }
 
 static uint64_t disperse(InfoSetKey key) {
@@ -105,20 +220,11 @@ static uint64_t disperse(InfoSetKey key) {
     return value * HASH_MULTIPLIER;
 }
 
-static size_t bits_needed(size_t capacity) {
-    size_t bits = 0;
-
-    while (capacity > 1) {
-        capacity >>= 1;
-        bits += 1;
-    }
-    return bits;
-}
-
 static size_t initial_index(InfoSetKey key, size_t capacity) {
-    uint64_t product = disperse(key);
-    size_t bits = bits_needed(capacity);
-    return product >> (64 - bits);
+    const unsigned int shift = (unsigned int)__builtin_clzll(
+        (unsigned long long)(capacity - 1));
+
+    return (size_t)(disperse(key) >> shift);
 }
 
 static LocateResult locate(const InfoStore *info_store, size_t *collision_count,
@@ -146,12 +252,10 @@ static LocateResult locate(const InfoStore *info_store, size_t *collision_count,
     return LOCATE_STORE_FULL;
 }
 
-static Status resize(InfoStore *info_store) {
-    if (info_store == NULL)
+static Status rebuild(InfoStore *info_store, size_t new_capacity) {
+    if (info_store == NULL || info_store->entries == NULL ||
+        info_store->capacity == 0 || new_capacity <= info_store->capacity)
         return CFR_STATUS_INVALID_ARGUMENT;
-    if (info_store->capacity > (SIZE_MAX / 2))
-        return CFR_STATUS_OUT_OF_MEMORY;
-    size_t new_capacity = 2 * info_store->capacity;
     if (new_capacity > (SIZE_MAX / sizeof(InfoStoreEntry)))
         return CFR_STATUS_OUT_OF_MEMORY;
     InfoStoreEntry *temp_entries =
@@ -189,6 +293,14 @@ static Status resize(InfoStore *info_store) {
     return CFR_STATUS_SUCCESS;
 }
 
+static Status resize(InfoStore *info_store) {
+    if (info_store == NULL)
+        return CFR_STATUS_INVALID_ARGUMENT;
+    if (info_store->capacity > (SIZE_MAX / 2))
+        return CFR_STATUS_OUT_OF_MEMORY;
+    return rebuild(info_store, 2 * info_store->capacity);
+}
+
 Status cfr_info_store_init(InfoStore *info_store) {
     if (info_store == NULL)
         return CFR_STATUS_INVALID_ARGUMENT;
@@ -205,22 +317,50 @@ Status cfr_info_store_init(InfoStore *info_store) {
     atomic_init(&info_store->collision_count, 0);
     info_store->size = 0;
     info_store->entries = temp;
+    info_store->node_blocks = NULL;
     atomic_init(&info_store->synchronization, 0);
     atomic_init(&info_store->writer_gate, false);
     return CFR_STATUS_SUCCESS;
 }
 
+Status cfr_info_store_reserve(InfoStore *info_store,
+                              size_t minimum_node_capacity) {
+    Status status = CFR_STATUS_SUCCESS;
+
+    if (info_store == NULL)
+        return CFR_STATUS_INVALID_ARGUMENT;
+    store_write_lock(info_store);
+    if (info_store->entries == NULL || info_store->capacity == 0) {
+        status = CFR_STATUS_INVALID_ARGUMENT;
+        goto cleanup;
+    }
+    size_t target = info_store->capacity;
+    while (minimum_node_capacity > target - target / 4) {
+        if (target > SIZE_MAX / 2) {
+            status = CFR_STATUS_OUT_OF_MEMORY;
+            goto cleanup;
+        }
+        target *= 2;
+    }
+    if (target != info_store->capacity)
+        status = rebuild(info_store, target);
+
+cleanup:
+    store_write_unlock(info_store);
+    return status;
+}
+
 Status cfr_info_store_destroy(InfoStore *info_store) {
     if (info_store == NULL)
         return CFR_STATUS_INVALID_ARGUMENT;
-    for (size_t i = 0; i < info_store->capacity; i++) {
-        if (info_store->entries[i].node != NULL) {
-            cfr_info_node_destroy(info_store->entries[i].node);
-            free(info_store->entries[i].node);
-            info_store->entries[i].node = NULL;
-            info_store->entries[i].key = 0;
-        }
+    InfoArenaBlock *block = info_store->node_blocks;
+    while (block != NULL) {
+        InfoArenaBlock *next = block->next;
+
+        free(block);
+        block = next;
     }
+    info_store->node_blocks = NULL;
     free(info_store->entries);
     info_store->entries = NULL;
     info_store->capacity = 0;
@@ -292,26 +432,12 @@ Status cfr_info_store_get_or_create(InfoStore *info_store, InfoSetKey key,
     }
     store_read_unlock(info_store);
     add_collisions(info_store, collisions);
-
-    InfoNode *temp = malloc(sizeof(InfoNode));
-    if (temp == NULL)
-        return CFR_STATUS_OUT_OF_MEMORY;
-    *temp = (InfoNode){0};
-    Status init = cfr_info_node_init(temp, key, action_count);
-    if (init != CFR_STATUS_SUCCESS) {
-        cfr_info_node_destroy(temp);
-        free(temp);
-        temp = NULL;
-        return init;
-    }
+    collisions = 0;
 
     store_write_lock(info_store);
-    collisions = 0;
     result = locate(info_store, NULL, key, &index);
     if (result == LOCATE_INVALID_ARGUMENT) {
         store_write_unlock(info_store);
-        cfr_info_node_destroy(temp);
-        free(temp);
         return CFR_STATUS_INVALID_ARGUMENT;
     }
     if (result == LOCATE_ENTRY_FOUND) {
@@ -319,31 +445,35 @@ Status cfr_info_store_get_or_create(InfoStore *info_store, InfoSetKey key,
         const bool count_matches = node->action_count == action_count;
 
         store_write_unlock(info_store);
-        cfr_info_node_destroy(temp);
-        free(temp);
         if (!count_matches)
             return CFR_STATUS_INVALID_ARGUMENT;
         *node_out = node;
         return CFR_STATUS_SUCCESS;
     }
+
+    const ArenaMark mark = arena_mark(info_store);
+    InfoNode *temp = NULL;
+    Status status = arena_allocate_node(info_store, key, action_count, &temp);
+
+    if (status != CFR_STATUS_SUCCESS) {
+        arena_rollback(info_store, mark);
+        store_write_unlock(info_store);
+        return status;
+    }
     if (result == LOCATE_STORE_FULL ||
         (info_store->size >= info_store->capacity - info_store->capacity / 4)) {
         Status resize_status = resize(info_store);
         if (resize_status != CFR_STATUS_SUCCESS) {
+            arena_rollback(info_store, mark);
             store_write_unlock(info_store);
-            cfr_info_node_destroy(temp);
-            free(temp);
-            temp = NULL;
             return resize_status;
         }
         collisions = 0;
         result = locate(info_store, &collisions, key, &index);
         if (result != LOCATE_EMPTY_SLOT_FOUND) {
+            arena_rollback(info_store, mark);
             store_write_unlock(info_store);
             add_collisions(info_store, collisions);
-            cfr_info_node_destroy(temp);
-            free(temp);
-            temp = NULL;
             return CFR_STATUS_INVALID_ARGUMENT;
         }
     }
@@ -439,8 +569,9 @@ unlock:
     store_read_unlock(info_store);
     if (status != CFR_STATUS_SUCCESS)
         goto cleanup;
-    if (count > 1)
-        qsort(nodes, count, sizeof(*nodes), compare_node_keys);
+    status = radix_sort_nodes(nodes, count);
+    if (status != CFR_STATUS_SUCCESS)
+        goto cleanup;
     for (index = 1; index < count; index += 1) {
         if (nodes[index - 1]->key == nodes[index]->key) {
             status = CFR_STATUS_INVALID_ARGUMENT;

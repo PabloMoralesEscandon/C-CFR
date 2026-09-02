@@ -30,15 +30,17 @@ typedef struct CfrInfoStoreEntry InfoStoreEntry;
  * The store does not support deleting individual nodes. cfr_info_store_destroy
  * frees all resources owned by the store.
  *
- * After initialization, lookup, insertion, statistics, and sorted visits can
- * run concurrently. Existing-key lookups share a reader lock; insertion and
- * table growth take the writer lock. Initialization and destruction require
- * exclusive ownership. During concurrent use, callers must use the public
- * operations instead of reading the fields directly.
+ * After initialization, lookup, insertion, capacity reservation, statistics,
+ * and sorted visits can run concurrently. Existing-key lookups share a reader
+ * lock; insertion and table growth take the writer lock. Initialization and
+ * destruction require exclusive ownership. During concurrent use, callers
+ * must use the public operations instead of reading the fields directly.
  */
 typedef struct {
     /* Owned array of private cells. The caller does not use this pointer. */
     InfoStoreEntry *entries;
+    /* Private linked arena blocks that own all information nodes. */
+    void *node_blocks;
     /* Number of nodes in the store. */
     size_t size;
     /* Number of cells allocated in the array. */
@@ -84,6 +86,19 @@ typedef Status (*InfoStoreConstVisitor)(const InfoNode *node, void *context);
  * preserves info_store.
  */
 Status cfr_info_store_init(InfoStore *info_store);
+
+/*
+ * Ensures that info_store can hold minimum_node_capacity nodes without growth.
+ *
+ * info_store must be initialized. The function preserves all nodes and their
+ * addresses. It does not reduce the current capacity. A zero minimum is a
+ * successful no-op. A successful capacity increase counts as one growth.
+ *
+ * An invalid argument produces CFR_STATUS_INVALID_ARGUMENT. An allocation
+ * failure produces CFR_STATUS_OUT_OF_MEMORY and preserves the store.
+ */
+Status cfr_info_store_reserve(InfoStore *info_store,
+                              size_t minimum_node_capacity);
 
 /*
  * Destroys info_store and sets all its fields to zero.

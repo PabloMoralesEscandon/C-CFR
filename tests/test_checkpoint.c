@@ -431,6 +431,85 @@ static void test_signed_keys_round_trip(void) {
     CHECK(fclose(stream) == 0);
 }
 
+static void test_zstd_round_trip_reproduces_raw_checkpoint(void) {
+    const Game *game = cfr_kuhn_poker_descriptor();
+    KuhnPokerState source_state;
+    KuhnPokerState loaded_state;
+    InfoStore source_store;
+    InfoStore loaded_store = {0};
+    Trainer source_trainer;
+    Trainer loaded_trainer = {0};
+    unsigned char *compressed_bytes = NULL;
+    size_t compressed_length = 0;
+    FILE *raw = tmpfile();
+    FILE *compressed = tmpfile();
+    FILE *decoded = tmpfile();
+
+    CHECK(raw != NULL && compressed != NULL && decoded != NULL);
+    if (raw == NULL || compressed == NULL || decoded == NULL)
+        goto cleanup;
+    initialize_kuhn(&source_state, &source_store, &source_trainer, false);
+    CHECK(cfr_kuhn_poker_state_init(&loaded_state) == CFR_STATUS_SUCCESS);
+    CHECK(cfr_trainer_run(&source_trainer, 5) == CFR_STATUS_SUCCESS);
+    CHECK(cfr_checkpoint_write(raw, &source_trainer) == CFR_STATUS_SUCCESS);
+    CHECK(cfr_checkpoint_write_zstd(compressed, &source_trainer) ==
+          CFR_STATUS_SUCCESS);
+    CHECK(fflush(compressed) == 0);
+    rewind(compressed);
+    CHECK(cfr_checkpoint_read_zstd(compressed, game, as_state(&loaded_state),
+                                   &loaded_store, &loaded_trainer) ==
+          CFR_STATUS_SUCCESS);
+    CHECK(cfr_checkpoint_write(decoded, &loaded_trainer) ==
+          CFR_STATUS_SUCCESS);
+    CHECK(files_equal(raw, decoded));
+    CHECK(cfr_info_store_destroy(&loaded_store) == CFR_STATUS_SUCCESS);
+    compressed_bytes = read_file(compressed, &compressed_length);
+    CHECK(compressed_length > 1);
+    if (compressed_bytes != NULL && compressed_length > 1) {
+        InfoStore rejected_store = {0};
+        Trainer rejected_trainer = {.training_iterations = 99};
+        FILE *corrupt;
+
+        compressed_bytes[compressed_length / 2] ^= 1;
+        corrupt = file_from_bytes(compressed_bytes, compressed_length, false);
+        if (corrupt != NULL) {
+            CHECK(cfr_checkpoint_read_zstd(
+                      corrupt, game, as_state(&loaded_state), &rejected_store,
+                      &rejected_trainer) == CFR_STATUS_FORMAT_ERROR);
+            CHECK(rejected_store.entries == NULL);
+            CHECK(rejected_trainer.training_iterations == 99);
+            CHECK(fclose(corrupt) == 0);
+        }
+        compressed_bytes[compressed_length / 2] ^= 1;
+
+        corrupt = file_from_bytes(compressed_bytes, compressed_length - 1,
+                                  false);
+        if (corrupt != NULL) {
+            CHECK(cfr_checkpoint_read_zstd(
+                      corrupt, game, as_state(&loaded_state), &rejected_store,
+                      &rejected_trainer) == CFR_STATUS_FORMAT_ERROR);
+            CHECK(fclose(corrupt) == 0);
+        }
+        corrupt = file_from_bytes(compressed_bytes, compressed_length, true);
+        if (corrupt != NULL) {
+            CHECK(cfr_checkpoint_read_zstd(
+                      corrupt, game, as_state(&loaded_state), &rejected_store,
+                      &rejected_trainer) == CFR_STATUS_FORMAT_ERROR);
+            CHECK(fclose(corrupt) == 0);
+        }
+    }
+    free(compressed_bytes);
+    CHECK(cfr_info_store_destroy(&source_store) == CFR_STATUS_SUCCESS);
+
+cleanup:
+    if (raw != NULL)
+        CHECK(fclose(raw) == 0);
+    if (compressed != NULL)
+        CHECK(fclose(compressed) == 0);
+    if (decoded != NULL)
+        CHECK(fclose(decoded) == 0);
+}
+
 static void test_validation(void) {
     KuhnPokerState state;
     InfoStore store;
@@ -447,6 +526,11 @@ static void test_validation(void) {
     CHECK(cfr_checkpoint_write(stream, &invalid) ==
           CFR_STATUS_INVALID_ARGUMENT);
     CHECK(cfr_checkpoint_write(NULL, &trainer) == CFR_STATUS_INVALID_ARGUMENT);
+    CHECK(cfr_checkpoint_write_zstd(NULL, &trainer) ==
+          CFR_STATUS_INVALID_ARGUMENT);
+    CHECK(cfr_checkpoint_read_zstd(NULL, trainer.game, as_state(&state),
+                                   &(InfoStore){0}, &(Trainer){0}) ==
+          CFR_STATUS_INVALID_ARGUMENT);
     CHECK(cfr_strategy_write_text(NULL, &trainer) ==
           CFR_STATUS_INVALID_ARGUMENT);
     {
@@ -510,6 +594,7 @@ int test_checkpoint(void) {
     test_rejects_bad_input_transactionally();
     test_text_export_is_sorted_and_policy_only();
     test_signed_keys_round_trip();
+    test_zstd_round_trip_reproduces_raw_checkpoint();
     test_validation();
 #ifdef CFR_TEST_WRAP_ALLOCATOR
     test_allocation_failures();

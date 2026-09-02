@@ -33,6 +33,91 @@ static bool valid_probability(double probability) {
     return (fabs(probability - 1.0) <= (max * REL_EPSILON));
 }
 
+static Utility *attached_regret_sums(InfoNode *node) {
+    return (Utility *)(void *)((unsigned char *)node + sizeof(*node));
+}
+
+static const Utility *attached_regret_sums_const(const InfoNode *node) {
+    return (const Utility *)(const void *)((const unsigned char *)node +
+                                           sizeof(*node));
+}
+
+static double *attached_strategy_sums(InfoNode *node, size_t action_count) {
+    return (double *)(void *)(attached_regret_sums(node) + action_count);
+}
+
+static const double *
+attached_strategy_sums_const(const InfoNode *node, size_t action_count) {
+    return (const double *)(const void *)(attached_regret_sums_const(node) +
+                                         action_count);
+}
+
+static bool uses_attached_storage(const InfoNode *node) {
+    return node->action_count > 0 &&
+           node->regret_sums == attached_regret_sums_const(node) &&
+           node->strategy_sums ==
+               attached_strategy_sums_const(node, node->action_count);
+}
+
+Status cfr_info_node_create(InfoSetKey key, size_t action_count,
+                            InfoNode **node_out) {
+    if (node_out == NULL || action_count == 0)
+        return CFR_STATUS_INVALID_ARGUMENT;
+
+    size_t allocation_bytes;
+    Status status =
+        cfr_info_node_owned_size(action_count, &allocation_bytes);
+
+    if (status != CFR_STATUS_SUCCESS)
+        return status;
+    InfoNode *node = malloc(allocation_bytes);
+    if (node == NULL)
+        return CFR_STATUS_OUT_OF_MEMORY;
+    status = cfr_info_node_init_owned(
+        node, allocation_bytes, key, action_count, node_out);
+    if (status == CFR_STATUS_SUCCESS)
+        return status;
+    free(node);
+    return status;
+}
+
+Status cfr_info_node_owned_size(size_t action_count, size_t *size_out) {
+    if (action_count == 0 || size_out == NULL)
+        return CFR_STATUS_INVALID_ARGUMENT;
+    if (action_count >
+        (SIZE_MAX - sizeof(InfoNode)) / (2 * sizeof(double))) {
+        return CFR_STATUS_INVALID_ARGUMENT;
+    }
+    *size_out = sizeof(InfoNode) + 2 * action_count * sizeof(double);
+    return CFR_STATUS_SUCCESS;
+}
+
+Status cfr_info_node_init_owned(void *storage, size_t storage_size,
+                                InfoSetKey key, size_t action_count,
+                                InfoNode **node_out) {
+    size_t required_size;
+    Status status = cfr_info_node_owned_size(action_count, &required_size);
+
+    if (status != CFR_STATUS_SUCCESS || storage == NULL || node_out == NULL)
+        return status == CFR_STATUS_SUCCESS ? CFR_STATUS_INVALID_ARGUMENT
+                                            : status;
+    if (storage_size < required_size)
+        return CFR_STATUS_BUFFER_TOO_SMALL;
+    InfoNode *node = storage;
+    *node = (InfoNode){0};
+    node->key = key;
+    node->action_count = action_count;
+    node->regret_sums = attached_regret_sums(node);
+    node->strategy_sums = attached_strategy_sums(node, action_count);
+    for (size_t index = 0; index < action_count; index += 1) {
+        node->regret_sums[index] = 0.0;
+        node->strategy_sums[index] = 0.0;
+    }
+    atomic_init(&node->synchronization, false);
+    *node_out = node;
+    return CFR_STATUS_SUCCESS;
+}
+
 Status cfr_info_node_init(InfoNode *node, InfoSetKey key, size_t action_count) {
     if (node == NULL || action_count == 0)
         return CFR_STATUS_INVALID_ARGUMENT;
@@ -40,19 +125,6 @@ Status cfr_info_node_init(InfoNode *node, InfoSetKey key, size_t action_count) {
         return CFR_STATUS_INVALID_ARGUMENT;
     if (action_count > (SIZE_MAX / sizeof(double)))
         return CFR_STATUS_INVALID_ARGUMENT;
-
-    if (action_count <= CFR_INFO_NODE_INLINE_ACTION_CAPACITY) {
-        node->key = key;
-        node->action_count = action_count;
-        node->regret_sums = node->inline_regret_sums;
-        node->strategy_sums = node->inline_strategy_sums;
-        for (size_t i = 0; i < CFR_INFO_NODE_INLINE_ACTION_CAPACITY; i++) {
-            node->inline_regret_sums[i] = 0.0;
-            node->inline_strategy_sums[i] = 0.0;
-        }
-        atomic_init(&node->synchronization, false);
-        return CFR_STATUS_SUCCESS;
-    }
 
     Utility *regret_sums = malloc(sizeof(Utility) * action_count);
     if (regret_sums == NULL)
@@ -71,10 +143,6 @@ Status cfr_info_node_init(InfoNode *node, InfoSetKey key, size_t action_count) {
     }
     node->regret_sums = regret_sums;
     node->strategy_sums = strategy_sums;
-    for (size_t i = 0; i < CFR_INFO_NODE_INLINE_ACTION_CAPACITY; i++) {
-        node->inline_regret_sums[i] = 0.0;
-        node->inline_strategy_sums[i] = 0.0;
-    }
     atomic_init(&node->synchronization, false);
     return CFR_STATUS_SUCCESS;
 }
@@ -83,18 +151,15 @@ Status cfr_info_node_destroy(InfoNode *node) {
     if (node == NULL)
         return CFR_STATUS_INVALID_ARGUMENT;
 
-    if (node->regret_sums != node->inline_regret_sums)
+    const bool attached = uses_attached_storage(node);
+    if (!attached)
         free(node->regret_sums);
-    if (node->strategy_sums != node->inline_strategy_sums)
+    if (!attached)
         free(node->strategy_sums);
     node->key = 0;
     node->action_count = 0;
     node->regret_sums = NULL;
     node->strategy_sums = NULL;
-    for (size_t i = 0; i < CFR_INFO_NODE_INLINE_ACTION_CAPACITY; i++) {
-        node->inline_regret_sums[i] = 0.0;
-        node->inline_strategy_sums[i] = 0.0;
-    }
     atomic_init(&node->synchronization, false);
 
     return CFR_STATUS_SUCCESS;
