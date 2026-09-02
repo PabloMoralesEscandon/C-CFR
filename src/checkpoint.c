@@ -236,15 +236,56 @@ static Status read_checksum(FILE *stream, uint32_t *value_out) {
     return CFR_STATUS_SUCCESS;
 }
 
-static int compare_nodes(const void *left_pointer, const void *right_pointer) {
-    const InfoNode *left = *(const InfoNode *const *)left_pointer;
-    const InfoNode *right = *(const InfoNode *const *)right_pointer;
+static uint64_t sortable_node_key(const InfoNode *node) {
+    return ((uint64_t)node->key) ^ (UINT64_C(1) << 63);
+}
 
-    if (left->key < right->key)
-        return -1;
-    if (left->key > right->key)
-        return 1;
-    return 0;
+static Status radix_sort_nodes(const InfoNode **nodes, size_t count) {
+    enum { RADIX_BITS = 8, RADIX_SIZE = 1 << RADIX_BITS };
+    const InfoNode **temporary;
+    const InfoNode **source = nodes;
+    const InfoNode **destination;
+
+    if (count < 2)
+        return CFR_STATUS_SUCCESS;
+    if (count > SIZE_MAX / sizeof(*temporary))
+        return CFR_STATUS_INVALID_ARGUMENT;
+    temporary = malloc(count * sizeof(*temporary));
+    if (temporary == NULL)
+        return CFR_STATUS_OUT_OF_MEMORY;
+    destination = temporary;
+    for (unsigned int shift = 0; shift < 64; shift += RADIX_BITS) {
+        size_t positions[RADIX_SIZE] = {0};
+        size_t next = 0;
+
+        for (size_t index = 0; index < count; index += 1) {
+            const size_t digit =
+                (size_t)((sortable_node_key(source[index]) >> shift) &
+                         (RADIX_SIZE - 1));
+
+            positions[digit] += 1;
+        }
+        for (size_t digit = 0; digit < RADIX_SIZE; digit += 1) {
+            const size_t amount = positions[digit];
+
+            positions[digit] = next;
+            next += amount;
+        }
+        for (size_t index = 0; index < count; index += 1) {
+            const size_t digit =
+                (size_t)((sortable_node_key(source[index]) >> shift) &
+                         (RADIX_SIZE - 1));
+
+            destination[positions[digit]] = source[index];
+            positions[digit] += 1;
+        }
+        const InfoNode **swap = source;
+
+        source = destination;
+        destination = swap;
+    }
+    free(temporary);
+    return CFR_STATUS_SUCCESS;
 }
 
 static Status validate_node(const InfoNode *node, size_t max_legal_actions,
@@ -324,8 +365,12 @@ static Status collect_nodes(const Trainer *trainer, const InfoNode ***nodes_out,
         free(nodes);
         return CFR_STATUS_INVALID_ARGUMENT;
     }
-    if (count > 1)
-        qsort(nodes, count, sizeof(*nodes), compare_nodes);
+    Status status = radix_sort_nodes(nodes, count);
+
+    if (status != CFR_STATUS_SUCCESS) {
+        free(nodes);
+        return status;
+    }
     for (size_t index = 1; index < count; index += 1) {
         if (nodes[index - 1]->key == nodes[index]->key) {
             free(nodes);
