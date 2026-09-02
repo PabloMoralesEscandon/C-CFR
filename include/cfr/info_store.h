@@ -26,6 +26,8 @@ typedef struct CfrInfoStoreEntry InfoStoreEntry;
 typedef struct {
     /* Owned array of private cells. The caller does not use this pointer. */
     InfoStoreEntry *entries;
+    /* Private linked arena blocks that own all information nodes. */
+    void *node_blocks;
     /* Number of nodes in the store. */
     size_t size;
     /* Number of cells allocated in the array. */

@@ -13,6 +13,12 @@
 Status cfr_info_node_create(InfoSetKey key, size_t action_count,
                             InfoNode **node_out);
 
+Status cfr_info_node_owned_size(size_t action_count, size_t *size_out);
+
+Status cfr_info_node_init_owned(void *storage, size_t storage_size,
+                                InfoSetKey key, size_t action_count,
+                                InfoNode **node_out);
+
 void cfr_info_node_apply_validated_deltas(
     InfoNode *node, const Utility *delta_regret,
     const double *delta_strategy_sum, size_t action_count);

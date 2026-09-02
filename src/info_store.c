@@ -9,6 +9,8 @@
 
 enum { INITIAL_STORE_CAPACITY = 8 };
 
+#define INFO_ARENA_BLOCK_CAPACITY ((size_t)1048576)
+
 #define HASH_MULTIPLIER UINT64_C(11400714819323198485)
 
 typedef enum {
@@ -17,6 +19,78 @@ typedef enum {
     LOCATE_EMPTY_SLOT_FOUND,
     LOCATE_STORE_FULL
 } LocateResult;
+
+typedef struct {
+    InfoArenaBlock *block;
+    size_t used;
+} ArenaMark;
+
+static ArenaMark arena_mark(const InfoStore *info_store) {
+    InfoArenaBlock *block = info_store->node_blocks;
+
+    return (ArenaMark){.block = block,
+                       .used = block == NULL ? 0 : block->used};
+}
+
+static void arena_rollback(InfoStore *info_store, ArenaMark mark) {
+    InfoArenaBlock *block = info_store->node_blocks;
+
+    while (block != mark.block) {
+        InfoArenaBlock *next = block->next;
+
+        free(block);
+        block = next;
+    }
+    info_store->node_blocks = block;
+    if (block != NULL)
+        block->used = mark.used;
+}
+
+static Status arena_allocate_node(InfoStore *info_store, InfoSetKey key,
+                                  size_t action_count,
+                                  InfoNode **node_out) {
+    const size_t alignment = _Alignof(InfoNode);
+    size_t node_size;
+    size_t offset;
+    Status status = cfr_info_node_owned_size(action_count, &node_size);
+
+    if (status != CFR_STATUS_SUCCESS)
+        return status;
+    InfoArenaBlock *block = info_store->node_blocks;
+    if (block == NULL) {
+        offset = 0;
+    } else {
+        if (block->used > SIZE_MAX - (alignment - 1))
+            return CFR_STATUS_OUT_OF_MEMORY;
+        offset = (block->used + alignment - 1) & ~(alignment - 1);
+    }
+    if (block == NULL || offset > block->capacity ||
+        node_size > block->capacity - offset) {
+        const size_t capacity =
+            node_size > INFO_ARENA_BLOCK_CAPACITY
+                ? node_size
+                : INFO_ARENA_BLOCK_CAPACITY;
+
+        if (capacity > SIZE_MAX - sizeof(*block))
+            return CFR_STATUS_OUT_OF_MEMORY;
+        InfoArenaBlock *created = malloc(sizeof(*created) + capacity);
+        if (created == NULL)
+            return CFR_STATUS_OUT_OF_MEMORY;
+        created->next = block;
+        created->used = 0;
+        created->capacity = capacity;
+        info_store->node_blocks = created;
+        block = created;
+        offset = 0;
+    }
+    status = cfr_info_node_init_owned(block->data + offset,
+                                      block->capacity - offset, key,
+                                      action_count, node_out);
+    if (status != CFR_STATUS_SUCCESS)
+        return status;
+    block->used = offset + node_size;
+    return CFR_STATUS_SUCCESS;
+}
 
 static int compare_node_keys(const void *left_pointer,
                              const void *right_pointer) {
@@ -132,6 +206,7 @@ Status cfr_info_store_init(InfoStore *info_store) {
     info_store->collision_count = 0;
     info_store->size = 0;
     info_store->entries = temp;
+    info_store->node_blocks = NULL;
     return CFR_STATUS_SUCCESS;
 }
 
@@ -155,14 +230,14 @@ Status cfr_info_store_reserve(InfoStore *info_store,
 Status cfr_info_store_destroy(InfoStore *info_store) {
     if (info_store == NULL)
         return CFR_STATUS_INVALID_ARGUMENT;
-    for (size_t i = 0; i < info_store->capacity; i++) {
-        if (info_store->entries[i].node != NULL) {
-            cfr_info_node_destroy(info_store->entries[i].node);
-            free(info_store->entries[i].node);
-            info_store->entries[i].node = NULL;
-            info_store->entries[i].key = 0;
-        }
+    InfoArenaBlock *block = info_store->node_blocks;
+    while (block != NULL) {
+        InfoArenaBlock *next = block->next;
+
+        free(block);
+        block = next;
     }
+    info_store->node_blocks = NULL;
     free(info_store->entries);
     info_store->entries = NULL;
     info_store->capacity = 0;
@@ -212,26 +287,25 @@ Status cfr_info_store_get_or_create(InfoStore *info_store, InfoSetKey key,
         *node_out = info_store->entries[index].node;
         return CFR_STATUS_SUCCESS;
     }
+    const ArenaMark mark = arena_mark(info_store);
     InfoNode *temp = NULL;
-    Status init = cfr_info_node_create(key, action_count, &temp);
+    Status init =
+        arena_allocate_node(info_store, key, action_count, &temp);
     if (init != CFR_STATUS_SUCCESS) {
+        arena_rollback(info_store, mark);
         return init;
     }
     if (result == LOCATE_STORE_FULL ||
         (info_store->size >= info_store->capacity - info_store->capacity / 4)) {
         Status resize_status = resize(info_store);
         if (resize_status != CFR_STATUS_SUCCESS) {
-            cfr_info_node_destroy(temp);
-            free(temp);
-            temp = NULL;
+            arena_rollback(info_store, mark);
             return resize_status;
         }
         result =
             locate(info_store, &(info_store->collision_count), key, &index);
         if (result != LOCATE_EMPTY_SLOT_FOUND) {
-            cfr_info_node_destroy(temp);
-            free(temp);
-            temp = NULL;
+            arena_rollback(info_store, mark);
             return CFR_STATUS_INVALID_ARGUMENT;
         }
     }
