@@ -37,7 +37,7 @@ attached_strategy_sums_const(const InfoNode *node, size_t action_count) {
 }
 
 static bool uses_attached_storage(const InfoNode *node) {
-    return node->action_count == 3 &&
+    return node->action_count > CFR_INFO_NODE_INLINE_ACTION_CAPACITY &&
            node->regret_sums == attached_regret_sums_const(node) &&
            node->strategy_sums ==
                attached_strategy_sums_const(node, node->action_count);
@@ -48,7 +48,11 @@ Status cfr_info_node_create(InfoSetKey key, size_t action_count,
     if (node_out == NULL || action_count == 0)
         return CFR_STATUS_INVALID_ARGUMENT;
 
-    if (action_count == 3) {
+    if (action_count > CFR_INFO_NODE_INLINE_ACTION_CAPACITY) {
+        if (action_count >
+            (SIZE_MAX - sizeof(InfoNode)) / (2 * sizeof(double))) {
+            return CFR_STATUS_INVALID_ARGUMENT;
+        }
         const size_t array_bytes = action_count * sizeof(double);
         const size_t allocation_bytes = sizeof(InfoNode) + 2 * array_bytes;
         InfoNode *node = malloc(allocation_bytes);

@@ -534,8 +534,6 @@ static void test_allocation_failures(void) {
     initialize_store(&store);
     check_failed_creation(&store, 3, 0);
     check_failed_creation(&store, 4, 0);
-    check_failed_creation(&store, 4, 1);
-    check_failed_creation(&store, 4, 2);
 
     before = get_stats(&store);
     live_before = test_allocator_live_allocations();
