@@ -7,8 +7,6 @@
 
 CFR_EXTERN_C_BEGIN
 
-#define CFR_INFO_NODE_INLINE_ACTION_CAPACITY 2
-
 /*
  * Stores the learning data for an information set.
  *
@@ -41,17 +39,14 @@ typedef struct {
     Utility *regret_sums;
     /* Owned array containing one weighted strategy sum per action. */
     double *strategy_sums;
-    /* Inline storage used by nodes with at most two actions. */
-    Utility inline_regret_sums[CFR_INFO_NODE_INLINE_ACTION_CAPACITY];
-    double inline_strategy_sums[CFR_INFO_NODE_INLINE_ACTION_CAPACITY];
 } InfoNode;
 
 /*
  * Initializes node with key and action_count.
  *
  * node must be zero-initialized or previously destroyed. action_count must be
- * greater than zero. Nodes with at most two actions use inline storage. Larger
- * nodes allocate both internal arrays. The function sets all elements to zero.
+ * greater than zero. The function allocates both internal arrays and sets all
+ * elements to zero.
  *
  * An invalid argument produces CFR_STATUS_INVALID_ARGUMENT. An allocation
  * failure produces CFR_STATUS_OUT_OF_MEMORY. An error preserves node.
