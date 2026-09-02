@@ -35,20 +35,11 @@ static uint64_t disperse(InfoSetKey key) {
     return value * HASH_MULTIPLIER;
 }
 
-static size_t bits_needed(size_t capacity) {
-    size_t bits = 0;
-
-    while (capacity > 1) {
-        capacity >>= 1;
-        bits += 1;
-    }
-    return bits;
-}
-
 static size_t initial_index(InfoSetKey key, size_t capacity) {
-    uint64_t product = disperse(key);
-    size_t bits = bits_needed(capacity);
-    return product >> (64 - bits);
+    const unsigned int shift = (unsigned int)__builtin_clzll(
+        (unsigned long long)(capacity - 1));
+
+    return (size_t)(disperse(key) >> shift);
 }
 
 static LocateResult locate(const InfoStore *info_store, size_t *collision_count,
