@@ -18,6 +18,12 @@ CFR_EXTERN_C_BEGIN
  * information-set key and encoded in a portable, versioned binary format. The
  * game descriptor must provide a valid strategy_schema_id.
  *
+ * Node accumulators are copied under their locks, so concurrent updates cannot
+ * tear an individual record. The checkpoint is not a globally coordinated
+ * snapshot: callers that need an exactly resumable multi-worker training state
+ * must pause all workers before this call. Trainer counters and random-stream
+ * state are not synchronized by this function.
+ *
  * The caller owns stream, must open it in binary mode, and remains responsible
  * for closing it. A successful call does not flush stream. A stream failure
  * returns CFR_STATUS_IO_ERROR. Invalid trainer data returns
@@ -29,6 +35,8 @@ Status cfr_checkpoint_write(FILE *stream, const Trainer *trainer);
  * Writes the same checkpoint payload as cfr_checkpoint_write in a Zstandard
  * frame at compression level 1. The raw payload retains its version and CRC,
  * and decompression reproduces cfr_checkpoint_write output byte for byte.
+ * The same worker-quiescence requirement applies when the checkpoint must be
+ * exactly resumable.
  *
  * The caller owns stream, must open it in binary mode, and remains responsible
  * for closing it. A successful call completes the Zstandard frame but does not

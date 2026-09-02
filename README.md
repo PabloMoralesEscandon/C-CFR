@@ -150,11 +150,13 @@ The following targets run the tests with sanitizers:
 ```sh
 make test-asan
 make test-ubsan
+make test-tsan
 make test-sanitize
 ```
 
 `test-asan` uses AddressSanitizer. `test-ubsan` uses
-UndefinedBehaviorSanitizer. `test-sanitize` combines both sanitizers.
+UndefinedBehaviorSanitizer. `test-tsan` uses ThreadSanitizer.
+`test-sanitize` runs the address/undefined combination and ThreadSanitizer.
 
 The targets require a compiler that supports the requested options. A compiler
 without that support produces a visible failure.

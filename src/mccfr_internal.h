@@ -24,7 +24,9 @@ typedef struct {
     Action actions[CFR_TRAVERSAL_MAX_ACTIONS];
 } MccfrSampleEntry;
 
-#define CFR_MCCFR_NODE_CACHE_CAPACITY 512
+#define CFR_MCCFR_NODE_CACHE_BITS 9
+#define CFR_MCCFR_NODE_CACHE_CAPACITY \
+    ((size_t)1 << CFR_MCCFR_NODE_CACHE_BITS)
 
 typedef struct {
     InfoSetKey key;

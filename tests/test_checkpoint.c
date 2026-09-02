@@ -562,11 +562,13 @@ static void test_allocation_failures(void) {
     initialize_kuhn(&source_state, &source_store, &source_trainer, false);
     CHECK(cfr_trainer_run(&source_trainer, 2) == CFR_STATUS_SUCCESS);
     live_before = test_allocator_live_allocations();
-    test_allocator_fail_after(0);
-    CHECK(cfr_checkpoint_write(stream, &source_trainer) ==
-          CFR_STATUS_OUT_OF_MEMORY);
-    test_allocator_disable_failures();
-    CHECK(test_allocator_live_allocations() == live_before);
+    for (size_t failure_index = 0; failure_index < 2; failure_index += 1) {
+        test_allocator_fail_after(failure_index);
+        CHECK(cfr_checkpoint_write(stream, &source_trainer) ==
+              CFR_STATUS_OUT_OF_MEMORY);
+        test_allocator_disable_failures();
+        CHECK(test_allocator_live_allocations() == live_before);
+    }
 
     rewind(stream);
     CHECK(cfr_checkpoint_write(stream, &source_trainer) == CFR_STATUS_SUCCESS);

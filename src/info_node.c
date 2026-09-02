@@ -5,25 +5,29 @@
 
 #include "cfr/info_node.h"
 #include "info_node_internal.h"
+#include "spin_wait_internal.h"
 
 /* Tolerances for validating that a distribution sums to one. */
 static const double REL_EPSILON = 1e-8;
 static const double ABS_EPSILON = 1e-12;
 
 void cfr_info_node_lock(const InfoNode *node) {
-    atomic_bool *lock = (atomic_bool *)&node->synchronization;
+    unsigned char *lock = (unsigned char *)&node->synchronization;
+    unsigned char expected = 0;
+    size_t spin_count = 0;
 
-    if (!atomic_exchange_explicit(lock, true, memory_order_acquire))
-        return;
-    do {
-        while (atomic_load_explicit(lock, memory_order_relaxed)) {
-        }
-    } while (atomic_exchange_explicit(lock, true, memory_order_acquire));
+    while (!__atomic_compare_exchange_n(lock, &expected, 1, true,
+                                         __ATOMIC_ACQUIRE,
+                                         __ATOMIC_RELAXED)) {
+        expected = 0;
+        while (__atomic_load_n(lock, __ATOMIC_RELAXED) != 0)
+            cfr_spin_wait(&spin_count);
+    }
 }
 
 void cfr_info_node_unlock(const InfoNode *node) {
-    atomic_store_explicit((atomic_bool *)&node->synchronization, false,
-                          memory_order_release);
+    __atomic_store_n((unsigned char *)&node->synchronization, 0,
+                     __ATOMIC_RELEASE);
 }
 
 static bool valid_probability(double probability) {
@@ -113,7 +117,7 @@ Status cfr_info_node_init_owned(void *storage, size_t storage_size,
         node->regret_sums[index] = 0.0;
         node->strategy_sums[index] = 0.0;
     }
-    atomic_init(&node->synchronization, false);
+    node->synchronization = 0;
     *node_out = node;
     return CFR_STATUS_SUCCESS;
 }
@@ -143,7 +147,7 @@ Status cfr_info_node_init(InfoNode *node, InfoSetKey key, size_t action_count) {
     }
     node->regret_sums = regret_sums;
     node->strategy_sums = strategy_sums;
-    atomic_init(&node->synchronization, false);
+    node->synchronization = 0;
     return CFR_STATUS_SUCCESS;
 }
 
@@ -160,7 +164,7 @@ Status cfr_info_node_destroy(InfoNode *node) {
     node->action_count = 0;
     node->regret_sums = NULL;
     node->strategy_sums = NULL;
-    atomic_init(&node->synchronization, false);
+    node->synchronization = 0;
 
     return CFR_STATUS_SUCCESS;
 }

@@ -6,6 +6,7 @@
 #include "cfr/info_store.h"
 #include "info_node_internal.h"
 #include "info_store_internal.h"
+#include "spin_wait_internal.h"
 
 enum { INITIAL_STORE_CAPACITY = 8 };
 
@@ -25,55 +26,57 @@ typedef enum {
 #define STORE_WRITER_MASK (STORE_WRITER_ACTIVE | STORE_WRITER_PENDING)
 
 static void store_read_lock(const InfoStore *info_store) {
-    atomic_size_t *synchronization =
-        (atomic_size_t *)&info_store->synchronization;
-    size_t state =
-        atomic_load_explicit(synchronization, memory_order_relaxed);
+    size_t *synchronization = (size_t *)&info_store->synchronization;
+    size_t state = __atomic_load_n(synchronization, __ATOMIC_RELAXED);
+    size_t spin_count = 0;
 
     for (;;) {
         while ((state & STORE_WRITER_MASK) != 0) {
-            state =
-                atomic_load_explicit(synchronization, memory_order_relaxed);
+            cfr_spin_wait(&spin_count);
+            state = __atomic_load_n(synchronization, __ATOMIC_RELAXED);
         }
-        if (atomic_compare_exchange_weak_explicit(
-                synchronization, &state, state + 1, memory_order_acquire,
-                memory_order_relaxed)) {
+        if (__atomic_compare_exchange_n(synchronization, &state, state + 1,
+                                        true, __ATOMIC_ACQUIRE,
+                                        __ATOMIC_RELAXED)) {
             return;
         }
+        cfr_spin_wait(&spin_count);
     }
 }
 
 static void store_read_unlock(const InfoStore *info_store) {
-    atomic_fetch_sub_explicit(
-        (atomic_size_t *)&info_store->synchronization, 1,
-        memory_order_release);
+    __atomic_fetch_sub((size_t *)&info_store->synchronization, 1,
+                       __ATOMIC_RELEASE);
 }
 
 static void store_write_lock(InfoStore *info_store) {
-    if (atomic_exchange_explicit(&info_store->writer_gate, true,
-                                 memory_order_acquire)) {
-        do {
-            while (atomic_load_explicit(&info_store->writer_gate,
-                                        memory_order_relaxed)) {
-            }
-        } while (atomic_exchange_explicit(&info_store->writer_gate, true,
-                                           memory_order_acquire));
+    unsigned char expected_gate = 0;
+    size_t spin_count = 0;
+
+    while (!__atomic_compare_exchange_n(&info_store->writer_gate,
+                                         &expected_gate, 1, true,
+                                         __ATOMIC_ACQUIRE,
+                                         __ATOMIC_RELAXED)) {
+        expected_gate = 0;
+        while (__atomic_load_n(&info_store->writer_gate,
+                               __ATOMIC_RELAXED) != 0) {
+            cfr_spin_wait(&spin_count);
+        }
     }
-    atomic_fetch_or_explicit(&info_store->synchronization,
-                             STORE_WRITER_PENDING, memory_order_acquire);
+    __atomic_fetch_or(&info_store->synchronization, STORE_WRITER_PENDING,
+                      __ATOMIC_ACQUIRE);
     size_t expected = STORE_WRITER_PENDING;
-    while (!atomic_compare_exchange_weak_explicit(
-        &info_store->synchronization, &expected, STORE_WRITER_ACTIVE,
-        memory_order_acquire, memory_order_relaxed)) {
+    while (!__atomic_compare_exchange_n(
+        &info_store->synchronization, &expected, STORE_WRITER_ACTIVE, true,
+        __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) {
         expected = STORE_WRITER_PENDING;
+        cfr_spin_wait(&spin_count);
     }
 }
 
 static void store_write_unlock(InfoStore *info_store) {
-    atomic_store_explicit(&info_store->synchronization, 0,
-                          memory_order_release);
-    atomic_store_explicit(&info_store->writer_gate, false,
-                          memory_order_release);
+    __atomic_store_n(&info_store->synchronization, 0, __ATOMIC_RELEASE);
+    __atomic_store_n(&info_store->writer_gate, 0, __ATOMIC_RELEASE);
 }
 
 static void add_collisions(InfoStore *info_store, size_t amount) {
@@ -82,13 +85,13 @@ static void add_collisions(InfoStore *info_store, size_t amount) {
 
     if (amount == 0)
         return;
-    current = atomic_load_explicit(&info_store->collision_count,
-                                   memory_order_relaxed);
+    current =
+        __atomic_load_n(&info_store->collision_count, __ATOMIC_RELAXED);
     do {
         desired = current > SIZE_MAX - amount ? SIZE_MAX : current + amount;
-    } while (!atomic_compare_exchange_weak_explicit(
-        &info_store->collision_count, &current, desired, memory_order_relaxed,
-        memory_order_relaxed));
+    } while (!__atomic_compare_exchange_n(
+        &info_store->collision_count, &current, desired, true,
+        __ATOMIC_RELAXED, __ATOMIC_RELAXED));
 }
 
 typedef struct {
@@ -286,9 +289,11 @@ static Status rebuild(InfoStore *info_store, size_t new_capacity) {
         free(temp_entries);
         return CFR_STATUS_INVALID_ARGUMENT;
     }
-    free(info_store->entries);
-    info_store->entries = temp_entries;
-    info_store->capacity = new_capacity;
+    InfoStoreEntry *old_entries = info_store->entries;
+
+    __atomic_store_n(&info_store->entries, temp_entries, __ATOMIC_RELEASE);
+    __atomic_store_n(&info_store->capacity, new_capacity, __ATOMIC_RELEASE);
+    free(old_entries);
     ++info_store->growth_count;
     return CFR_STATUS_SUCCESS;
 }
@@ -314,12 +319,12 @@ Status cfr_info_store_init(InfoStore *info_store) {
         temp[i] = (InfoStoreEntry){0};
     info_store->capacity = INITIAL_STORE_CAPACITY;
     info_store->growth_count = 0;
-    atomic_init(&info_store->collision_count, 0);
+    info_store->collision_count = 0;
     info_store->size = 0;
     info_store->entries = temp;
     info_store->node_blocks = NULL;
-    atomic_init(&info_store->synchronization, 0);
-    atomic_init(&info_store->writer_gate, false);
+    info_store->synchronization = 0;
+    info_store->writer_gate = 0;
     return CFR_STATUS_SUCCESS;
 }
 
@@ -327,8 +332,11 @@ Status cfr_info_store_reserve(InfoStore *info_store,
                               size_t minimum_node_capacity) {
     Status status = CFR_STATUS_SUCCESS;
 
-    if (info_store == NULL)
+    if (info_store == NULL ||
+        __atomic_load_n(&info_store->entries, __ATOMIC_ACQUIRE) == NULL ||
+        __atomic_load_n(&info_store->capacity, __ATOMIC_ACQUIRE) == 0) {
         return CFR_STATUS_INVALID_ARGUMENT;
+    }
     store_write_lock(info_store);
     if (info_store->entries == NULL || info_store->capacity == 0) {
         status = CFR_STATUS_INVALID_ARGUMENT;
@@ -364,11 +372,11 @@ Status cfr_info_store_destroy(InfoStore *info_store) {
     free(info_store->entries);
     info_store->entries = NULL;
     info_store->capacity = 0;
-    atomic_init(&info_store->collision_count, 0);
+    info_store->collision_count = 0;
     info_store->growth_count = 0;
     info_store->size = 0;
-    atomic_init(&info_store->synchronization, 0);
-    atomic_init(&info_store->writer_gate, false);
+    info_store->synchronization = 0;
+    info_store->writer_gate = 0;
     return CFR_STATUS_SUCCESS;
 }
 
@@ -492,8 +500,8 @@ Status cfr_info_store_get_stats(const InfoStore *info_store,
         return CFR_STATUS_INVALID_ARGUMENT;
     store_read_lock(info_store);
     stats_out->capacity = info_store->capacity;
-    stats_out->collision_count = atomic_load_explicit(
-        &info_store->collision_count, memory_order_relaxed);
+    stats_out->collision_count =
+        __atomic_load_n(&info_store->collision_count, __ATOMIC_RELAXED);
     stats_out->growth_count = info_store->growth_count;
     stats_out->size = info_store->size;
     store_read_unlock(info_store);

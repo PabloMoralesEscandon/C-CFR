@@ -199,6 +199,7 @@ test-sanitize:
 		CFLAGS='$(CFLAGS) -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer' \
 		LDFLAGS='$(LDFLAGS) -fsanitize=address,undefined' \
 		TEST_ENV='$(SANITIZER_TEST_ENV)' test
+	$(MAKE) test-tsan
 
 debug: $(DEBUG_LIBRARY) $(TEST_BINARY) $(DEBUG_BINARY) \
 	$(DEBUG_LEDUC_BINARY) $(DEBUG_BLACKJACK_BINARY)

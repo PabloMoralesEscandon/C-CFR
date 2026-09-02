@@ -2,13 +2,6 @@
 #define CFR_INFO_NODE_H
 
 #include <stddef.h>
-#ifdef __cplusplus
-#include <atomic>
-typedef std::atomic_bool CfrAtomicBool;
-#else
-#include <stdatomic.h>
-typedef atomic_bool CfrAtomicBool;
-#endif
 
 #include "cfr/types.h"
 
@@ -50,8 +43,8 @@ typedef struct {
     Utility *regret_sums;
     /* Owned array containing one weighted strategy sum per action. */
     double *strategy_sums;
-    /* Private spin lock. The caller must not access this field. */
-    CfrAtomicBool synchronization;
+    /* Private lock storage. The caller must not access this field. */
+    unsigned char synchronization;
 } InfoNode;
 
 /*

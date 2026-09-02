@@ -128,8 +128,9 @@ static Status workspace_get_or_create_node(MccfrWorkspace *workspace,
                                            size_t action_count,
                                            InfoNode **node_out) {
     const size_t mask = CFR_MCCFR_NODE_CACHE_CAPACITY - 1;
-    size_t cell =
-        ((uint64_t)key * UINT64_C(11400714819323198485)) & mask;
+    size_t cell = (size_t)(((uint64_t)key *
+                            UINT64_C(11400714819323198485)) >>
+                           (64 - CFR_MCCFR_NODE_CACHE_BITS));
 
     while (workspace->node_cache[cell].node != NULL) {
         if (workspace->node_cache[cell].key == key) {

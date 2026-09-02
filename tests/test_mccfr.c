@@ -1,10 +1,14 @@
 #include <float.h>
 #include <math.h>
 #include <pthread.h>
+#include <sched.h>
 #include <stdint.h>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <string.h>
+#if defined(__unix__) || defined(__APPLE__)
+#include <unistd.h>
+#endif
 
 #include "cfr/blackjack.h"
 #include "cfr/checkpoint.h"
@@ -747,9 +751,23 @@ static void test_kuhn_converges(void) {
 }
 
 enum {
-    PARALLEL_MCCFR_THREAD_COUNT = 4,
+    PARALLEL_MCCFR_MAX_THREAD_COUNT = 4,
     PARALLEL_MCCFR_ITERATIONS = 2000
 };
+
+static size_t parallel_mccfr_thread_count(void) {
+#if defined(_SC_NPROCESSORS_ONLN)
+    const long processor_count = sysconf(_SC_NPROCESSORS_ONLN);
+
+    if (processor_count > 1 &&
+        processor_count < PARALLEL_MCCFR_MAX_THREAD_COUNT) {
+        return (size_t)processor_count;
+    }
+    if (processor_count >= PARALLEL_MCCFR_MAX_THREAD_COUNT)
+        return PARALLEL_MCCFR_MAX_THREAD_COUNT;
+#endif
+    return 2;
+}
 
 typedef struct {
     atomic_size_t *ready_count;
@@ -763,8 +781,8 @@ static void *run_parallel_mccfr_worker(void *raw_worker) {
     ParallelMccfrWorker *worker = raw_worker;
 
     atomic_fetch_add_explicit(worker->ready_count, 1, memory_order_release);
-    while (!atomic_load_explicit(worker->start, memory_order_acquire)) {
-    }
+    while (!atomic_load_explicit(worker->start, memory_order_acquire))
+        (void)sched_yield();
     worker->status =
         cfr_trainer_run(&worker->trainer, PARALLEL_MCCFR_ITERATIONS);
     return NULL;
@@ -773,16 +791,17 @@ static void *run_parallel_mccfr_worker(void *raw_worker) {
 static void test_parallel_trainers_share_store(void) {
     const Game *game = cfr_kuhn_poker_descriptor();
     InfoStore store;
-    ParallelMccfrWorker workers[PARALLEL_MCCFR_THREAD_COUNT];
-    pthread_t threads[PARALLEL_MCCFR_THREAD_COUNT];
+    ParallelMccfrWorker workers[PARALLEL_MCCFR_MAX_THREAD_COUNT];
+    pthread_t threads[PARALLEL_MCCFR_MAX_THREAD_COUNT];
     atomic_size_t ready_count;
     atomic_bool start;
+    const size_t thread_count = parallel_mccfr_thread_count();
     size_t created = 0;
 
     initialize_store(&store);
     atomic_init(&ready_count, 0);
     atomic_init(&start, false);
-    for (size_t index = 0; index < PARALLEL_MCCFR_THREAD_COUNT; index += 1) {
+    for (size_t index = 0; index < thread_count; index += 1) {
         workers[index] = (ParallelMccfrWorker){
             .ready_count = &ready_count,
             .start = &start,
@@ -802,6 +821,7 @@ static void test_parallel_trainers_share_store(void) {
         created += 1;
     }
     while (atomic_load_explicit(&ready_count, memory_order_acquire) < created) {
+        (void)sched_yield();
     }
     atomic_store_explicit(&start, true, memory_order_release);
     for (size_t index = 0; index < created; index += 1) {
@@ -812,7 +832,7 @@ static void test_parallel_trainers_share_store(void) {
         CHECK(workers[index].trainer.stats.traversals ==
               2 * PARALLEL_MCCFR_ITERATIONS);
     }
-    CHECK(created == PARALLEL_MCCFR_THREAD_COUNT);
+    CHECK(created == thread_count);
 
     InfoStoreStats store_stats = {0};
     CHECK(cfr_info_store_get_stats(&store, &store_stats) ==
@@ -834,6 +854,214 @@ static void test_parallel_trainers_share_store(void) {
         CHECK(isfinite(strategy[1]));
         CHECK(near(strategy[0] + strategy[1], 1.0));
     }
+    destroy_store(&store);
+}
+
+enum {
+    PARALLEL_EXACT_ITERATIONS = 3000,
+    CONCURRENT_CHECKPOINT_CHUNK_ITERATIONS = 64,
+    CONCURRENT_CHECKPOINT_ITERATION_LIMIT = 512
+};
+
+typedef struct {
+    atomic_size_t *ready_count;
+    atomic_bool *start;
+    atomic_bool *stop;
+    atomic_bool *done;
+    atomic_size_t *completed_iterations;
+    Trainer trainer;
+    ChanceGameState state;
+    size_t iterations;
+    size_t iteration_limit;
+    Status status;
+} ParallelChanceWorker;
+
+static void *run_parallel_chance_worker(void *raw_worker) {
+    ParallelChanceWorker *worker = raw_worker;
+    size_t completed = 0;
+
+    atomic_fetch_add_explicit(worker->ready_count, 1, memory_order_release);
+    while (!atomic_load_explicit(worker->start, memory_order_acquire))
+        (void)sched_yield();
+    do {
+        worker->status =
+            cfr_trainer_run(&worker->trainer, worker->iterations);
+        if (worker->status != CFR_STATUS_SUCCESS)
+            break;
+        if (worker->completed_iterations != NULL) {
+            atomic_fetch_add_explicit(worker->completed_iterations,
+                                      worker->iterations,
+                                      memory_order_release);
+        }
+        completed += worker->iterations;
+        if (worker->iteration_limit != 0 &&
+            completed >= worker->iteration_limit) {
+            break;
+        }
+    } while (worker->stop != NULL &&
+             !atomic_load_explicit(worker->stop, memory_order_acquire));
+    if (worker->done != NULL)
+        atomic_store_explicit(worker->done, true, memory_order_release);
+    return NULL;
+}
+
+static void test_parallel_mccfr_updates_are_exact(void) {
+    Game game = *chance_game_descriptor();
+    InfoStore store;
+    ParallelChanceWorker workers[PARALLEL_MCCFR_MAX_THREAD_COUNT];
+    pthread_t threads[PARALLEL_MCCFR_MAX_THREAD_COUNT];
+    atomic_size_t ready_count;
+    atomic_bool start;
+    const size_t thread_count = parallel_mccfr_thread_count();
+    size_t created = 0;
+
+    game.strategic_player_count = 1;
+    initialize_store(&store);
+    atomic_init(&ready_count, 0);
+    atomic_init(&start, false);
+    for (size_t index = 0; index < thread_count; index += 1) {
+        workers[index] = (ParallelChanceWorker){
+            .ready_count = &ready_count,
+            .start = &start,
+            .iterations = PARALLEL_EXACT_ITERATIONS,
+            .status = CFR_STATUS_INVALID_ARGUMENT,
+        };
+        CHECK(chance_game_state_init_coin(&workers[index].state) ==
+              CFR_STATUS_SUCCESS);
+        chance_game_set_probabilities(&workers[index].state, 0.0, 1.0);
+        CHECK(cfr_trainer_init_mccfr(
+                  &workers[index].trainer, &game,
+                  chance_game_state_as_public(&workers[index].state), &store,
+                  UINT64_C(2000) + index) == CFR_STATUS_SUCCESS);
+        if (pthread_create(&threads[index], NULL, run_parallel_chance_worker,
+                           &workers[index]) != 0) {
+            CHECK(false);
+            break;
+        }
+        created += 1;
+    }
+    while (atomic_load_explicit(&ready_count, memory_order_acquire) < created)
+        (void)sched_yield();
+    atomic_store_explicit(&start, true, memory_order_release);
+    for (size_t index = 0; index < created; index += 1) {
+        CHECK(pthread_join(threads[index], NULL) == 0);
+        CHECK(workers[index].status == CFR_STATUS_SUCCESS);
+        CHECK(workers[index].trainer.stats.iterations ==
+              PARALLEL_EXACT_ITERATIONS);
+        CHECK(workers[index].trainer.stats.traversals ==
+              PARALLEL_EXACT_ITERATIONS);
+    }
+    CHECK(created == thread_count);
+    if (created == thread_count) {
+        InfoNode *node = find_node(&store, 800);
+        const double expected =
+            (double)(thread_count * PARALLEL_EXACT_ITERATIONS);
+        const double accumulated =
+            node->strategy_sums[0] + node->strategy_sums[1];
+
+        CHECK(fabs(accumulated - expected) <= expected * 1e-12);
+    }
+    destroy_store(&store);
+}
+
+static void test_checkpoint_is_loadable_during_parallel_training(void) {
+    Game game = *chance_game_descriptor();
+    ChanceGameState warmup_state;
+    ChanceGameState checkpoint_state;
+    ChanceGameState restored_state;
+    InfoStore store;
+    Trainer warmup;
+    Trainer checkpoint_trainer;
+    ParallelChanceWorker worker;
+    pthread_t thread;
+    atomic_size_t ready_count;
+    atomic_size_t completed_iterations;
+    atomic_bool start;
+    atomic_bool stop;
+    atomic_bool done;
+    size_t checkpoint_count = 0;
+    bool created = false;
+
+    game.strategic_player_count = 1;
+    initialize_store(&store);
+    CHECK(chance_game_state_init_coin(&warmup_state) == CFR_STATUS_SUCCESS);
+    CHECK(chance_game_state_init_coin(&checkpoint_state) ==
+          CFR_STATUS_SUCCESS);
+    chance_game_set_probabilities(&warmup_state, 0.0, 1.0);
+    chance_game_set_probabilities(&checkpoint_state, 0.0, 1.0);
+    CHECK(cfr_trainer_init_mccfr(
+              &warmup, &game, chance_game_state_as_public(&warmup_state),
+              &store, UINT64_C(3000)) == CFR_STATUS_SUCCESS);
+    CHECK(cfr_trainer_run(&warmup, 1) == CFR_STATUS_SUCCESS);
+    CHECK(cfr_trainer_init_mccfr(
+              &checkpoint_trainer, &game,
+              chance_game_state_as_public(&checkpoint_state), &store,
+              UINT64_C(3001)) == CFR_STATUS_SUCCESS);
+    atomic_init(&ready_count, 0);
+    atomic_init(&completed_iterations, 0);
+    atomic_init(&start, false);
+    atomic_init(&stop, false);
+    atomic_init(&done, false);
+    worker = (ParallelChanceWorker){
+        .ready_count = &ready_count,
+        .start = &start,
+        .stop = &stop,
+        .done = &done,
+        .completed_iterations = &completed_iterations,
+        .iterations = CONCURRENT_CHECKPOINT_CHUNK_ITERATIONS,
+        .iteration_limit = CONCURRENT_CHECKPOINT_ITERATION_LIMIT,
+        .status = CFR_STATUS_INVALID_ARGUMENT,
+    };
+    CHECK(chance_game_state_init_coin(&worker.state) == CFR_STATUS_SUCCESS);
+    chance_game_set_probabilities(&worker.state, 0.0, 1.0);
+    CHECK(cfr_trainer_init_mccfr(
+              &worker.trainer, &game,
+              chance_game_state_as_public(&worker.state), &store,
+              UINT64_C(3002)) == CFR_STATUS_SUCCESS);
+    if (pthread_create(&thread, NULL, run_parallel_chance_worker, &worker) ==
+        0) {
+        created = true;
+    } else {
+        CHECK(false);
+    }
+    if (created) {
+        while (atomic_load_explicit(&ready_count, memory_order_acquire) == 0)
+            (void)sched_yield();
+        atomic_store_explicit(&start, true, memory_order_release);
+        while (atomic_load_explicit(&completed_iterations,
+                                    memory_order_acquire) == 0) {
+            (void)sched_yield();
+        }
+        while (checkpoint_count < 4) {
+            InfoStore restored_store = {0};
+            Trainer restored = {0};
+            FILE *stream = tmpfile();
+
+            CHECK(stream != NULL);
+            if (stream == NULL)
+                break;
+            CHECK(cfr_checkpoint_write(stream, &checkpoint_trainer) ==
+                  CFR_STATUS_SUCCESS);
+            CHECK(fflush(stream) == 0);
+            rewind(stream);
+            CHECK(chance_game_state_init_coin(&restored_state) ==
+                  CFR_STATUS_SUCCESS);
+            chance_game_set_probabilities(&restored_state, 0.0, 1.0);
+            CHECK(cfr_checkpoint_read(
+                      stream, &game,
+                      chance_game_state_as_public(&restored_state),
+                      &restored_store, &restored) == CFR_STATUS_SUCCESS);
+            CHECK(cfr_info_store_destroy(&restored_store) ==
+                  CFR_STATUS_SUCCESS);
+            CHECK(fclose(stream) == 0);
+            checkpoint_count += 1;
+        }
+        atomic_store_explicit(&stop, true, memory_order_release);
+        CHECK(pthread_join(thread, NULL) == 0);
+        CHECK(worker.status == CFR_STATUS_SUCCESS);
+        CHECK(atomic_load_explicit(&done, memory_order_acquire));
+    }
+    CHECK(checkpoint_count > 0);
     destroy_store(&store);
 }
 
@@ -1038,6 +1266,8 @@ int test_mccfr(void) {
     test_single_strategic_player_accumulates_average();
     test_kuhn_converges();
     test_parallel_trainers_share_store();
+    test_parallel_mccfr_updates_are_exact();
+    test_checkpoint_is_loadable_during_parallel_training();
     test_leduc_converges_across_seeds();
     test_checkpoint_restores_random_stream();
 #ifdef CFR_TEST_WRAP_ALLOCATOR

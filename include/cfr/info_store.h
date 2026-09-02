@@ -2,13 +2,6 @@
 #define CFR_INFO_STORE_H
 
 #include <stddef.h>
-#ifdef __cplusplus
-#include <atomic>
-typedef std::atomic_size_t CfrAtomicSize;
-#else
-#include <stdatomic.h>
-typedef atomic_size_t CfrAtomicSize;
-#endif
 
 #include "cfr/info_node.h"
 #include "cfr/types.h"
@@ -46,12 +39,12 @@ typedef struct {
     /* Number of cells allocated in the array. */
     size_t capacity;
     /* Cells with other keys encountered by find and get_or_create. */
-    CfrAtomicSize collision_count;
+    size_t collision_count;
     /* Number of successful growth operations. */
     size_t growth_count;
     /* Private reader/writer lock state. The caller must not access it. */
-    CfrAtomicSize synchronization;
-    CfrAtomicBool writer_gate;
+    size_t synchronization;
+    unsigned char writer_gate;
 } InfoStore;
 
 /* Contains a snapshot of the store statistics. */
@@ -72,9 +65,12 @@ typedef struct {
 /*
  * Receives one borrowed learning node while visiting a store.
  *
- * The callback must not retain or modify node. context belongs to the caller
- * and can be null. Returning an error stops the visit and propagates that
- * status to the caller.
+ * The callback must not retain or modify node. During concurrent training it
+ * may inspect only immutable fields such as key and action_count. To read
+ * learning data, it must use a read-only operation such as
+ * cfr_info_node_average_strategy; direct array access is not synchronized.
+ * context belongs to the caller and can be null. Returning an error stops the
+ * visit and propagates that status to the caller.
  */
 typedef Status (*InfoStoreConstVisitor)(const InfoNode *node, void *context);
 

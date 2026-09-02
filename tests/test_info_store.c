@@ -1,5 +1,8 @@
 #include <stdbool.h>
+#include <pthread.h>
+#include <sched.h>
 #include <stdint.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -496,6 +499,206 @@ static void test_sorted_visit(void) {
     destroy_store(&store);
 }
 
+enum {
+    CONCURRENT_STORE_WRITER_COUNT = 2,
+    CONCURRENT_STORE_NODES_PER_WRITER = 160
+};
+
+typedef struct {
+    InfoStore *store;
+    atomic_size_t *ready_count;
+    atomic_bool *start;
+    atomic_size_t *finished_count;
+    size_t writer_index;
+    Status status;
+} ConcurrentStoreWriter;
+
+typedef struct {
+    InfoSetKey previous_key;
+    size_t count;
+    bool has_previous;
+} ConcurrentVisitContext;
+
+typedef struct {
+    InfoStore *store;
+    atomic_size_t *ready_count;
+    atomic_bool *start;
+    atomic_size_t *finished_count;
+    Status status;
+    size_t visit_count;
+} ConcurrentStoreMonitor;
+
+static InfoSetKey concurrent_store_key(size_t writer_index,
+                                       size_t node_index) {
+    return (InfoSetKey)(writer_index * CONCURRENT_STORE_NODES_PER_WRITER +
+                        node_index + 100000);
+}
+
+static Status check_concurrent_visit(const InfoNode *node,
+                                     void *raw_context) {
+    ConcurrentVisitContext *context = raw_context;
+
+    if (node == NULL || context == NULL || node->action_count != 2)
+        return CFR_STATUS_INVALID_ARGUMENT;
+    if (context->has_previous && node->key <= context->previous_key)
+        return CFR_STATUS_INVALID_ARGUMENT;
+    context->previous_key = node->key;
+    context->has_previous = true;
+    context->count += 1;
+    return CFR_STATUS_SUCCESS;
+}
+
+static void wait_for_concurrent_store_start(atomic_size_t *ready_count,
+                                            atomic_bool *start) {
+    atomic_fetch_add_explicit(ready_count, 1, memory_order_release);
+    while (!atomic_load_explicit(start, memory_order_acquire))
+        (void)sched_yield();
+}
+
+static void *run_concurrent_store_writer(void *raw_writer) {
+    ConcurrentStoreWriter *writer = raw_writer;
+
+    wait_for_concurrent_store_start(writer->ready_count, writer->start);
+    writer->status = CFR_STATUS_SUCCESS;
+    for (size_t index = 0; index < CONCURRENT_STORE_NODES_PER_WRITER;
+         index += 1) {
+        InfoNode *node = NULL;
+
+        writer->status = cfr_info_store_get_or_create(
+            writer->store, concurrent_store_key(writer->writer_index, index),
+            2, &node);
+        if (writer->status != CFR_STATUS_SUCCESS)
+            break;
+        writer->status = cfr_info_node_add_regret(node, 0, 1.0);
+        if (writer->status != CFR_STATUS_SUCCESS)
+            break;
+    }
+    atomic_fetch_add_explicit(writer->finished_count, 1,
+                              memory_order_release);
+    return NULL;
+}
+
+static void *run_concurrent_store_monitor(void *raw_monitor) {
+    ConcurrentStoreMonitor *monitor = raw_monitor;
+    size_t requested_capacity = 32;
+
+    wait_for_concurrent_store_start(monitor->ready_count, monitor->start);
+    monitor->status = CFR_STATUS_SUCCESS;
+    do {
+        InfoStoreStats stats = {0};
+        ConcurrentVisitContext context = {0};
+
+        monitor->status =
+            cfr_info_store_reserve(monitor->store, requested_capacity);
+        if (monitor->status != CFR_STATUS_SUCCESS)
+            break;
+        monitor->status = cfr_info_store_get_stats(monitor->store, &stats);
+        if (monitor->status != CFR_STATUS_SUCCESS ||
+            stats.size > stats.capacity) {
+            monitor->status = CFR_STATUS_INVALID_ARGUMENT;
+            break;
+        }
+        monitor->status = cfr_info_store_visit_sorted(
+            monitor->store, check_concurrent_visit, &context);
+        if (monitor->status != CFR_STATUS_SUCCESS)
+            break;
+        monitor->visit_count += 1;
+        if (requested_capacity < 512)
+            requested_capacity *= 2;
+        (void)sched_yield();
+    } while (atomic_load_explicit(monitor->finished_count,
+                                  memory_order_acquire) <
+             CONCURRENT_STORE_WRITER_COUNT);
+    return NULL;
+}
+
+static void test_concurrent_store_operations(void) {
+    InfoStore store;
+    ConcurrentStoreWriter writers[CONCURRENT_STORE_WRITER_COUNT];
+    ConcurrentStoreMonitor monitor;
+    pthread_t writer_threads[CONCURRENT_STORE_WRITER_COUNT];
+    pthread_t monitor_thread;
+    atomic_size_t ready_count;
+    atomic_size_t finished_count;
+    atomic_bool start;
+    bool monitor_created = false;
+    size_t writer_created = 0;
+
+    initialize_store(&store);
+    atomic_init(&ready_count, 0);
+    atomic_init(&finished_count, 0);
+    atomic_init(&start, false);
+    for (size_t index = 0; index < CONCURRENT_STORE_WRITER_COUNT;
+         index += 1) {
+        writers[index] = (ConcurrentStoreWriter){
+            .store = &store,
+            .ready_count = &ready_count,
+            .start = &start,
+            .finished_count = &finished_count,
+            .writer_index = index,
+            .status = CFR_STATUS_INVALID_ARGUMENT,
+        };
+        if (pthread_create(&writer_threads[index], NULL,
+                           run_concurrent_store_writer,
+                           &writers[index]) != 0) {
+            CHECK(false);
+            break;
+        }
+        writer_created += 1;
+    }
+    monitor = (ConcurrentStoreMonitor){
+        .store = &store,
+        .ready_count = &ready_count,
+        .start = &start,
+        .finished_count = &finished_count,
+        .status = CFR_STATUS_INVALID_ARGUMENT,
+    };
+    if (writer_created == CONCURRENT_STORE_WRITER_COUNT &&
+        pthread_create(&monitor_thread, NULL, run_concurrent_store_monitor,
+                       &monitor) == 0) {
+        monitor_created = true;
+    } else {
+        CHECK(false);
+    }
+    while (atomic_load_explicit(&ready_count, memory_order_acquire) <
+           writer_created + (monitor_created ? 1 : 0)) {
+        (void)sched_yield();
+    }
+    atomic_store_explicit(&start, true, memory_order_release);
+    for (size_t index = 0; index < writer_created; index += 1) {
+        CHECK(pthread_join(writer_threads[index], NULL) == 0);
+        CHECK(writers[index].status == CFR_STATUS_SUCCESS);
+    }
+    if (monitor_created) {
+        CHECK(pthread_join(monitor_thread, NULL) == 0);
+        CHECK(monitor.status == CFR_STATUS_SUCCESS);
+        CHECK(monitor.visit_count > 0);
+    }
+    CHECK(writer_created == CONCURRENT_STORE_WRITER_COUNT);
+    if (writer_created == CONCURRENT_STORE_WRITER_COUNT) {
+        InfoStoreStats stats = get_stats(&store);
+
+        CHECK(stats.size == CONCURRENT_STORE_WRITER_COUNT *
+                                CONCURRENT_STORE_NODES_PER_WRITER);
+        CHECK(stats.growth_count > 0);
+        for (size_t writer = 0; writer < CONCURRENT_STORE_WRITER_COUNT;
+             writer += 1) {
+            for (size_t index = 0; index < CONCURRENT_STORE_NODES_PER_WRITER;
+                 index += 1) {
+                InfoNode *node = NULL;
+
+                CHECK(cfr_info_store_find(
+                          &store, concurrent_store_key(writer, index), &node) ==
+                      CFR_STATUS_SUCCESS);
+                CHECK(node != NULL);
+                if (node != NULL)
+                    CHECK(node->regret_sums[0] == 1.0);
+            }
+        }
+    }
+    destroy_store(&store);
+}
+
 #ifdef CFR_TEST_WRAP_ALLOCATOR
 static void check_failed_creation(InfoStore *store,
                                   size_t action_count,
@@ -616,6 +819,7 @@ int test_info_store(void) {
     test_high_bit_hash_quality();
     test_order_independence();
     test_sorted_visit();
+    test_concurrent_store_operations();
 #ifdef CFR_TEST_WRAP_ALLOCATOR
     test_allocation_failures();
     CHECK(test_allocator_live_allocations() == 0);

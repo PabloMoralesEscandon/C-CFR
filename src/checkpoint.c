@@ -311,7 +311,7 @@ static Status validate_node(const InfoNode *node, size_t max_legal_actions,
 }
 
 static Status collect_nodes(const Trainer *trainer, const InfoNode ***nodes_out,
-                            size_t *count_out) {
+                            size_t *count_out, bool validate_nodes) {
     const InfoNode **nodes = NULL;
     size_t count;
     Status status;
@@ -336,14 +336,17 @@ static Status collect_nodes(const Trainer *trainer, const InfoNode ***nodes_out,
         free(nodes);
         return CFR_STATUS_INVALID_ARGUMENT;
     }
-    for (size_t index = 0; index < count; index += 1) {
-        cfr_info_node_lock(nodes[index]);
-        status = validate_node(nodes[index], trainer->game->max_legal_actions,
-                               trainer->variant);
-        cfr_info_node_unlock(nodes[index]);
-        if (status != CFR_STATUS_SUCCESS) {
-            free(nodes);
-            return status;
+    if (validate_nodes) {
+        for (size_t index = 0; index < count; index += 1) {
+            cfr_info_node_lock(nodes[index]);
+            status = validate_node(nodes[index],
+                                   trainer->game->max_legal_actions,
+                                   trainer->variant);
+            cfr_info_node_unlock(nodes[index]);
+            if (status != CFR_STATUS_SUCCESS) {
+                free(nodes);
+                return status;
+            }
         }
     }
     *nodes_out = nodes;
@@ -356,6 +359,39 @@ static uint64_t double_bits(double value) {
 
     memcpy(&bits, &value, sizeof(bits));
     return bits;
+}
+
+static Status copy_node_snapshot(const InfoNode *node,
+                                 size_t max_legal_actions,
+                                 TrainerVariant variant, double *values,
+                                 InfoNode *snapshot_out) {
+    Status status;
+    size_t action_count = 0;
+    InfoSetKey key = 0;
+
+    if (node == NULL || values == NULL || snapshot_out == NULL)
+        return CFR_STATUS_INVALID_ARGUMENT;
+    cfr_info_node_lock(node);
+    status = validate_node(node, max_legal_actions, variant);
+    if (status == CFR_STATUS_SUCCESS) {
+        key = node->key;
+        action_count = node->action_count;
+        memcpy(values, node->regret_sums,
+               action_count * sizeof(*node->regret_sums));
+        memcpy(values + max_legal_actions, node->strategy_sums,
+               action_count * sizeof(*node->strategy_sums));
+    }
+    cfr_info_node_unlock(node);
+    if (status != CFR_STATUS_SUCCESS)
+        return status;
+
+    *snapshot_out = (InfoNode){
+        .key = key,
+        .action_count = action_count,
+        .regret_sums = values,
+        .strategy_sums = values + max_legal_actions,
+    };
+    return validate_node(snapshot_out, max_legal_actions, variant);
 }
 
 static double bits_double(uint64_t bits) {
@@ -373,7 +409,7 @@ static InfoSetKey decode_key(uint64_t encoded) {
 
 static Status checkpoint_write(ByteWriter *writer, const Trainer *trainer) {
     const InfoNode **nodes = NULL;
-    const InfoNode *locked_node = NULL;
+    double *snapshot_values = NULL;
     const char *schema_id;
     size_t schema_length;
     size_t node_count = 0;
@@ -389,9 +425,22 @@ static Status checkpoint_write(ByteWriter *writer, const Trainer *trainer) {
     schema_id = trainer->game->strategy_schema_id;
     if (!schema_id_length(schema_id, &schema_length))
         return CFR_STATUS_INVALID_ARGUMENT;
-    status = collect_nodes(trainer, &nodes, &node_count);
+    status = collect_nodes(trainer, &nodes, &node_count, false);
     if (status != CFR_STATUS_SUCCESS)
         return status;
+    if (node_count > 0) {
+        if (trainer->game->max_legal_actions >
+            SIZE_MAX / (2 * sizeof(*snapshot_values))) {
+            status = CFR_STATUS_INVALID_ARGUMENT;
+            goto cleanup;
+        }
+        snapshot_values = malloc(2 * trainer->game->max_legal_actions *
+                                 sizeof(*snapshot_values));
+        if (snapshot_values == NULL) {
+            status = CFR_STATUS_OUT_OF_MEMORY;
+            goto cleanup;
+        }
+    }
 
     checksum_init(&checksum);
 #define WRITE_OR_CLEAN(expression)                                             \
@@ -425,29 +474,29 @@ static Status checkpoint_write(ByteWriter *writer, const Trainer *trainer) {
     WRITE_OR_CLEAN(write_u64(writer, &checksum, (uint64_t)node_count));
 
     for (size_t node_index = 0; node_index < node_count; node_index += 1) {
-        const InfoNode *node = nodes[node_index];
+        InfoNode snapshot = {0};
 
-        cfr_info_node_lock(node);
-        locked_node = node;
-        WRITE_OR_CLEAN(write_u64(writer, &checksum, (uint64_t)node->key));
+        WRITE_OR_CLEAN(copy_node_snapshot(
+            nodes[node_index], trainer->game->max_legal_actions,
+            trainer->variant, snapshot_values, &snapshot));
         WRITE_OR_CLEAN(
-            write_u64(writer, &checksum, (uint64_t)node->action_count));
-        for (size_t action = 0; action < node->action_count; action += 1) {
+            write_u64(writer, &checksum, (uint64_t)snapshot.key));
+        WRITE_OR_CLEAN(
+            write_u64(writer, &checksum, (uint64_t)snapshot.action_count));
+        for (size_t action = 0; action < snapshot.action_count; action += 1) {
             WRITE_OR_CLEAN(write_u64(
-                writer, &checksum, double_bits(node->regret_sums[action])));
+                writer, &checksum, double_bits(snapshot.regret_sums[action])));
         }
-        for (size_t action = 0; action < node->action_count; action += 1) {
-            WRITE_OR_CLEAN(write_u64(
-                writer, &checksum, double_bits(node->strategy_sums[action])));
+        for (size_t action = 0; action < snapshot.action_count; action += 1) {
+            WRITE_OR_CLEAN(write_u64(writer, &checksum,
+                                     double_bits(
+                                         snapshot.strategy_sums[action])));
         }
-        cfr_info_node_unlock(node);
-        locked_node = NULL;
     }
     status = write_checksum(writer, checksum_value(&checksum));
 
 cleanup:
-    if (locked_node != NULL)
-        cfr_info_node_unlock(locked_node);
+    free(snapshot_values);
     free(nodes);
 #undef WRITE_OR_CLEAN
     return status;
@@ -747,17 +796,15 @@ static Status checkpoint_read(ByteReader *reader, const Game *game,
     store_out->node_blocks = temporary_store.node_blocks;
     store_out->size = temporary_store.size;
     store_out->capacity = temporary_store.capacity;
-    atomic_init(&store_out->collision_count,
-                atomic_load_explicit(&temporary_store.collision_count,
-                                     memory_order_relaxed));
+    store_out->collision_count = temporary_store.collision_count;
     store_out->growth_count = temporary_store.growth_count;
-    atomic_init(&store_out->synchronization, 0);
-    atomic_init(&store_out->writer_gate, false);
+    store_out->synchronization = 0;
+    store_out->writer_gate = 0;
     temporary_store.entries = NULL;
     temporary_store.node_blocks = NULL;
     temporary_store.size = 0;
     temporary_store.capacity = 0;
-    atomic_init(&temporary_store.collision_count, 0);
+    temporary_store.collision_count = 0;
     temporary_store.growth_count = 0;
     store_initialized = false;
     *trainer_out = (Trainer){.game = game,
@@ -913,7 +960,7 @@ Status cfr_strategy_write_text(FILE *stream, const Trainer *trainer) {
     if (!schema_id_length(schema_id, &schema_length))
         return CFR_STATUS_INVALID_ARGUMENT;
     (void)schema_length;
-    status = collect_nodes(trainer, &nodes, &node_count);
+    status = collect_nodes(trainer, &nodes, &node_count, true);
     if (status != CFR_STATUS_SUCCESS)
         return status;
     for (size_t index = 0; index < node_count; index += 1) {
