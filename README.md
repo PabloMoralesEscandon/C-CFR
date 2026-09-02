@@ -42,8 +42,8 @@ Run the commands from the repository root.
 make all
 ```
 
-The build requires only a C17 compiler in `CC`; it has no C++ build or runtime
-dependency.
+The build requires a C17 compiler in `CC` and the Zstandard development
+library. It has no C++ build or runtime dependency.
 
 This target creates the following release artifacts:
 

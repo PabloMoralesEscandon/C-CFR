@@ -10,6 +10,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <zstd.h>
 #if defined(__unix__) || defined(__APPLE__)
 #include <unistd.h>
 #endif
@@ -27,6 +28,22 @@ static const unsigned char CHECKPOINT_MAGIC[8] = {'C', 'F', 'R', 'C',
 typedef struct {
     uint32_t crc;
 } Checksum;
+
+typedef Status (*WriteBytesFunction)(void *context,
+                                     const unsigned char *bytes,
+                                     size_t length);
+typedef Status (*ReadBytesFunction)(void *context, unsigned char *bytes,
+                                    size_t length, size_t *amount_out);
+
+typedef struct {
+    WriteBytesFunction write;
+    void *context;
+} ByteWriter;
+
+typedef struct {
+    ReadBytesFunction read;
+    void *context;
+} ByteReader;
 
 /* Generated from the standard reflected CRC-32 polynomial 0xedb88320. */
 static const uint32_t CHECKSUM_TABLE[256] = {
@@ -120,6 +137,26 @@ static uint32_t checksum_value(const Checksum *checksum) {
     return ~checksum->crc;
 }
 
+static Status file_write_bytes(void *context, const unsigned char *bytes,
+                               size_t length) {
+    FILE *stream = context;
+
+    if (length > 0 && fwrite(bytes, 1, length, stream) != length)
+        return CFR_STATUS_IO_ERROR;
+    return CFR_STATUS_SUCCESS;
+}
+
+static Status file_read_bytes(void *context, unsigned char *bytes,
+                              size_t length, size_t *amount_out) {
+    FILE *stream = context;
+    const size_t amount = fread(bytes, 1, length, stream);
+
+    if (amount < length && ferror(stream))
+        return CFR_STATUS_IO_ERROR;
+    *amount_out = amount;
+    return CFR_STATUS_SUCCESS;
+}
+
 static bool binary64_is_supported(void) {
     return sizeof(double) == sizeof(uint64_t) && FLT_RADIX == 2 &&
            DBL_MANT_DIG == 53 && DBL_MAX_EXP == 1024;
@@ -155,52 +192,59 @@ static bool u64_fits_size(uint64_t value) {
     return value <= (uint64_t)SIZE_MAX;
 }
 
-static Status write_bytes(FILE *stream, Checksum *checksum,
+static Status write_bytes(ByteWriter *writer, Checksum *checksum,
                           const unsigned char *bytes, size_t length) {
-    if (length > 0 && fwrite(bytes, 1, length, stream) != length)
-        return CFR_STATUS_IO_ERROR;
+    Status status = writer->write(writer->context, bytes, length);
+
+    if (status != CFR_STATUS_SUCCESS)
+        return status;
     checksum_update(checksum, bytes, length);
     return CFR_STATUS_SUCCESS;
 }
 
-static Status write_u32(FILE *stream, Checksum *checksum, uint32_t value) {
+static Status write_u32(ByteWriter *writer, Checksum *checksum,
+                        uint32_t value) {
     unsigned char bytes[4];
 
     for (size_t index = 0; index < sizeof(bytes); index += 1)
         bytes[index] = (unsigned char)(value >> (index * 8));
-    return write_bytes(stream, checksum, bytes, sizeof(bytes));
+    return write_bytes(writer, checksum, bytes, sizeof(bytes));
 }
 
-static Status write_u64(FILE *stream, Checksum *checksum, uint64_t value) {
+static Status write_u64(ByteWriter *writer, Checksum *checksum,
+                        uint64_t value) {
     unsigned char bytes[8];
 
     for (size_t index = 0; index < sizeof(bytes); index += 1)
         bytes[index] = (unsigned char)(value >> (index * 8));
-    return write_bytes(stream, checksum, bytes, sizeof(bytes));
+    return write_bytes(writer, checksum, bytes, sizeof(bytes));
 }
 
-static Status write_checksum(FILE *stream, uint32_t value) {
+static Status write_checksum(ByteWriter *writer, uint32_t value) {
     unsigned char bytes[4];
 
     for (size_t index = 0; index < sizeof(bytes); index += 1)
         bytes[index] = (unsigned char)(value >> (index * 8));
-    if (fwrite(bytes, 1, sizeof(bytes), stream) != sizeof(bytes))
-        return CFR_STATUS_IO_ERROR;
-    return CFR_STATUS_SUCCESS;
+    return writer->write(writer->context, bytes, sizeof(bytes));
 }
 
-static Status read_bytes(FILE *stream, Checksum *checksum,
+static Status read_bytes(ByteReader *reader, Checksum *checksum,
                          unsigned char *bytes, size_t length) {
-    if (length > 0 && fread(bytes, 1, length, stream) != length) {
-        return ferror(stream) ? CFR_STATUS_IO_ERROR : CFR_STATUS_FORMAT_ERROR;
-    }
+    size_t amount = 0;
+    Status status = reader->read(reader->context, bytes, length, &amount);
+
+    if (status != CFR_STATUS_SUCCESS)
+        return status;
+    if (amount != length)
+        return CFR_STATUS_FORMAT_ERROR;
     checksum_update(checksum, bytes, length);
     return CFR_STATUS_SUCCESS;
 }
 
-static Status read_u32(FILE *stream, Checksum *checksum, uint32_t *value_out) {
+static Status read_u32(ByteReader *reader, Checksum *checksum,
+                       uint32_t *value_out) {
     unsigned char bytes[4];
-    Status status = read_bytes(stream, checksum, bytes, sizeof(bytes));
+    Status status = read_bytes(reader, checksum, bytes, sizeof(bytes));
     uint32_t value = 0;
 
     if (status != CFR_STATUS_SUCCESS)
@@ -211,9 +255,10 @@ static Status read_u32(FILE *stream, Checksum *checksum, uint32_t *value_out) {
     return CFR_STATUS_SUCCESS;
 }
 
-static Status read_u64(FILE *stream, Checksum *checksum, uint64_t *value_out) {
+static Status read_u64(ByteReader *reader, Checksum *checksum,
+                       uint64_t *value_out) {
     unsigned char bytes[8];
-    Status status = read_bytes(stream, checksum, bytes, sizeof(bytes));
+    Status status = read_bytes(reader, checksum, bytes, sizeof(bytes));
     uint64_t value = 0;
 
     if (status != CFR_STATUS_SUCCESS)
@@ -224,12 +269,17 @@ static Status read_u64(FILE *stream, Checksum *checksum, uint64_t *value_out) {
     return CFR_STATUS_SUCCESS;
 }
 
-static Status read_checksum(FILE *stream, uint32_t *value_out) {
+static Status read_checksum(ByteReader *reader, uint32_t *value_out) {
     unsigned char bytes[4];
     uint32_t value = 0;
+    size_t amount = 0;
+    Status status =
+        reader->read(reader->context, bytes, sizeof(bytes), &amount);
 
-    if (fread(bytes, 1, sizeof(bytes), stream) != sizeof(bytes))
-        return ferror(stream) ? CFR_STATUS_IO_ERROR : CFR_STATUS_FORMAT_ERROR;
+    if (status != CFR_STATUS_SUCCESS)
+        return status;
+    if (amount != sizeof(bytes))
+        return CFR_STATUS_FORMAT_ERROR;
     for (size_t index = 0; index < sizeof(bytes); index += 1)
         value |= (uint32_t)bytes[index] << (index * 8);
     *value_out = value;
@@ -402,7 +452,7 @@ static InfoSetKey decode_key(uint64_t encoded) {
     return (InfoSetKey)(-((int64_t)(UINT64_MAX - encoded)) - INT64_C(1));
 }
 
-Status cfr_checkpoint_write(FILE *stream, const Trainer *trainer) {
+static Status checkpoint_write(ByteWriter *writer, const Trainer *trainer) {
     const InfoNode **nodes = NULL;
     const char *schema_id;
     size_t schema_length;
@@ -410,8 +460,10 @@ Status cfr_checkpoint_write(FILE *stream, const Trainer *trainer) {
     Checksum checksum;
     Status status;
 
-    if (stream == NULL || trainer == NULL || trainer->game == NULL)
+    if (writer == NULL || writer->write == NULL || trainer == NULL ||
+        trainer->game == NULL) {
         return CFR_STATUS_INVALID_ARGUMENT;
+    }
     if (!binary64_is_supported())
         return CFR_STATUS_FORMAT_ERROR;
     schema_id = trainer->game->strategy_schema_id;
@@ -421,7 +473,6 @@ Status cfr_checkpoint_write(FILE *stream, const Trainer *trainer) {
     if (status != CFR_STATUS_SUCCESS)
         return status;
 
-    stream_lock(stream);
     checksum_init(&checksum);
 #define WRITE_OR_CLEAN(expression)                                             \
     do {                                                                       \
@@ -430,56 +481,160 @@ Status cfr_checkpoint_write(FILE *stream, const Trainer *trainer) {
             goto cleanup;                                                      \
     } while (0)
 
-    WRITE_OR_CLEAN(write_bytes(stream, &checksum, CHECKPOINT_MAGIC,
+    WRITE_OR_CLEAN(write_bytes(writer, &checksum, CHECKPOINT_MAGIC,
                                sizeof(CHECKPOINT_MAGIC)));
-    WRITE_OR_CLEAN(write_u32(stream, &checksum, CHECKPOINT_VERSION));
-    WRITE_OR_CLEAN(write_u32(stream, &checksum, (uint32_t)schema_length));
-    WRITE_OR_CLEAN(write_bytes(stream, &checksum,
+    WRITE_OR_CLEAN(write_u32(writer, &checksum, CHECKPOINT_VERSION));
+    WRITE_OR_CLEAN(write_u32(writer, &checksum, (uint32_t)schema_length));
+    WRITE_OR_CLEAN(write_bytes(writer, &checksum,
                                (const unsigned char *)schema_id, schema_length));
-    WRITE_OR_CLEAN(write_u32(stream, &checksum, (uint32_t)trainer->variant));
+    WRITE_OR_CLEAN(write_u32(writer, &checksum, (uint32_t)trainer->variant));
     if (trainer->variant == CFR_TRAINER_VARIANT_MCCFR_EXTERNAL) {
         WRITE_OR_CLEAN(
-            write_u64(stream, &checksum, trainer->mccfr_rng.state));
+            write_u64(writer, &checksum, trainer->mccfr_rng.state));
     }
-    WRITE_OR_CLEAN(write_u64(stream, &checksum,
+    WRITE_OR_CLEAN(write_u64(writer, &checksum,
                              (uint64_t)trainer->training_iterations));
     WRITE_OR_CLEAN(
-        write_u64(stream, &checksum, (uint64_t)trainer->stats.iterations));
+        write_u64(writer, &checksum, (uint64_t)trainer->stats.iterations));
     WRITE_OR_CLEAN(
-        write_u64(stream, &checksum, (uint64_t)trainer->stats.traversals));
+        write_u64(writer, &checksum, (uint64_t)trainer->stats.traversals));
     WRITE_OR_CLEAN(
-        write_u64(stream, &checksum, (uint64_t)trainer->stats.visited_nodes));
+        write_u64(writer, &checksum, (uint64_t)trainer->stats.visited_nodes));
     WRITE_OR_CLEAN(
-        write_u64(stream, &checksum, (uint64_t)trainer->stats.errors));
-    WRITE_OR_CLEAN(write_u64(stream, &checksum, (uint64_t)node_count));
+        write_u64(writer, &checksum, (uint64_t)trainer->stats.errors));
+    WRITE_OR_CLEAN(write_u64(writer, &checksum, (uint64_t)node_count));
 
     for (size_t node_index = 0; node_index < node_count; node_index += 1) {
         const InfoNode *node = nodes[node_index];
 
-        WRITE_OR_CLEAN(write_u64(stream, &checksum, (uint64_t)node->key));
+        WRITE_OR_CLEAN(write_u64(writer, &checksum, (uint64_t)node->key));
         WRITE_OR_CLEAN(
-            write_u64(stream, &checksum, (uint64_t)node->action_count));
+            write_u64(writer, &checksum, (uint64_t)node->action_count));
         for (size_t action = 0; action < node->action_count; action += 1) {
             WRITE_OR_CLEAN(write_u64(
-                stream, &checksum, double_bits(node->regret_sums[action])));
+                writer, &checksum, double_bits(node->regret_sums[action])));
         }
         for (size_t action = 0; action < node->action_count; action += 1) {
             WRITE_OR_CLEAN(write_u64(
-                stream, &checksum, double_bits(node->strategy_sums[action])));
+                writer, &checksum, double_bits(node->strategy_sums[action])));
         }
     }
-    status = write_checksum(stream, checksum_value(&checksum));
+    status = write_checksum(writer, checksum_value(&checksum));
 
 cleanup:
-    stream_unlock(stream);
     free(nodes);
 #undef WRITE_OR_CLEAN
     return status;
 }
 
-static Status read_size(FILE *stream, Checksum *checksum, size_t *value_out) {
+Status cfr_checkpoint_write(FILE *stream, const Trainer *trainer) {
+    ByteWriter writer = {.write = file_write_bytes, .context = stream};
+    Status status;
+
+    if (stream == NULL)
+        return CFR_STATUS_INVALID_ARGUMENT;
+    stream_lock(stream);
+    status = checkpoint_write(&writer, trainer);
+    stream_unlock(stream);
+    return status;
+}
+
+typedef struct {
+    FILE *stream;
+    ZSTD_CCtx *context;
+    void *output_buffer;
+    size_t output_capacity;
+} ZstdWriter;
+
+static Status zstd_write_output(ZstdWriter *writer, size_t amount) {
+    if (amount > 0 &&
+        fwrite(writer->output_buffer, 1, amount, writer->stream) != amount) {
+        return CFR_STATUS_IO_ERROR;
+    }
+    return CFR_STATUS_SUCCESS;
+}
+
+static Status zstd_write_bytes(void *context, const unsigned char *bytes,
+                               size_t length) {
+    ZstdWriter *writer = context;
+    ZSTD_inBuffer input = {.src = bytes, .size = length, .pos = 0};
+
+    while (input.pos < input.size) {
+        ZSTD_outBuffer output = {.dst = writer->output_buffer,
+                                 .size = writer->output_capacity,
+                                 .pos = 0};
+        const size_t result = ZSTD_compressStream2(
+            writer->context, &output, &input, ZSTD_e_continue);
+
+        if (ZSTD_isError(result))
+            return CFR_STATUS_IO_ERROR;
+        Status status = zstd_write_output(writer, output.pos);
+
+        if (status != CFR_STATUS_SUCCESS)
+            return status;
+    }
+    return CFR_STATUS_SUCCESS;
+}
+
+static Status zstd_finish_write(ZstdWriter *writer) {
+    ZSTD_inBuffer input = {.src = NULL, .size = 0, .pos = 0};
+    size_t remaining;
+
+    do {
+        ZSTD_outBuffer output = {.dst = writer->output_buffer,
+                                 .size = writer->output_capacity,
+                                 .pos = 0};
+
+        remaining = ZSTD_compressStream2(writer->context, &output, &input,
+                                         ZSTD_e_end);
+        if (ZSTD_isError(remaining))
+            return CFR_STATUS_IO_ERROR;
+        Status status = zstd_write_output(writer, output.pos);
+
+        if (status != CFR_STATUS_SUCCESS)
+            return status;
+    } while (remaining != 0);
+    return CFR_STATUS_SUCCESS;
+}
+
+Status cfr_checkpoint_write_zstd(FILE *stream, const Trainer *trainer) {
+    ZstdWriter zstd_writer = {.stream = stream};
+    ByteWriter writer = {.write = zstd_write_bytes,
+                         .context = &zstd_writer};
+    Status status = CFR_STATUS_OUT_OF_MEMORY;
+
+    if (stream == NULL || trainer == NULL)
+        return CFR_STATUS_INVALID_ARGUMENT;
+    zstd_writer.context = ZSTD_createCCtx();
+    zstd_writer.output_capacity = ZSTD_CStreamOutSize();
+    if (zstd_writer.context == NULL || zstd_writer.output_capacity == 0)
+        goto cleanup;
+    zstd_writer.output_buffer = malloc(zstd_writer.output_capacity);
+    if (zstd_writer.output_buffer == NULL)
+        goto cleanup;
+    if (ZSTD_isError(ZSTD_CCtx_setParameter(
+            zstd_writer.context, ZSTD_c_compressionLevel, 1)) ||
+        ZSTD_isError(ZSTD_CCtx_setParameter(
+            zstd_writer.context, ZSTD_c_checksumFlag, 1))) {
+        status = CFR_STATUS_IO_ERROR;
+        goto cleanup;
+    }
+    stream_lock(stream);
+    status = checkpoint_write(&writer, trainer);
+    if (status == CFR_STATUS_SUCCESS)
+        status = zstd_finish_write(&zstd_writer);
+    stream_unlock(stream);
+
+cleanup:
+    free(zstd_writer.output_buffer);
+    ZSTD_freeCCtx(zstd_writer.context);
+    return status;
+}
+
+static Status read_size(ByteReader *reader, Checksum *checksum,
+                        size_t *value_out) {
     uint64_t encoded;
-    Status status = read_u64(stream, checksum, &encoded);
+    Status status = read_u64(reader, checksum, &encoded);
 
     if (status != CFR_STATUS_SUCCESS)
         return status;
@@ -489,7 +644,8 @@ static Status read_size(FILE *stream, Checksum *checksum, size_t *value_out) {
     return CFR_STATUS_SUCCESS;
 }
 
-static Status read_header(FILE *stream, const Game *game, Checksum *checksum,
+static Status read_header(ByteReader *reader, const Game *game,
+                          Checksum *checksum,
                           TrainerVariant *variant_out,
                           MccfrRng *mccfr_rng_out,
                           size_t *training_iterations_out,
@@ -509,23 +665,23 @@ static Status read_header(FILE *stream, const Game *game, Checksum *checksum,
             return status;                                                     \
     } while (0)
 
-    READ_OR_RETURN(read_bytes(stream, checksum, magic, sizeof(magic)));
+    READ_OR_RETURN(read_bytes(reader, checksum, magic, sizeof(magic)));
     if (memcmp(magic, CHECKPOINT_MAGIC, sizeof(magic)) != 0)
         return CFR_STATUS_FORMAT_ERROR;
-    READ_OR_RETURN(read_u32(stream, checksum, &version));
+    READ_OR_RETURN(read_u32(reader, checksum, &version));
     if (version != CHECKPOINT_VERSION)
         return CFR_STATUS_FORMAT_ERROR;
-    READ_OR_RETURN(read_u32(stream, checksum, &schema_length));
+    READ_OR_RETURN(read_u32(reader, checksum, &schema_length));
     if (schema_length == 0 || schema_length > SCHEMA_ID_MAX_LENGTH)
         return CFR_STATUS_FORMAT_ERROR;
-    READ_OR_RETURN(read_bytes(stream, checksum, schema, schema_length));
+    READ_OR_RETURN(read_bytes(reader, checksum, schema, schema_length));
     if (!schema_id_length(game->strategy_schema_id, &expected_schema_length))
         return CFR_STATUS_INVALID_ARGUMENT;
     if (schema_length != expected_schema_length ||
         memcmp(schema, game->strategy_schema_id, schema_length) != 0) {
         return CFR_STATUS_INCOMPATIBLE_GAME;
     }
-    READ_OR_RETURN(read_u32(stream, checksum, &variant));
+    READ_OR_RETURN(read_u32(reader, checksum, &variant));
     if (variant != (uint32_t)CFR_TRAINER_VARIANT_CFR &&
         variant != (uint32_t)CFR_TRAINER_VARIANT_CFR_PLUS &&
         variant != (uint32_t)CFR_TRAINER_VARIANT_MCCFR_EXTERNAL) {
@@ -534,19 +690,20 @@ static Status read_header(FILE *stream, const Game *game, Checksum *checksum,
     *variant_out = (TrainerVariant)variant;
     mccfr_rng_out->state = 0;
     if (variant == (uint32_t)CFR_TRAINER_VARIANT_MCCFR_EXTERNAL) {
-        READ_OR_RETURN(read_u64(stream, checksum, &mccfr_rng_out->state));
+        READ_OR_RETURN(read_u64(reader, checksum, &mccfr_rng_out->state));
     }
-    READ_OR_RETURN(read_size(stream, checksum, training_iterations_out));
-    READ_OR_RETURN(read_size(stream, checksum, &stats_out->iterations));
-    READ_OR_RETURN(read_size(stream, checksum, &stats_out->traversals));
-    READ_OR_RETURN(read_size(stream, checksum, &stats_out->visited_nodes));
-    READ_OR_RETURN(read_size(stream, checksum, &stats_out->errors));
-    READ_OR_RETURN(read_size(stream, checksum, node_count_out));
+    READ_OR_RETURN(read_size(reader, checksum, training_iterations_out));
+    READ_OR_RETURN(read_size(reader, checksum, &stats_out->iterations));
+    READ_OR_RETURN(read_size(reader, checksum, &stats_out->traversals));
+    READ_OR_RETURN(read_size(reader, checksum, &stats_out->visited_nodes));
+    READ_OR_RETURN(read_size(reader, checksum, &stats_out->errors));
+    READ_OR_RETURN(read_size(reader, checksum, node_count_out));
 #undef READ_OR_RETURN
     return CFR_STATUS_SUCCESS;
 }
 
-static Status read_node(FILE *stream, Checksum *checksum, const Game *game,
+static Status read_node(ByteReader *reader, Checksum *checksum,
+                        const Game *game,
                         TrainerVariant variant, InfoStore *store) {
     uint64_t encoded_key;
     size_t action_count;
@@ -554,10 +711,10 @@ static Status read_node(FILE *stream, Checksum *checksum, const Game *game,
     const InfoNode *existing = NULL;
     Status status;
 
-    status = read_u64(stream, checksum, &encoded_key);
+    status = read_u64(reader, checksum, &encoded_key);
     if (status != CFR_STATUS_SUCCESS)
         return status;
-    status = read_size(stream, checksum, &action_count);
+    status = read_size(reader, checksum, &action_count);
     if (status != CFR_STATUS_SUCCESS)
         return status;
     if (action_count == 0 || action_count > game->max_legal_actions)
@@ -578,7 +735,7 @@ static Status read_node(FILE *stream, Checksum *checksum, const Game *game,
         uint64_t bits;
         double value;
 
-        status = read_u64(stream, checksum, &bits);
+        status = read_u64(reader, checksum, &bits);
         if (status != CFR_STATUS_SUCCESS)
             return status;
         value = bits_double(bits);
@@ -592,7 +749,7 @@ static Status read_node(FILE *stream, Checksum *checksum, const Game *game,
         uint64_t bits;
         double value;
 
-        status = read_u64(stream, checksum, &bits);
+        status = read_u64(reader, checksum, &bits);
         if (status != CFR_STATUS_SUCCESS)
             return status;
         value = bits_double(bits);
@@ -603,8 +760,9 @@ static Status read_node(FILE *stream, Checksum *checksum, const Game *game,
     return CFR_STATUS_SUCCESS;
 }
 
-Status cfr_checkpoint_read(FILE *stream, const Game *game, GameState *state,
-                           InfoStore *store_out, Trainer *trainer_out) {
+static Status checkpoint_read(ByteReader *reader, const Game *game,
+                              GameState *state, InfoStore *store_out,
+                              Trainer *trainer_out) {
     InfoStore temporary_store = {0};
     TrainerStats stats = {0};
     TrainerVariant variant = CFR_TRAINER_VARIANT_CFR;
@@ -616,17 +774,17 @@ Status cfr_checkpoint_read(FILE *stream, const Game *game, GameState *state,
     bool store_initialized = false;
     Status status;
 
-    if (stream == NULL || game == NULL || state == NULL || store_out == NULL ||
-        trainer_out == NULL || store_out->entries != NULL ||
+    if (reader == NULL || reader->read == NULL || game == NULL ||
+        state == NULL || store_out == NULL || trainer_out == NULL ||
+        store_out->entries != NULL || store_out->node_blocks != NULL ||
         store_out->size != 0 || store_out->capacity != 0 ||
         store_out->collision_count != 0 || store_out->growth_count != 0 ||
         game->max_legal_actions == 0)
         return CFR_STATUS_INVALID_ARGUMENT;
     if (!binary64_is_supported())
         return CFR_STATUS_FORMAT_ERROR;
-    stream_lock(stream);
     checksum_init(&checksum);
-    status = read_header(stream, game, &checksum, &variant, &mccfr_rng,
+    status = read_header(reader, game, &checksum, &variant, &mccfr_rng,
                          &training_iterations, &stats, &node_count);
     if (status != CFR_STATUS_SUCCESS)
         goto cleanup;
@@ -635,11 +793,12 @@ Status cfr_checkpoint_read(FILE *stream, const Game *game, GameState *state,
         goto cleanup;
     store_initialized = true;
     for (size_t index = 0; index < node_count; index += 1) {
-        status = read_node(stream, &checksum, game, variant, &temporary_store);
+        status = read_node(reader, &checksum, game, variant,
+                           &temporary_store);
         if (status != CFR_STATUS_SUCCESS)
             goto cleanup;
     }
-    status = read_checksum(stream, &stored_checksum);
+    status = read_checksum(reader, &stored_checksum);
     if (status != CFR_STATUS_SUCCESS)
         goto cleanup;
     if (stored_checksum != checksum_value(&checksum)) {
@@ -647,14 +806,14 @@ Status cfr_checkpoint_read(FILE *stream, const Game *game, GameState *state,
         goto cleanup;
     }
     {
-        const int trailing = fgetc(stream);
+        unsigned char trailing;
+        size_t amount = 0;
 
-        if (trailing != EOF) {
-            status = CFR_STATUS_FORMAT_ERROR;
+        status = reader->read(reader->context, &trailing, 1, &amount);
+        if (status != CFR_STATUS_SUCCESS)
             goto cleanup;
-        }
-        if (ferror(stream)) {
-            status = CFR_STATUS_IO_ERROR;
+        if (amount != 0) {
+            status = CFR_STATUS_FORMAT_ERROR;
             goto cleanup;
         }
     }
@@ -672,7 +831,121 @@ Status cfr_checkpoint_read(FILE *stream, const Game *game, GameState *state,
 cleanup:
     if (store_initialized)
         (void)cfr_info_store_destroy(&temporary_store);
+    return status;
+}
+
+Status cfr_checkpoint_read(FILE *stream, const Game *game, GameState *state,
+                           InfoStore *store_out, Trainer *trainer_out) {
+    ByteReader reader = {.read = file_read_bytes, .context = stream};
+    Status status;
+
+    if (stream == NULL)
+        return CFR_STATUS_INVALID_ARGUMENT;
+    stream_lock(stream);
+    status = checkpoint_read(&reader, game, state, store_out, trainer_out);
     stream_unlock(stream);
+    return status;
+}
+
+typedef struct {
+    FILE *stream;
+    ZSTD_DCtx *context;
+    unsigned char *input_buffer;
+    size_t input_capacity;
+    ZSTD_inBuffer input;
+    bool frame_finished;
+    bool end_checked;
+} ZstdReader;
+
+static Status zstd_check_stream_end(ZstdReader *reader) {
+    if (reader->end_checked)
+        return CFR_STATUS_SUCCESS;
+    if (reader->input.pos != reader->input.size)
+        return CFR_STATUS_FORMAT_ERROR;
+    const int trailing = fgetc(reader->stream);
+
+    if (trailing != EOF)
+        return CFR_STATUS_FORMAT_ERROR;
+    if (ferror(reader->stream))
+        return CFR_STATUS_IO_ERROR;
+    reader->end_checked = true;
+    return CFR_STATUS_SUCCESS;
+}
+
+static Status zstd_refill_input(ZstdReader *reader) {
+    if (reader->input.pos != reader->input.size)
+        return CFR_STATUS_SUCCESS;
+    const size_t amount = fread(reader->input_buffer, 1,
+                                reader->input_capacity, reader->stream);
+
+    if (amount == 0) {
+        return ferror(reader->stream) ? CFR_STATUS_IO_ERROR
+                                      : CFR_STATUS_FORMAT_ERROR;
+    }
+    reader->input.src = reader->input_buffer;
+    reader->input.size = amount;
+    reader->input.pos = 0;
+    return CFR_STATUS_SUCCESS;
+}
+
+static Status zstd_read_bytes(void *context, unsigned char *bytes,
+                              size_t length, size_t *amount_out) {
+    ZstdReader *reader = context;
+    size_t amount = 0;
+
+    while (amount < length && !reader->frame_finished) {
+        Status status = zstd_refill_input(reader);
+
+        if (status != CFR_STATUS_SUCCESS)
+            return status;
+        ZSTD_outBuffer output = {
+            .dst = bytes + amount, .size = length - amount, .pos = 0};
+        const size_t remaining = ZSTD_decompressStream(
+            reader->context, &output, &reader->input);
+
+        if (ZSTD_isError(remaining))
+            return CFR_STATUS_FORMAT_ERROR;
+        amount += output.pos;
+        if (remaining == 0)
+            reader->frame_finished = true;
+    }
+    if (reader->frame_finished && amount < length) {
+        Status status = zstd_check_stream_end(reader);
+
+        if (status != CFR_STATUS_SUCCESS)
+            return status;
+    }
+    *amount_out = amount;
+    return CFR_STATUS_SUCCESS;
+}
+
+Status cfr_checkpoint_read_zstd(FILE *stream, const Game *game,
+                                GameState *state, InfoStore *store_out,
+                                Trainer *trainer_out) {
+    ZstdReader zstd_reader = {.stream = stream};
+    ByteReader reader = {.read = zstd_read_bytes,
+                         .context = &zstd_reader};
+    Status status = CFR_STATUS_OUT_OF_MEMORY;
+
+    if (stream == NULL)
+        return CFR_STATUS_INVALID_ARGUMENT;
+    zstd_reader.context = ZSTD_createDCtx();
+    zstd_reader.input_capacity = ZSTD_DStreamInSize();
+    if (zstd_reader.context == NULL || zstd_reader.input_capacity == 0)
+        goto cleanup;
+    zstd_reader.input_buffer = malloc(zstd_reader.input_capacity);
+    if (zstd_reader.input_buffer == NULL)
+        goto cleanup;
+    zstd_reader.input = (ZSTD_inBuffer){.src = zstd_reader.input_buffer,
+                                        .size = 0,
+                                        .pos = 0};
+    stream_lock(stream);
+    status = checkpoint_read(&reader, game, state, store_out, trainer_out);
+    stream_unlock(stream);
+
+cleanup:
+    free(zstd_reader.input_buffer);
+    ZSTD_freeDCtx(zstd_reader.context);
     return status;
 }
 

@@ -1,6 +1,8 @@
 CC ?= cc
 AR ?= ar
 
+LDLIBS += -lzstd
+
 CPPFLAGS += -Iinclude
 C_STANDARD := -std=c17
 C_WARNINGS := -Wall -Wextra -Wpedantic -Wvla -Werror
