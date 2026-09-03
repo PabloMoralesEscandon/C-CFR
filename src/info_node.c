@@ -38,6 +38,27 @@ void cfr_info_node_unlock(const InfoNode *node) {
                      __ATOMIC_RELEASE);
 }
 
+static void info_node_begin_update(InfoNode *node) {
+    /* Odd versions make concurrent regret snapshots retry. */
+    __atomic_fetch_add(&node->version, 1U, __ATOMIC_ACQ_REL);
+}
+
+static void info_node_end_update(InfoNode *node) {
+    /* Publish the complete regret update with the next even version. */
+    __atomic_fetch_add(&node->version, 1U, __ATOMIC_RELEASE);
+}
+
+static double atomic_load_double(const double *value) {
+    double result;
+
+    __atomic_load(value, &result, __ATOMIC_RELAXED);
+    return result;
+}
+
+static void atomic_store_double(double *target, double value) {
+    __atomic_store(target, &value, __ATOMIC_RELAXED);
+}
+
 static bool valid_probability(double probability) {
     if (fabs(probability - 1.0) <= ABS_EPSILON)
         return 1;
@@ -126,6 +147,7 @@ Status cfr_info_node_init_owned(void *storage, size_t storage_size,
         node->strategy_sums[index] = 0.0;
     }
     node->synchronization = 0;
+    node->version = 0;
     *node_out = node;
     return CFR_STATUS_SUCCESS;
 }
@@ -156,6 +178,7 @@ Status cfr_info_node_init(InfoNode *node, InfoSetKey key, size_t action_count) {
     node->regret_sums = regret_sums;
     node->strategy_sums = strategy_sums;
     node->synchronization = 0;
+    node->version = 0;
     return CFR_STATUS_SUCCESS;
 }
 
@@ -173,6 +196,7 @@ Status cfr_info_node_destroy(InfoNode *node) {
     node->regret_sums = NULL;
     node->strategy_sums = NULL;
     node->synchronization = 0;
+    node->version = 0;
 
     return CFR_STATUS_SUCCESS;
 }
@@ -222,6 +246,76 @@ Status cfr_info_node_current_strategy_sequential(
     if (strategy_capacity < node->action_count)
         return CFR_STATUS_BUFFER_TOO_SMALL;
     return current_strategy_locked(node, strategy_array);
+}
+
+Status cfr_info_node_current_strategy_concurrent(
+    const InfoNode *node, Probability *strategy_array,
+    size_t strategy_capacity) {
+    if (node == NULL || node->regret_sums == NULL ||
+        node->strategy_sums == NULL || strategy_array == NULL ||
+        node->action_count == 0) {
+        return CFR_STATUS_INVALID_ARGUMENT;
+    }
+    if (strategy_capacity < node->action_count)
+        return CFR_STATUS_BUFFER_TOO_SMALL;
+
+    size_t spin_count = 0;
+    for (;;) {
+        const unsigned int version =
+            __atomic_load_n(&node->version, __ATOMIC_ACQUIRE);
+
+        if ((version & 1U) != 0U) {
+            cfr_spin_wait(&spin_count);
+            continue;
+        }
+        bool values_are_finite = true;
+        for (size_t i = 0; i < node->action_count; i++) {
+            const double regret =
+                atomic_load_double(&node->regret_sums[i]);
+
+            strategy_array[i] = regret;
+            if (!isfinite(regret))
+                values_are_finite = false;
+        }
+#if defined(__GNUC__) && defined(__SANITIZE_THREAD__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wtsan"
+#endif
+        __atomic_thread_fence(__ATOMIC_ACQ_REL);
+#if defined(__GNUC__) && defined(__SANITIZE_THREAD__)
+#pragma GCC diagnostic pop
+#endif
+        if (__atomic_load_n(&node->version, __ATOMIC_RELAXED) != version) {
+            cfr_spin_wait(&spin_count);
+            continue;
+        }
+        if (!values_are_finite)
+            return CFR_STATUS_NUMERIC_ERROR;
+        break;
+    }
+    double maximum = 0.0;
+    for (size_t i = 0; i < node->action_count; i++) {
+        if (strategy_array[i] > maximum)
+            maximum = strategy_array[i];
+    }
+    if (maximum == 0.0) {
+        for (size_t i = 0; i < node->action_count; i++)
+            strategy_array[i] = 1.0 / node->action_count;
+        return CFR_STATUS_SUCCESS;
+    }
+    double sum = 0.0;
+    for (size_t i = 0; i < node->action_count; i++) {
+        if (strategy_array[i] > 0.0)
+            sum += strategy_array[i] / maximum;
+    }
+    if (!isfinite(sum) || sum <= 0.0)
+        return CFR_STATUS_NUMERIC_ERROR;
+    for (size_t i = 0; i < node->action_count; i++) {
+        strategy_array[i] = strategy_array[i] > 0.0
+                                ? (strategy_array[i] / maximum) / sum
+                                : 0.0;
+    }
+    return CFR_STATUS_SUCCESS;
 }
 
 Status cfr_info_node_current_strategy(const InfoNode *node,
@@ -314,10 +408,31 @@ Status cfr_info_node_apply_deltas(InfoNode *node, const Utility *delta_regret,
 void cfr_info_node_apply_validated_deltas(
     InfoNode *node, const Utility *delta_regret,
     const double *delta_strategy_sum, size_t action_count) {
+    info_node_begin_update(node);
+    for (size_t i = 0; i < action_count; i++) {
+        atomic_store_double(&node->regret_sums[i],
+                            node->regret_sums[i] + delta_regret[i]);
+        node->strategy_sums[i] += delta_strategy_sum[i];
+    }
+    info_node_end_update(node);
+}
+
+void cfr_info_node_apply_validated_deltas_sequential(
+    InfoNode *node, const Utility *delta_regret,
+    const double *delta_strategy_sum, size_t action_count) {
     for (size_t i = 0; i < action_count; i++) {
         node->regret_sums[i] += delta_regret[i];
         node->strategy_sums[i] += delta_strategy_sum[i];
     }
+}
+
+void cfr_info_node_clamp_regret_nonnegative_locked(
+    InfoNode *node, size_t action_index) {
+    if (node->regret_sums[action_index] >= 0.0)
+        return;
+    info_node_begin_update(node);
+    atomic_store_double(&node->regret_sums[action_index], 0.0);
+    info_node_end_update(node);
 }
 
 Status cfr_info_node_add_regret(InfoNode *node, size_t action_index,
@@ -334,7 +449,9 @@ Status cfr_info_node_add_regret(InfoNode *node, size_t action_index,
     if (!isfinite(new_regret)) {
         status = CFR_STATUS_NUMERIC_ERROR;
     } else {
-        node->regret_sums[action_index] = new_regret;
+        info_node_begin_update(node);
+        atomic_store_double(&node->regret_sums[action_index], new_regret);
+        info_node_end_update(node);
     }
     cfr_info_node_unlock(node);
     return status;

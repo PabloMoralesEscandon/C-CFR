@@ -489,7 +489,8 @@ static Status get_strategy_snapshot(MccfrWorkspace *workspace,
     status = ensure_snapshots(workspace);
     if (status != CFR_STATUS_SUCCESS)
         return status;
-    status = cfr_info_node_current_strategy(node, strategy, action_count);
+    status = cfr_info_node_current_strategy_concurrent(
+        node, strategy, action_count);
     if (status != CFR_STATUS_SUCCESS)
         return status;
 

@@ -455,8 +455,8 @@ static Status workspace_apply_deltas(MccfrSequentialWorkspace *workspace) {
         MccfrSequentialDeltaEntry *entry = &workspace->delta_entries[index];
         Utility *regret = workspace->arena + entry->arena_offset;
         double *strategy = regret + entry->action_count;
-        cfr_info_node_apply_validated_deltas(entry->node, regret, strategy,
-                                             entry->action_count);
+        cfr_info_node_apply_validated_deltas_sequential(
+            entry->node, regret, strategy, entry->action_count);
     }
     return CFR_STATUS_SUCCESS;
 }

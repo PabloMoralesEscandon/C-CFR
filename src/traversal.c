@@ -230,8 +230,8 @@ static void workspace_apply_locked_deltas(WorkSpace *workspace) {
 
         if (workspace->regret_matching_plus) {
             for (size_t action = 0; action < entry->action_count; action++) {
-                if (entry->node->regret_sums[action] < 0.0)
-                    entry->node->regret_sums[action] = 0.0;
+                cfr_info_node_clamp_regret_nonnegative_locked(
+                    entry->node, action);
             }
         }
     }

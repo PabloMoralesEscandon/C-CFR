@@ -45,6 +45,8 @@ typedef struct {
     double *strategy_sums;
     /* Private lock storage. The caller must not access this field. */
     unsigned char synchronization;
+    /* Private regret snapshot version. The caller must not access this field. */
+    unsigned int version;
 } InfoNode;
 
 /*
