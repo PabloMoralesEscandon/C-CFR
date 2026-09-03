@@ -118,7 +118,6 @@ static void workspace_reset(MccfrWorkspace *workspace, const MccfrRng *rng,
              index += 1) {
             workspace->node_cache[index] = (MccfrNodeCacheEntry){0};
         }
-        workspace->node_cache_count = 0;
         workspace->cached_store = store;
     }
 }
@@ -127,21 +126,18 @@ static Status workspace_get_or_create_node(MccfrWorkspace *workspace,
                                            InfoStore *store, InfoSetKey key,
                                            size_t action_count,
                                            InfoNode **node_out) {
-    const size_t mask = CFR_MCCFR_NODE_CACHE_CAPACITY - 1;
     size_t cell = (size_t)(((uint64_t)key *
                             UINT64_C(11400714819323198485)) >>
                            (64 - CFR_MCCFR_NODE_CACHE_BITS));
 
-    while (workspace->node_cache[cell].node != NULL) {
-        if (workspace->node_cache[cell].key == key) {
-            InfoNode *node = workspace->node_cache[cell].node;
+    if (workspace->node_cache[cell].node != NULL &&
+        workspace->node_cache[cell].key == key) {
+        InfoNode *node = workspace->node_cache[cell].node;
 
-            if (node->action_count != action_count)
-                return CFR_STATUS_INVALID_ARGUMENT;
-            *node_out = node;
-            return CFR_STATUS_SUCCESS;
-        }
-        cell = (cell + 1) & mask;
+        if (node->action_count != action_count)
+            return CFR_STATUS_INVALID_ARGUMENT;
+        *node_out = node;
+        return CFR_STATUS_SUCCESS;
     }
 
     InfoNode *node;
@@ -150,12 +146,8 @@ static Status workspace_get_or_create_node(MccfrWorkspace *workspace,
 
     if (status != CFR_STATUS_SUCCESS)
         return status;
-    if (workspace->node_cache_count <
-        CFR_MCCFR_NODE_CACHE_CAPACITY - CFR_MCCFR_NODE_CACHE_CAPACITY / 4) {
-        workspace->node_cache[cell] =
-            (MccfrNodeCacheEntry){.key = key, .node = node};
-        workspace->node_cache_count += 1;
-    }
+    workspace->node_cache[cell] =
+        (MccfrNodeCacheEntry){.key = key, .node = node};
     *node_out = node;
     return CFR_STATUS_SUCCESS;
 }

@@ -61,7 +61,6 @@ typedef struct {
 
     /* Traversal-local lookup cache; borrowed nodes remain owned by the store. */
     InfoStore *cached_store;
-    size_t node_cache_count;
     MccfrNodeCacheEntry node_cache[CFR_MCCFR_NODE_CACHE_CAPACITY];
 } MccfrWorkspace;
 
