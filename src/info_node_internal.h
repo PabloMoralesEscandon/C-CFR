@@ -1,9 +1,13 @@
 #ifndef CFR_INFO_NODE_INTERNAL_H
 #define CFR_INFO_NODE_INTERNAL_H
 
+#include <stdbool.h>
+
 #include "cfr/info_node.h"
 
 void cfr_info_node_lock(const InfoNode *node);
+
+bool cfr_info_node_try_lock(const InfoNode *node);
 
 void cfr_info_node_unlock(const InfoNode *node);
 

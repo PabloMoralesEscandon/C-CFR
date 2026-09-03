@@ -6,6 +6,7 @@
 #include "cfr/mccfr.h"
 #include "info_node_internal.h"
 #include "mccfr_internal.h"
+#include "spin_wait_internal.h"
 #include "traversal_internal.h"
 
 #define MCCFR_CELL_EMPTY SIZE_MAX
@@ -641,8 +642,20 @@ static Status workspace_commit_deltas(MccfrWorkspace *workspace) {
 
     sort_delta_entries(workspace);
     size_t locked_count = 0;
-    for (; locked_count < workspace->delta_entry_count; locked_count += 1)
-        cfr_info_node_lock(workspace->delta_entries[locked_count].node);
+    size_t spin_count = 0;
+    while (locked_count < workspace->delta_entry_count) {
+        if (cfr_info_node_try_lock(
+                workspace->delta_entries[locked_count].node)) {
+            locked_count += 1;
+            continue;
+        }
+        while (locked_count > 0) {
+            locked_count -= 1;
+            cfr_info_node_unlock(
+                workspace->delta_entries[locked_count].node);
+        }
+        cfr_spin_wait(&spin_count);
+    }
 
     status = workspace_check_locked_deltas(workspace);
     if (status == CFR_STATUS_SUCCESS)

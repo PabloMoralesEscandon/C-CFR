@@ -25,6 +25,14 @@ void cfr_info_node_lock(const InfoNode *node) {
     }
 }
 
+bool cfr_info_node_try_lock(const InfoNode *node) {
+    unsigned char expected = 0;
+
+    return __atomic_compare_exchange_n(
+        (unsigned char *)&node->synchronization, &expected, 1, false,
+        __ATOMIC_ACQUIRE, __ATOMIC_RELAXED);
+}
+
 void cfr_info_node_unlock(const InfoNode *node) {
     __atomic_store_n((unsigned char *)&node->synchronization, 0,
                      __ATOMIC_RELEASE);
