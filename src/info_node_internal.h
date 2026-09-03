@@ -11,6 +11,14 @@ Status cfr_info_node_check_deltas_locked(
     const InfoNode *node, const Utility *delta_regret,
     const double *delta_strategy_sum, size_t action_count);
 
+Status cfr_info_node_current_strategy_sequential(
+    const InfoNode *node, Probability *strategy_array,
+    size_t strategy_capacity);
+
+Status cfr_info_node_check_deltas_sequential(
+    const InfoNode *node, const Utility *delta_regret,
+    const double *delta_strategy_sum, size_t action_count);
+
 /*
  * Allocates and initializes a node owned by an information store.
  *

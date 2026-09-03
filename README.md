@@ -385,12 +385,14 @@ declared in `cfr/mccfr.h`.
 
 MCCFR can train one shared `InfoStore` from multiple threads. Give every worker
 its own `Trainer`, mutable root `GameState`, and seed, then call
-`cfr_trainer_run` in each worker. The game descriptor can be shared when its
-operations and context are safe for concurrent calls. Do not share a `Trainer`,
-`GameState`, or `MccfrRng`, and do not initialize or destroy the store while a
-worker is using it. Pause the workers before writing a resumable checkpoint so
-that trainer counters, random streams, and the shared learning state describe
-one coordinated boundary.
+`cfr_trainer_run_concurrent` in each worker. The normal `cfr_trainer_run`
+retains the faster sequential traversal and requires exclusive access to its
+store. The game descriptor can be shared when its operations and context are
+safe for concurrent calls. Do not share a `Trainer`, `GameState`, or
+`MccfrRng`, and do not initialize or destroy the store while a worker is using
+it. Pause the workers before writing a resumable checkpoint so that trainer
+counters, random streams, and the shared learning state describe one
+coordinated boundary.
 
 The shared table uses concurrent reader access and takes an exclusive lock only
 when publishing a new information set or growing the table. Learning arrays use

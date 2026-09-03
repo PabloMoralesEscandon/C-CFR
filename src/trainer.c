@@ -3,6 +3,7 @@
 #include "cfr/trainer.h"
 #include "cfr/traversal.h"
 #include "mccfr_internal.h"
+#include "mccfr_sequential_internal.h"
 #include "traversal_internal.h"
 
 static bool strategic_player_count_is_valid(size_t count) {
@@ -50,6 +51,8 @@ static Status trainer_traverse(Trainer *trainer, Player target_player,
                                size_t iteration, Utility *utility,
                                TraversalStats *stats,
                                MccfrWorkspace *mccfr_workspace,
+                               MccfrSequentialWorkspace *sequential_workspace,
+                               bool concurrent_mccfr,
                                CfrFullTraversalWorkspace *full_workspace) {
     if (trainer->variant == CFR_TRAINER_VARIANT_CFR ||
         trainer->variant == CFR_TRAINER_VARIANT_CFR_PLUS) {
@@ -59,6 +62,12 @@ static Status trainer_traverse(Trainer *trainer, Player target_player,
             utility, stats, full_workspace);
     }
     if (trainer->variant == CFR_TRAINER_VARIANT_MCCFR_EXTERNAL) {
+        if (!concurrent_mccfr) {
+            return cfr_mccfr_sequential_external_traverse_in_workspace(
+                trainer->game, trainer->state, trainer->store,
+                target_player, &trainer->mccfr_rng, utility, stats,
+                sequential_workspace);
+        }
         return cfr_mccfr_external_traverse_in_workspace(
             trainer->game, trainer->state, trainer->store, target_player,
             &trainer->mccfr_rng, utility, stats, mccfr_workspace);
@@ -69,12 +78,15 @@ static Status trainer_traverse(Trainer *trainer, Player target_player,
 static Status run_player_traversal(Trainer *trainer, Player player,
                                    size_t iteration,
                                    MccfrWorkspace *mccfr_workspace,
+                                   MccfrSequentialWorkspace *sequential_workspace,
+                                   bool concurrent_mccfr,
                                    CfrFullTraversalWorkspace *full_workspace) {
     TraversalStats traverse_stats = {0};
     Utility utility = 0.0;
     const Status status = trainer_traverse(
         trainer, player, iteration, &utility, &traverse_stats,
-        mccfr_workspace, full_workspace);
+        mccfr_workspace, sequential_workspace, concurrent_mccfr,
+        full_workspace);
 
     if (status != CFR_STATUS_SUCCESS) {
         if (trainer->stats.errors != SIZE_MAX)
@@ -92,7 +104,8 @@ static Status run_player_traversal(Trainer *trainer, Player player,
     return CFR_STATUS_SUCCESS;
 }
 
-Status cfr_trainer_run(Trainer *trainer, size_t amount) {
+static Status trainer_run(Trainer *trainer, size_t amount,
+                          bool concurrent_mccfr) {
     if (trainer == NULL || trainer->game == NULL || trainer->state == NULL ||
         trainer->store == NULL || !strategic_player_count_is_valid(
                                       trainer->game->strategic_player_count) ||
@@ -100,6 +113,10 @@ Status cfr_trainer_run(Trainer *trainer, size_t amount) {
          trainer->variant != CFR_TRAINER_VARIANT_CFR_PLUS &&
          trainer->variant != CFR_TRAINER_VARIANT_MCCFR_EXTERNAL))
         return CFR_STATUS_INVALID_ARGUMENT;
+    if (concurrent_mccfr &&
+        trainer->variant != CFR_TRAINER_VARIANT_MCCFR_EXTERNAL) {
+        return CFR_STATUS_INVALID_ARGUMENT;
+    }
     if (amount == 0)
         return CFR_STATUS_SUCCESS;
 
@@ -111,19 +128,32 @@ Status cfr_trainer_run(Trainer *trainer, size_t amount) {
         return validation_status;
     }
 
-    MccfrWorkspace mccfr_workspace = {0};
+    union {
+        MccfrWorkspace concurrent;
+        MccfrSequentialWorkspace sequential;
+    } mccfr_workspace = {0};
     MccfrWorkspace *mccfr_workspace_pointer = NULL;
+    MccfrSequentialWorkspace *sequential_workspace_pointer = NULL;
     CfrFullTraversalWorkspace *full_workspace = NULL;
     if (trainer->variant == CFR_TRAINER_VARIANT_MCCFR_EXTERNAL) {
-        const Status status = cfr_mccfr_workspace_init(
-            &mccfr_workspace, trainer->game->max_legal_actions);
+        const Status status =
+            concurrent_mccfr
+                ? cfr_mccfr_workspace_init(
+                      &mccfr_workspace.concurrent,
+                      trainer->game->max_legal_actions)
+                : cfr_mccfr_sequential_workspace_init(
+                      &mccfr_workspace.sequential,
+                      trainer->game->max_legal_actions);
 
         if (status != CFR_STATUS_SUCCESS) {
             if (trainer->stats.errors != SIZE_MAX)
                 trainer->stats.errors += 1;
             return status;
         }
-        mccfr_workspace_pointer = &mccfr_workspace;
+        if (concurrent_mccfr)
+            mccfr_workspace_pointer = &mccfr_workspace.concurrent;
+        else
+            sequential_workspace_pointer = &mccfr_workspace.sequential;
     } else {
         const Status status = cfr_full_traversal_workspace_create(
             trainer->game->max_legal_actions, &full_workspace);
@@ -145,7 +175,8 @@ Status cfr_trainer_run(Trainer *trainer, size_t amount) {
              player_index++) {
             const Status status = run_player_traversal(
                 trainer, (Player)player_index, iteration,
-                mccfr_workspace_pointer, full_workspace);
+                mccfr_workspace_pointer, sequential_workspace_pointer,
+                concurrent_mccfr, full_workspace);
 
             if (status != CFR_STATUS_SUCCESS) {
                 result = status;
@@ -160,8 +191,22 @@ Status cfr_trainer_run(Trainer *trainer, size_t amount) {
 
 cleanup:
     cfr_full_traversal_workspace_destroy(full_workspace);
-    cfr_mccfr_workspace_destroy(&mccfr_workspace);
+    if (trainer->variant == CFR_TRAINER_VARIANT_MCCFR_EXTERNAL) {
+        if (concurrent_mccfr)
+            cfr_mccfr_workspace_destroy(&mccfr_workspace.concurrent);
+        else
+            cfr_mccfr_sequential_workspace_destroy(
+                &mccfr_workspace.sequential);
+    }
     return result;
+}
+
+Status cfr_trainer_run(Trainer *trainer, size_t amount) {
+    return trainer_run(trainer, amount, false);
+}
+
+Status cfr_trainer_run_concurrent(Trainer *trainer, size_t amount) {
+    return trainer_run(trainer, amount, true);
 }
 
 Status cfr_trainer_get_stats(const Trainer *trainer, TrainerStats *stats_out) {

@@ -494,6 +494,50 @@ Status cfr_info_store_get_or_create(InfoStore *info_store, InfoSetKey key,
     return CFR_STATUS_SUCCESS;
 }
 
+Status cfr_info_store_get_or_create_sequential(
+    InfoStore *info_store, InfoSetKey key, size_t action_count,
+    InfoNode **node_out) {
+    if (info_store == NULL || node_out == NULL || action_count == 0)
+        return CFR_STATUS_INVALID_ARGUMENT;
+    size_t index;
+    LocateResult result =
+        locate(info_store, &(info_store->collision_count), key, &index);
+    if (result == LOCATE_INVALID_ARGUMENT)
+        return CFR_STATUS_INVALID_ARGUMENT;
+    if (result == LOCATE_ENTRY_FOUND) {
+        if (info_store->entries[index].node->action_count != action_count)
+            return CFR_STATUS_INVALID_ARGUMENT;
+        *node_out = info_store->entries[index].node;
+        return CFR_STATUS_SUCCESS;
+    }
+    const ArenaMark mark = arena_mark(info_store);
+    InfoNode *temp = NULL;
+    Status init = arena_allocate_node(info_store, key, action_count, &temp);
+    if (init != CFR_STATUS_SUCCESS) {
+        arena_rollback(info_store, mark);
+        return init;
+    }
+    if (result == LOCATE_STORE_FULL ||
+        (info_store->size >= info_store->capacity - info_store->capacity / 4)) {
+        Status resize_status = resize(info_store);
+        if (resize_status != CFR_STATUS_SUCCESS) {
+            arena_rollback(info_store, mark);
+            return resize_status;
+        }
+        result =
+            locate(info_store, &(info_store->collision_count), key, &index);
+        if (result != LOCATE_EMPTY_SLOT_FOUND) {
+            arena_rollback(info_store, mark);
+            return CFR_STATUS_INVALID_ARGUMENT;
+        }
+    }
+    info_store->entries[index].key = key;
+    info_store->entries[index].node = temp;
+    ++info_store->size;
+    *node_out = info_store->entries[index].node;
+    return CFR_STATUS_SUCCESS;
+}
+
 Status cfr_info_store_get_stats(const InfoStore *info_store,
                                 InfoStoreStats *stats_out) {
     if (info_store == NULL || stats_out == NULL)

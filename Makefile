@@ -27,6 +27,7 @@ LIB_SOURCES := \
 	src/kuhn_poker.c \
 	src/leduc_poker.c \
 	src/mccfr.c \
+	src/mccfr_sequential.c \
 	src/trainer.c \
 	src/traversal.c \
 	src/traversal_internal.c

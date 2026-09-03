@@ -873,8 +873,8 @@ static void *run_parallel_mccfr_worker(void *raw_worker) {
     atomic_fetch_add_explicit(worker->ready_count, 1, memory_order_release);
     while (!atomic_load_explicit(worker->start, memory_order_acquire))
         (void)sched_yield();
-    worker->status =
-        cfr_trainer_run(&worker->trainer, PARALLEL_MCCFR_ITERATIONS);
+    worker->status = cfr_trainer_run_concurrent(
+        &worker->trainer, PARALLEL_MCCFR_ITERATIONS);
     return NULL;
 }
 
@@ -974,8 +974,8 @@ static void *run_parallel_chance_worker(void *raw_worker) {
     while (!atomic_load_explicit(worker->start, memory_order_acquire))
         (void)sched_yield();
     do {
-        worker->status =
-            cfr_trainer_run(&worker->trainer, worker->iterations);
+        worker->status = cfr_trainer_run_concurrent(
+            &worker->trainer, worker->iterations);
         if (worker->status != CFR_STATUS_SUCCESS)
             break;
         if (worker->completed_iterations != NULL) {

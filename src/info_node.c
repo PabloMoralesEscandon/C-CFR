@@ -203,6 +203,19 @@ static Status current_strategy_locked(const InfoNode *node,
     return CFR_STATUS_SUCCESS;
 }
 
+Status cfr_info_node_current_strategy_sequential(
+    const InfoNode *node, Probability *strategy_array,
+    size_t strategy_capacity) {
+    if (node == NULL || node->regret_sums == NULL ||
+        node->strategy_sums == NULL || strategy_array == NULL ||
+        node->action_count == 0) {
+        return CFR_STATUS_INVALID_ARGUMENT;
+    }
+    if (strategy_capacity < node->action_count)
+        return CFR_STATUS_BUFFER_TOO_SMALL;
+    return current_strategy_locked(node, strategy_array);
+}
+
 Status cfr_info_node_current_strategy(const InfoNode *node,
                                       Probability *strategy_array,
                                       size_t strategy_capacity) {
@@ -236,6 +249,19 @@ Status cfr_info_node_check_deltas_locked(
             return CFR_STATUS_NUMERIC_ERROR;
     }
     return CFR_STATUS_SUCCESS;
+}
+
+Status cfr_info_node_check_deltas_sequential(
+    const InfoNode *node, const Utility *delta_regret,
+    const double *delta_strategy_sum, size_t action_count) {
+    if (node == NULL || node->regret_sums == NULL ||
+        node->strategy_sums == NULL || action_count == 0 ||
+        delta_regret == NULL || delta_strategy_sum == NULL ||
+        action_count != node->action_count) {
+        return CFR_STATUS_INVALID_ARGUMENT;
+    }
+    return cfr_info_node_check_deltas_locked(
+        node, delta_regret, delta_strategy_sum, action_count);
 }
 
 Status cfr_info_node_check_deltas(const InfoNode *node,

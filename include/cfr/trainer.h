@@ -137,12 +137,27 @@ Status cfr_trainer_init_mccfr(Trainer *trainer, const Game *game,
  *
  * An amount of zero produces CFR_STATUS_SUCCESS and does not change the
  * trainer. The function returns the Status of a failed traversal unchanged.
+ * This sequential entry point requires exclusive access to trainer->store.
+ * Use cfr_trainer_run_concurrent when independent MCCFR trainers share a
+ * store across threads.
  *
  * After any error, the caller must restore state to the root before calling
  * cfr_trainer_run again. The trainer cannot verify that state represents the
  * root. If an undo operation fails, state can remain at a descendant state.
  */
 Status cfr_trainer_run(Trainer *trainer, size_t amount);
+
+/*
+ * Runs external-sampling MCCFR with synchronization for a shared store.
+ *
+ * trainer follows the cfr_trainer_run ownership and error contracts and must
+ * use CFR_TRAINER_VARIANT_MCCFR_EXTERNAL. Independent calls may overlap when
+ * every thread owns its Trainer and GameState and all trainers share the same
+ * initialized InfoStore. The game operations and mutable contexts must also
+ * support concurrent calls. An invalid trainer variant produces
+ * CFR_STATUS_INVALID_ARGUMENT.
+ */
+Status cfr_trainer_run_concurrent(Trainer *trainer, size_t amount);
 
 /*
  * Copies trainer statistics to stats_out.
