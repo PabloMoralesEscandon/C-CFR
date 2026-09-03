@@ -13,14 +13,14 @@ typedef struct {
     InfoNode *node;
     size_t action_count;
     size_t arena_offset;
-    size_t table_cell;
 } MccfrDeltaEntry;
 
 typedef struct {
-    const InfoNode *node;
+    InfoNode *node;
     size_t sampled_action;
     size_t action_count;
     size_t table_cell;
+    size_t delta_index;
 } MccfrStrategySnapshot;
 
 #define CFR_MCCFR_NODE_CACHE_BITS 9
@@ -36,9 +36,6 @@ typedef struct {
     MccfrFrame *frames;
     size_t frame_capacity;
 
-    size_t *delta_table;
-    size_t delta_table_capacity;
-    size_t delta_table_used;
     MccfrDeltaEntry *delta_entries;
     MccfrDeltaEntry *delta_scratch;
     size_t delta_entry_count;

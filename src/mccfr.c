@@ -42,7 +42,6 @@ void cfr_mccfr_workspace_destroy(MccfrWorkspace *workspace) {
     if (workspace == NULL)
         return;
     free(workspace->frames);
-    free(workspace->delta_table);
     free(workspace->delta_entries);
     free(workspace->delta_scratch);
     free(workspace->snapshot_table);
@@ -65,8 +64,6 @@ Status cfr_mccfr_workspace_init(MccfrWorkspace *workspace,
 
     temporary.frames =
         malloc(MCCFR_INITIAL_FRAME_CAPACITY * sizeof(*temporary.frames));
-    temporary.delta_table =
-        malloc(MCCFR_INITIAL_TABLE_CAPACITY * sizeof(*temporary.delta_table));
     temporary.delta_entries = malloc(
         MCCFR_INITIAL_ENTRY_CAPACITY * sizeof(*temporary.delta_entries));
     temporary.delta_scratch = malloc(
@@ -86,8 +83,8 @@ Status cfr_mccfr_workspace_init(MccfrWorkspace *workspace,
     temporary.arena =
         malloc(temporary.arena_capacity * sizeof(*temporary.arena));
 
-    if (temporary.frames == NULL || temporary.delta_table == NULL ||
-        temporary.delta_entries == NULL || temporary.delta_scratch == NULL ||
+    if (temporary.frames == NULL || temporary.delta_entries == NULL ||
+        temporary.delta_scratch == NULL ||
         temporary.snapshot_table == NULL || temporary.snapshots == NULL ||
         temporary.snapshot_actions == NULL ||
         temporary.snapshot_probabilities == NULL || temporary.arena == NULL) {
@@ -96,14 +93,10 @@ Status cfr_mccfr_workspace_init(MccfrWorkspace *workspace,
     }
 
     temporary.frame_capacity = MCCFR_INITIAL_FRAME_CAPACITY;
-    temporary.delta_table_capacity = MCCFR_INITIAL_TABLE_CAPACITY;
     temporary.delta_entry_capacity = MCCFR_INITIAL_ENTRY_CAPACITY;
     temporary.snapshot_table_capacity = MCCFR_INITIAL_TABLE_CAPACITY;
     temporary.snapshot_stride = max_legal_actions;
     temporary.snapshot_capacity = MCCFR_INITIAL_ENTRY_CAPACITY;
-    cfr_traversal_initialize_index_table(
-        temporary.delta_table, temporary.delta_table_capacity,
-        MCCFR_CELL_EMPTY);
     cfr_traversal_initialize_index_table(
         temporary.snapshot_table, temporary.snapshot_table_capacity,
         MCCFR_CELL_EMPTY);
@@ -113,15 +106,10 @@ Status cfr_mccfr_workspace_init(MccfrWorkspace *workspace,
 
 static void workspace_reset(MccfrWorkspace *workspace, const MccfrRng *rng,
                             InfoStore *store) {
-    for (size_t index = 0; index < workspace->delta_entry_count; index += 1) {
-        workspace->delta_table[workspace->delta_entries[index].table_cell] =
-            MCCFR_CELL_EMPTY;
-    }
     for (size_t index = 0; index < workspace->snapshot_count; index += 1) {
         workspace->snapshot_table[workspace->snapshots[index].table_cell] =
             MCCFR_CELL_EMPTY;
     }
-    workspace->delta_table_used = 0;
     workspace->delta_entry_count = 0;
     workspace->snapshot_table_used = 0;
     workspace->snapshot_count = 0;
@@ -196,31 +184,6 @@ static Status allocate_grown_table(size_t capacity, size_t **table_out,
                                          MCCFR_CELL_EMPTY);
     *table_out = grown;
     *capacity_out = grown_capacity;
-    return CFR_STATUS_SUCCESS;
-}
-
-static Status grow_delta_table(MccfrWorkspace *workspace) {
-    size_t *grown;
-    size_t capacity;
-    Status status = allocate_grown_table(workspace->delta_table_capacity,
-                                         &grown, &capacity);
-
-    if (status != CFR_STATUS_SUCCESS)
-        return status;
-    const size_t mask = capacity - 1;
-    for (size_t index = 0; index < workspace->delta_entry_count; index += 1) {
-        size_t cell = cfr_traversal_hash_node(
-                          workspace->delta_entries[index].node) &
-                      mask;
-
-        while (grown[cell] != MCCFR_CELL_EMPTY)
-            cell = (cell + 1) & mask;
-        grown[cell] = index;
-        workspace->delta_entries[index].table_cell = cell;
-    }
-    free(workspace->delta_table);
-    workspace->delta_table = grown;
-    workspace->delta_table_capacity = capacity;
     return CFR_STATUS_SUCCESS;
 }
 
@@ -352,55 +315,44 @@ static Status ensure_arena(MccfrWorkspace *workspace, size_t action_count) {
     return CFR_STATUS_SUCCESS;
 }
 
-static Status find_or_create_delta(MccfrWorkspace *workspace, InfoNode *node,
-                                   size_t action_count, size_t *index_out) {
-    size_t mask;
-    size_t cell;
-    Status status;
+static Status get_or_create_snapshot_delta(MccfrWorkspace *workspace,
+                                           size_t snapshot_index,
+                                           size_t *index_out) {
+    if (snapshot_index >= workspace->snapshot_count || index_out == NULL)
+        return CFR_STATUS_INVALID_ARGUMENT;
 
-    mask = workspace->delta_table_capacity - 1;
-    cell = cfr_traversal_hash_node(node) & mask;
-    while (workspace->delta_table[cell] != MCCFR_CELL_EMPTY) {
-        const size_t candidate = workspace->delta_table[cell];
-
-        if (workspace->delta_entries[candidate].node == node) {
-            *index_out = candidate;
-            return CFR_STATUS_SUCCESS;
+    MccfrStrategySnapshot *snapshot =
+        &workspace->snapshots[snapshot_index];
+    if (snapshot->delta_index != SIZE_MAX) {
+        if (snapshot->delta_index >= workspace->delta_entry_count)
+            return CFR_STATUS_INVALID_ARGUMENT;
+        const MccfrDeltaEntry *entry =
+            &workspace->delta_entries[snapshot->delta_index];
+        if (entry->node != snapshot->node ||
+            entry->action_count != snapshot->action_count) {
+            return CFR_STATUS_INVALID_ARGUMENT;
         }
-        cell = (cell + 1) & mask;
+        *index_out = snapshot->delta_index;
+        return CFR_STATUS_SUCCESS;
     }
 
-    if (workspace->delta_table_used + 1 >
-        workspace->delta_table_capacity -
-            workspace->delta_table_capacity / 4) {
-        status = grow_delta_table(workspace);
-        if (status != CFR_STATUS_SUCCESS)
-            return status;
-        mask = workspace->delta_table_capacity - 1;
-        cell = cfr_traversal_hash_node(node) & mask;
-        while (workspace->delta_table[cell] != MCCFR_CELL_EMPTY)
-            cell = (cell + 1) & mask;
-    }
-
-    status = ensure_delta_entries(workspace);
+    Status status = ensure_delta_entries(workspace);
     if (status != CFR_STATUS_SUCCESS)
         return status;
-    status = ensure_arena(workspace, action_count);
+    status = ensure_arena(workspace, snapshot->action_count);
     if (status != CFR_STATUS_SUCCESS)
         return status;
 
     const size_t index = workspace->delta_entry_count;
     workspace->delta_entries[index] =
-        (MccfrDeltaEntry){.node = node,
-                          .action_count = action_count,
-                          .arena_offset = workspace->arena_used,
-                          .table_cell = cell};
-    for (size_t offset = 0; offset < 2 * action_count; offset += 1)
+        (MccfrDeltaEntry){.node = snapshot->node,
+                          .action_count = snapshot->action_count,
+                          .arena_offset = workspace->arena_used};
+    for (size_t offset = 0; offset < 2 * snapshot->action_count; offset += 1)
         workspace->arena[workspace->arena_used + offset] = 0.0;
-    workspace->arena_used += 2 * action_count;
+    workspace->arena_used += 2 * snapshot->action_count;
     workspace->delta_entry_count += 1;
-    workspace->delta_table[cell] = index;
-    workspace->delta_table_used += 1;
+    snapshot->delta_index = index;
     *index_out = index;
     return CFR_STATUS_SUCCESS;
 }
@@ -484,7 +436,7 @@ static Status sample_index(const Probability *probabilities, size_t count,
  * reuse the snapshot so their regret deltas describe one coherent traversal.
  */
 static Status get_strategy_snapshot(MccfrWorkspace *workspace,
-                                    const InfoNode *node,
+                                    InfoNode *node,
                                     const Action *actions,
                                     Probability *strategy,
                                     size_t action_count,
@@ -545,7 +497,8 @@ static Status get_strategy_snapshot(MccfrWorkspace *workspace,
         (MccfrStrategySnapshot){.node = node,
                                 .sampled_action = SIZE_MAX,
                                 .action_count = action_count,
-                                .table_cell = cell};
+                                .table_cell = cell,
+                                .delta_index = SIZE_MAX};
     const size_t value_offset = entry * workspace->snapshot_stride;
     for (size_t action = 0; action < action_count; action += 1) {
         workspace->snapshot_actions[value_offset + action] = actions[action];
@@ -718,14 +671,15 @@ static Status workspace_commit_deltas(MccfrWorkspace *workspace) {
  * strategy-dependent, so the caller leaves the average to that player's own
  * traversal instead.
  */
-static Status record_target_deltas(MccfrWorkspace *workspace, InfoNode *node,
+static Status record_target_deltas(MccfrWorkspace *workspace,
                                    const MccfrFrame *frame,
-                                   size_t action_count, Utility node_utility,
+                                   size_t action_count, size_t snapshot_index,
+                                   Utility node_utility,
                                    bool accumulate_strategy,
                                    Probability own_reach) {
     size_t entry_index;
-    Status status = find_or_create_delta(workspace, node, action_count,
-                                         &entry_index);
+    Status status = get_or_create_snapshot_delta(
+        workspace, snapshot_index, &entry_index);
 
     if (status != CFR_STATUS_SUCCESS)
         return status;
@@ -765,11 +719,12 @@ static Status record_target_deltas(MccfrWorkspace *workspace, InfoNode *node,
  * away.
  */
 static Status record_sampled_strategy(MccfrWorkspace *workspace,
-                                      InfoNode *node, const MccfrFrame *frame,
-                                      size_t action_count) {
+                                      const MccfrFrame *frame,
+                                      size_t action_count,
+                                      size_t snapshot_index) {
     size_t entry_index;
-    Status status = find_or_create_delta(workspace, node, action_count,
-                                         &entry_index);
+    Status status = get_or_create_snapshot_delta(
+        workspace, snapshot_index, &entry_index);
 
     if (status != CFR_STATUS_SUCCESS)
         return status;
@@ -793,7 +748,7 @@ static Status record_sampled_strategy(MccfrWorkspace *workspace,
 static Status traverse_target_node(
     const CfrTraversalAdapter *adapter, GameState *state, InfoStore *store,
     Player target_player, size_t depth, Probability own_reach,
-    MccfrWorkspace *workspace, InfoNode *node, size_t action_count,
+    MccfrWorkspace *workspace, size_t action_count, size_t snapshot_index,
     Utility *utility_out) {
     Utility node_utility = 0.0;
 
@@ -827,8 +782,8 @@ static Status traverse_target_node(
     }
 
     const Status status = record_target_deltas(
-        workspace, node, &workspace->frames[depth], action_count, node_utility,
-        adapter->strategic_player_count == 1, own_reach);
+        workspace, &workspace->frames[depth], action_count, snapshot_index,
+        node_utility, adapter->strategic_player_count == 1, own_reach);
     if (status != CFR_STATUS_SUCCESS)
         return status;
     *utility_out = node_utility;
@@ -838,8 +793,8 @@ static Status traverse_target_node(
 static Status traverse_opponent_node(
     const CfrTraversalAdapter *adapter, GameState *state, InfoStore *store,
     Player target_player, size_t depth, Probability own_reach,
-    MccfrWorkspace *workspace, InfoNode *node, size_t action_count,
-    size_t snapshot_index, Utility *utility_out) {
+    MccfrWorkspace *workspace, size_t action_count, size_t snapshot_index,
+    Utility *utility_out) {
     MccfrFrame *frame = &workspace->frames[depth];
     size_t sampled_action;
     Status status =
@@ -849,7 +804,8 @@ static Status traverse_opponent_node(
         return status;
     if (!(frame->probabilities[sampled_action] > 0.0))
         return CFR_STATUS_NUMERIC_ERROR;
-    status = record_sampled_strategy(workspace, node, frame, action_count);
+    status = record_sampled_strategy(workspace, frame, action_count,
+                                     snapshot_index);
     if (status != CFR_STATUS_SUCCESS)
         return status;
     frame = &workspace->frames[depth];
@@ -984,11 +940,11 @@ static Status traverse_branch(const CfrTraversalAdapter *adapter,
 
     if (actor.player == target_player) {
         return traverse_target_node(adapter, state, store, target_player,
-                                    depth, own_reach, workspace, node,
-                                    action_count, utility_out);
+                                    depth, own_reach, workspace, action_count,
+                                    snapshot_index, utility_out);
     }
     return traverse_opponent_node(adapter, state, store, target_player, depth,
-                                  own_reach, workspace, node, action_count,
+                                  own_reach, workspace, action_count,
                                   snapshot_index, utility_out);
 }
 
@@ -1060,8 +1016,7 @@ Status cfr_mccfr_external_traverse_in_workspace(
     if (status != CFR_STATUS_SUCCESS)
         return status;
     if (workspace == NULL || workspace->frames == NULL ||
-        workspace->delta_table == NULL || workspace->delta_entries == NULL ||
-        workspace->delta_scratch == NULL ||
+        workspace->delta_entries == NULL || workspace->delta_scratch == NULL ||
         workspace->snapshot_table == NULL || workspace->snapshots == NULL ||
         workspace->snapshot_actions == NULL ||
         workspace->snapshot_probabilities == NULL ||
