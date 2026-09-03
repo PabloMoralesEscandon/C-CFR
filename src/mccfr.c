@@ -1,6 +1,7 @@
 #include <math.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "cfr/mccfr.h"
 #include "info_node_internal.h"
@@ -43,8 +44,11 @@ void cfr_mccfr_workspace_destroy(MccfrWorkspace *workspace) {
     free(workspace->frames);
     free(workspace->delta_table);
     free(workspace->delta_entries);
+    free(workspace->delta_scratch);
     free(workspace->snapshot_table);
     free(workspace->snapshots);
+    free(workspace->snapshot_actions);
+    free(workspace->snapshot_probabilities);
     free(workspace->arena);
     *workspace = (MccfrWorkspace){0};
 }
@@ -65,18 +69,28 @@ Status cfr_mccfr_workspace_init(MccfrWorkspace *workspace,
         malloc(MCCFR_INITIAL_TABLE_CAPACITY * sizeof(*temporary.delta_table));
     temporary.delta_entries = malloc(
         MCCFR_INITIAL_ENTRY_CAPACITY * sizeof(*temporary.delta_entries));
+    temporary.delta_scratch = malloc(
+        MCCFR_INITIAL_ENTRY_CAPACITY * sizeof(*temporary.delta_scratch));
     temporary.snapshot_table = malloc(MCCFR_INITIAL_TABLE_CAPACITY *
                                       sizeof(*temporary.snapshot_table));
     temporary.snapshots = malloc(MCCFR_INITIAL_ENTRY_CAPACITY *
                                  sizeof(*temporary.snapshots));
+    temporary.snapshot_actions = malloc(MCCFR_INITIAL_ENTRY_CAPACITY *
+                                        max_legal_actions *
+                                        sizeof(*temporary.snapshot_actions));
+    temporary.snapshot_probabilities =
+        malloc(MCCFR_INITIAL_ENTRY_CAPACITY * max_legal_actions *
+               sizeof(*temporary.snapshot_probabilities));
     temporary.arena_capacity =
         2 * MCCFR_INITIAL_ENTRY_CAPACITY * max_legal_actions;
     temporary.arena =
         malloc(temporary.arena_capacity * sizeof(*temporary.arena));
 
     if (temporary.frames == NULL || temporary.delta_table == NULL ||
-        temporary.delta_entries == NULL || temporary.snapshot_table == NULL ||
-        temporary.snapshots == NULL || temporary.arena == NULL) {
+        temporary.delta_entries == NULL || temporary.delta_scratch == NULL ||
+        temporary.snapshot_table == NULL || temporary.snapshots == NULL ||
+        temporary.snapshot_actions == NULL ||
+        temporary.snapshot_probabilities == NULL || temporary.arena == NULL) {
         cfr_mccfr_workspace_destroy(&temporary);
         return CFR_STATUS_OUT_OF_MEMORY;
     }
@@ -85,6 +99,7 @@ Status cfr_mccfr_workspace_init(MccfrWorkspace *workspace,
     temporary.delta_table_capacity = MCCFR_INITIAL_TABLE_CAPACITY;
     temporary.delta_entry_capacity = MCCFR_INITIAL_ENTRY_CAPACITY;
     temporary.snapshot_table_capacity = MCCFR_INITIAL_TABLE_CAPACITY;
+    temporary.snapshot_stride = max_legal_actions;
     temporary.snapshot_capacity = MCCFR_INITIAL_ENTRY_CAPACITY;
     cfr_traversal_initialize_index_table(
         temporary.delta_table, temporary.delta_table_capacity,
@@ -237,27 +252,78 @@ static Status grow_snapshot_table(MccfrWorkspace *workspace) {
 static Status ensure_delta_entries(MccfrWorkspace *workspace) {
     if (workspace->delta_entry_count < workspace->delta_entry_capacity)
         return CFR_STATUS_SUCCESS;
-    void *grown;
-    const Status status = cfr_traversal_grow_array(
-        workspace->delta_entries, sizeof(*workspace->delta_entries),
-        &workspace->delta_entry_capacity, &grown);
+    if (workspace->delta_entry_capacity > SIZE_MAX / 2)
+        return CFR_STATUS_OUT_OF_MEMORY;
+    const size_t grown_capacity = workspace->delta_entry_capacity * 2;
+    if (grown_capacity > SIZE_MAX / sizeof(*workspace->delta_entries))
+        return CFR_STATUS_OUT_OF_MEMORY;
 
-    if (status == CFR_STATUS_SUCCESS)
-        workspace->delta_entries = grown;
-    return status;
+    MccfrDeltaEntry *grown_entries =
+        malloc(grown_capacity * sizeof(*grown_entries));
+    MccfrDeltaEntry *grown_scratch =
+        malloc(grown_capacity * sizeof(*grown_scratch));
+    if (grown_entries == NULL || grown_scratch == NULL) {
+        free(grown_entries);
+        free(grown_scratch);
+        return CFR_STATUS_OUT_OF_MEMORY;
+    }
+    memcpy(grown_entries, workspace->delta_entries,
+           workspace->delta_entry_count * sizeof(*grown_entries));
+    free(workspace->delta_entries);
+    free(workspace->delta_scratch);
+    workspace->delta_entries = grown_entries;
+    workspace->delta_scratch = grown_scratch;
+    workspace->delta_entry_capacity = grown_capacity;
+    return CFR_STATUS_SUCCESS;
 }
 
 static Status ensure_snapshots(MccfrWorkspace *workspace) {
     if (workspace->snapshot_count < workspace->snapshot_capacity)
         return CFR_STATUS_SUCCESS;
-    void *grown;
-    const Status status = cfr_traversal_grow_array(
-        workspace->snapshots, sizeof(*workspace->snapshots),
-        &workspace->snapshot_capacity, &grown);
+    if (workspace->snapshot_capacity > SIZE_MAX / 2)
+        return CFR_STATUS_OUT_OF_MEMORY;
+    const size_t grown_capacity = workspace->snapshot_capacity * 2;
+    if (grown_capacity > SIZE_MAX / sizeof(*workspace->snapshots) ||
+        workspace->snapshot_stride >
+            SIZE_MAX / grown_capacity / sizeof(*workspace->snapshot_actions) ||
+        workspace->snapshot_stride >
+            SIZE_MAX / grown_capacity /
+                sizeof(*workspace->snapshot_probabilities)) {
+        return CFR_STATUS_OUT_OF_MEMORY;
+    }
 
-    if (status == CFR_STATUS_SUCCESS)
-        workspace->snapshots = grown;
-    return status;
+    MccfrStrategySnapshot *grown_snapshots =
+        malloc(grown_capacity * sizeof(*grown_snapshots));
+    Action *grown_actions =
+        malloc(grown_capacity * workspace->snapshot_stride *
+               sizeof(*grown_actions));
+    Probability *grown_probabilities =
+        malloc(grown_capacity * workspace->snapshot_stride *
+               sizeof(*grown_probabilities));
+    if (grown_snapshots == NULL || grown_actions == NULL ||
+        grown_probabilities == NULL) {
+        free(grown_snapshots);
+        free(grown_actions);
+        free(grown_probabilities);
+        return CFR_STATUS_OUT_OF_MEMORY;
+    }
+
+    const size_t used_values =
+        workspace->snapshot_count * workspace->snapshot_stride;
+    memcpy(grown_snapshots, workspace->snapshots,
+           workspace->snapshot_count * sizeof(*grown_snapshots));
+    memcpy(grown_actions, workspace->snapshot_actions,
+           used_values * sizeof(*grown_actions));
+    memcpy(grown_probabilities, workspace->snapshot_probabilities,
+           used_values * sizeof(*grown_probabilities));
+    free(workspace->snapshots);
+    free(workspace->snapshot_actions);
+    free(workspace->snapshot_probabilities);
+    workspace->snapshots = grown_snapshots;
+    workspace->snapshot_actions = grown_actions;
+    workspace->snapshot_probabilities = grown_probabilities;
+    workspace->snapshot_capacity = grown_capacity;
+    return CFR_STATUS_SUCCESS;
 }
 
 static Status ensure_arena(MccfrWorkspace *workspace, size_t action_count) {
@@ -435,14 +501,19 @@ static Status get_strategy_snapshot(MccfrWorkspace *workspace,
             &workspace->snapshots[candidate];
 
         if (snapshot->node == node) {
+            const size_t value_offset =
+                candidate * workspace->snapshot_stride;
             if (snapshot->action_count != action_count) {
                 return CFR_STATUS_INVALID_ARGUMENT;
             }
             for (size_t action = 0; action < action_count; action += 1) {
-                if (snapshot->actions[action] != actions[action]) {
+                if (workspace->snapshot_actions[value_offset + action] !=
+                    actions[action]) {
                     return CFR_STATUS_INVALID_ARGUMENT;
                 }
-                strategy[action] = snapshot->probabilities[action];
+                strategy[action] =
+                    workspace
+                        ->snapshot_probabilities[value_offset + action];
             }
             *snapshot_out = candidate;
             return CFR_STATUS_SUCCESS;
@@ -475,9 +546,11 @@ static Status get_strategy_snapshot(MccfrWorkspace *workspace,
                                 .sampled_action = SIZE_MAX,
                                 .action_count = action_count,
                                 .table_cell = cell};
+    const size_t value_offset = entry * workspace->snapshot_stride;
     for (size_t action = 0; action < action_count; action += 1) {
-        workspace->snapshots[entry].actions[action] = actions[action];
-        workspace->snapshots[entry].probabilities[action] = strategy[action];
+        workspace->snapshot_actions[value_offset + action] = actions[action];
+        workspace->snapshot_probabilities[value_offset + action] =
+            strategy[action];
     }
     workspace->snapshot_count += 1;
     workspace->snapshot_table[cell] = entry;
@@ -495,10 +568,12 @@ static Status get_sampled_action(MccfrWorkspace *workspace,
         &workspace->snapshots[snapshot_index];
 
     if (snapshot->sampled_action == SIZE_MAX) {
-        Status status = sample_index(snapshot->probabilities,
-                                     snapshot->action_count,
-                                     &workspace->rng,
-                                     &snapshot->sampled_action);
+        const size_t value_offset =
+            snapshot_index * workspace->snapshot_stride;
+        Status status = sample_index(
+            workspace->snapshot_probabilities + value_offset,
+            snapshot->action_count, &workspace->rng,
+            &snapshot->sampled_action);
 
         if (status != CFR_STATUS_SUCCESS)
             return status;
@@ -509,44 +584,79 @@ static Status get_sampled_action(MccfrWorkspace *workspace,
     return CFR_STATUS_SUCCESS;
 }
 
-static int compare_delta_entries(const void *left_pointer,
-                                 const void *right_pointer) {
-    const MccfrDeltaEntry *left = left_pointer;
-    const MccfrDeltaEntry *right = right_pointer;
-
-    if (left->node->key < right->node->key)
-        return -1;
-    if (left->node->key > right->node->key)
-        return 1;
-    if ((uintptr_t)left->node < (uintptr_t)right->node)
-        return -1;
-    if ((uintptr_t)left->node > (uintptr_t)right->node)
-        return 1;
-    return 0;
+static bool delta_entry_precedes(const MccfrDeltaEntry *left,
+                                 const MccfrDeltaEntry *right) {
+    return (uintptr_t)left->node < (uintptr_t)right->node;
 }
 
 static void sort_delta_entries(MccfrWorkspace *workspace) {
     if (workspace->delta_entry_count < 2)
         return;
-    if (workspace->delta_entry_count > 16) {
-        qsort(workspace->delta_entries, workspace->delta_entry_count,
-              sizeof(*workspace->delta_entries), compare_delta_entries);
+
+    if (workspace->delta_entry_count <= 16) {
+        for (size_t index = 1; index < workspace->delta_entry_count;
+             index += 1) {
+            const MccfrDeltaEntry entry = workspace->delta_entries[index];
+            size_t position = index;
+
+            while (position > 0 &&
+                   delta_entry_precedes(
+                       &entry, &workspace->delta_entries[position - 1])) {
+                workspace->delta_entries[position] =
+                    workspace->delta_entries[position - 1];
+                position -= 1;
+            }
+            workspace->delta_entries[position] = entry;
+        }
         return;
     }
-    for (size_t index = 1; index < workspace->delta_entry_count; index += 1) {
-        const MccfrDeltaEntry entry = workspace->delta_entries[index];
-        size_t position = index;
 
-        while (position > 0 &&
-               compare_delta_entries(&entry,
-                                     &workspace->delta_entries[position - 1]) <
-                   0) {
-            workspace->delta_entries[position] =
-                workspace->delta_entries[position - 1];
-            position -= 1;
+    /*
+     * Every traversal contains at most one delta entry for a node. Pointer
+     * order is therefore a sufficient global lock order. An LSD radix pass
+     * avoids qsort's indirect comparator and its random node-key loads. Bytes
+     * that are equal for every pointer are skipped.
+     */
+    uintptr_t differing_bits = 0;
+    const uintptr_t first = (uintptr_t)workspace->delta_entries[0].node;
+    for (size_t index = 1; index < workspace->delta_entry_count; index += 1)
+        differing_bits |=
+            first ^ (uintptr_t)workspace->delta_entries[index].node;
+
+    MccfrDeltaEntry *source = workspace->delta_entries;
+    MccfrDeltaEntry *target = workspace->delta_scratch;
+    for (size_t byte = 0; byte < sizeof(uintptr_t); byte += 1) {
+        const size_t shift = byte * 8;
+        if (((differing_bits >> shift) & (uintptr_t)0xff) == 0)
+            continue;
+
+        size_t offsets[256] = {0};
+        for (size_t index = 0; index < workspace->delta_entry_count;
+             index += 1) {
+            const size_t bucket =
+                ((uintptr_t)source[index].node >> shift) & (uintptr_t)0xff;
+            offsets[bucket] += 1;
         }
-        workspace->delta_entries[position] = entry;
+        size_t next = 0;
+        for (size_t bucket = 0; bucket < 256; bucket += 1) {
+            const size_t count = offsets[bucket];
+            offsets[bucket] = next;
+            next += count;
+        }
+        for (size_t index = 0; index < workspace->delta_entry_count;
+             index += 1) {
+            const size_t bucket =
+                ((uintptr_t)source[index].node >> shift) & (uintptr_t)0xff;
+            target[offsets[bucket]] = source[index];
+            offsets[bucket] += 1;
+        }
+        MccfrDeltaEntry *temporary = source;
+        source = target;
+        target = temporary;
     }
+    if (source != workspace->delta_entries)
+        memcpy(workspace->delta_entries, source,
+               workspace->delta_entry_count * sizeof(*source));
 }
 
 static Status workspace_check_locked_deltas(const MccfrWorkspace *workspace) {
@@ -951,7 +1061,11 @@ Status cfr_mccfr_external_traverse_in_workspace(
         return status;
     if (workspace == NULL || workspace->frames == NULL ||
         workspace->delta_table == NULL || workspace->delta_entries == NULL ||
+        workspace->delta_scratch == NULL ||
         workspace->snapshot_table == NULL || workspace->snapshots == NULL ||
+        workspace->snapshot_actions == NULL ||
+        workspace->snapshot_probabilities == NULL ||
+        workspace->snapshot_stride < adapter.max_legal_actions ||
         workspace->arena == NULL) {
         return CFR_STATUS_INVALID_ARGUMENT;
     }

@@ -21,8 +21,6 @@ typedef struct {
     size_t sampled_action;
     size_t action_count;
     size_t table_cell;
-    Action actions[CFR_TRAVERSAL_MAX_ACTIONS];
-    Probability probabilities[CFR_TRAVERSAL_MAX_ACTIONS];
 } MccfrStrategySnapshot;
 
 #define CFR_MCCFR_NODE_CACHE_BITS 9
@@ -42,6 +40,7 @@ typedef struct {
     size_t delta_table_capacity;
     size_t delta_table_used;
     MccfrDeltaEntry *delta_entries;
+    MccfrDeltaEntry *delta_scratch;
     size_t delta_entry_count;
     size_t delta_entry_capacity;
 
@@ -49,6 +48,9 @@ typedef struct {
     size_t snapshot_table_capacity;
     size_t snapshot_table_used;
     MccfrStrategySnapshot *snapshots;
+    Action *snapshot_actions;
+    Probability *snapshot_probabilities;
+    size_t snapshot_stride;
     size_t snapshot_count;
     size_t snapshot_capacity;
 
