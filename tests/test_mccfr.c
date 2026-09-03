@@ -599,6 +599,29 @@ static void test_seeded_trainers_are_reproducible(void) {
     destroy_store(&store_b);
 }
 
+static void test_sequential_trainer_uses_a_prepared_store(void) {
+    const Game *game = cfr_kuhn_poker_descriptor();
+    KuhnPokerState state;
+    InfoStore store;
+    Trainer trainer;
+    InfoStoreStats store_stats = {0};
+
+    CHECK(cfr_kuhn_poker_state_init(&state) == CFR_STATUS_SUCCESS);
+    initialize_store(&store);
+    CHECK(cfr_info_store_prepare_concurrent(&store) == CFR_STATUS_SUCCESS);
+    CHECK(cfr_trainer_init_mccfr(
+              &trainer, game,
+              cfr_kuhn_poker_state_as_game_state(&state), &store, 992) ==
+          CFR_STATUS_SUCCESS);
+    CHECK(cfr_trainer_run(&trainer, 100) == CFR_STATUS_SUCCESS);
+    CHECK(trainer.stats.iterations == 100);
+    CHECK(trainer.stats.traversals == 200);
+    CHECK(cfr_info_store_get_stats(&store, &store_stats) ==
+          CFR_STATUS_SUCCESS);
+    CHECK(store_stats.size == 12);
+    destroy_store(&store);
+}
+
 #define MCCFR_TEST_MAX_SLOTS 64
 #define MCCFR_TEST_MAX_KEYS 32
 
@@ -1353,6 +1376,7 @@ int test_mccfr(void) {
     test_error_preserves_rng_outputs_and_learning();
     test_hidden_histories_require_identical_action_mapping();
     test_seeded_trainers_are_reproducible();
+    test_sequential_trainer_uses_a_prepared_store();
     test_sampled_player_average_matches_exact_cfr();
     test_single_strategic_player_accumulates_average();
     test_kuhn_converges();

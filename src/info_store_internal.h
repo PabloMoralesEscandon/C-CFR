@@ -1,6 +1,8 @@
 #ifndef CFR_INFO_STORE_INTERNAL_H
 #define CFR_INFO_STORE_INTERNAL_H
 
+#include <stdbool.h>
+
 #include "cfr/info_store.h"
 
 struct CfrInfoStoreEntry {
@@ -15,6 +17,8 @@ Status cfr_info_store_snapshot_sorted(const InfoStore *info_store,
 Status cfr_info_store_get_or_create_sequential(
     InfoStore *info_store, InfoSetKey key, size_t action_count,
     InfoNode **node_out);
+
+bool cfr_info_store_is_concurrent(const InfoStore *info_store);
 
 typedef struct CfrInfoArenaBlock {
     struct CfrInfoArenaBlock *next;

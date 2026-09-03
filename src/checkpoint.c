@@ -754,6 +754,7 @@ static Status checkpoint_read(ByteReader *reader, const Game *game,
         store_out->entries != NULL || store_out->node_blocks != NULL ||
         store_out->size != 0 || store_out->capacity != 0 ||
         store_out->collision_count != 0 || store_out->growth_count != 0 ||
+        store_out->concurrent_state != NULL ||
         game->max_legal_actions == 0)
         return CFR_STATUS_INVALID_ARGUMENT;
     if (!binary64_is_supported())
@@ -800,6 +801,7 @@ static Status checkpoint_read(ByteReader *reader, const Game *game,
     store_out->growth_count = temporary_store.growth_count;
     store_out->synchronization = 0;
     store_out->writer_gate = 0;
+    store_out->concurrent_state = NULL;
     temporary_store.entries = NULL;
     temporary_store.node_blocks = NULL;
     temporary_store.size = 0;

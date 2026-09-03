@@ -24,10 +24,11 @@ typedef struct CfrInfoStoreEntry InfoStoreEntry;
  * frees all resources owned by the store.
  *
  * After initialization, lookup, insertion, capacity reservation, statistics,
- * and sorted visits can run concurrently. Existing-key lookups share a reader
- * lock; insertion and table growth take the writer lock. Initialization and
- * destruction require exclusive ownership. During concurrent use, callers
- * must use the public operations instead of reading the fields directly.
+ * and sorted visits can run concurrently. The store can be prepared for a
+ * sharded concurrent access path whose existing-key lookups do not take a
+ * lock. Initialization and destruction require exclusive ownership. During
+ * concurrent use, callers must use the public operations instead of reading
+ * the fields directly.
  */
 typedef struct {
     /* Owned array of private cells. The caller does not use this pointer. */
@@ -38,13 +39,15 @@ typedef struct {
     size_t size;
     /* Number of cells allocated in the array. */
     size_t capacity;
-    /* Cells with other keys encountered by find and get_or_create. */
+    /* Private collision diagnostic. Use cfr_info_store_get_stats. */
     size_t collision_count;
     /* Number of successful growth operations. */
     size_t growth_count;
     /* Private reader/writer lock state. The caller must not access it. */
     size_t synchronization;
     unsigned char writer_gate;
+    /* Private sharded concurrent state. The caller must not access it. */
+    void *concurrent_state;
 } InfoStore;
 
 /* Contains a snapshot of the store statistics. */
@@ -54,8 +57,10 @@ typedef struct {
     /* Number of cells allocated in the array. */
     size_t capacity;
     /*
-     * Cumulative number of cells with other keys encountered by find and
-     * get_or_create. The counter saturates at SIZE_MAX and does not reset.
+     * Collision diagnostic that saturates at SIZE_MAX and does not reset.
+     * Sequential mode counts lookup probes. To keep concurrent reads free of
+     * shared writes, prepared concurrent mode counts only probes made while a
+     * shard writer is creating or rechecking a node.
      */
     size_t collision_count;
     /* Number of successful growth operations. */
@@ -82,6 +87,22 @@ typedef Status (*InfoStoreConstVisitor)(const InfoNode *node, void *context);
  * preserves info_store.
  */
 Status cfr_info_store_init(InfoStore *info_store);
+
+/*
+ * Prepares a sharded access path for concurrent readers and writers.
+ *
+ * Calling this operation before starting worker threads keeps the one-time
+ * conversion and allocation cost outside concurrent training. The concurrent
+ * MCCFR trainer also prepares the path before its first traversal, so calling
+ * this function is an optional performance hint rather than a correctness
+ * requirement.
+ *
+ * Existing nodes and their addresses are preserved. Once prepared, the store
+ * remains in concurrent mode until destruction. A previously prepared store
+ * produces CFR_STATUS_SUCCESS. An allocation failure preserves the original
+ * sequential representation.
+ */
+Status cfr_info_store_prepare_concurrent(InfoStore *info_store);
 
 /*
  * Ensures that info_store can hold minimum_node_capacity nodes without growth.
@@ -134,8 +155,9 @@ Status cfr_info_store_find(InfoStore *info_store, InfoSetKey key,
  * different count produces CFR_STATUS_INVALID_ARGUMENT and preserves the node.
  *
  * If the key does not exist, the function creates a node. It increases capacity
- * before an insertion would exceed three quarters of the cells. Each growth
- * doubles the capacity and preserves node addresses.
+ * before an insertion would exceed three quarters of the relevant table. A
+ * sequential growth doubles the store table; a concurrent growth doubles the
+ * affected shard. Both preserve node addresses.
  *
  * node_out receives a borrowed pointer only when the function completes
  * successfully. The caller must not destroy or free the node. Its address

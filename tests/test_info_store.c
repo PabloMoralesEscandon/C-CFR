@@ -499,6 +499,59 @@ static void test_sorted_visit(void) {
     destroy_store(&store);
 }
 
+static void test_prepare_concurrent_preserves_store(void) {
+    InfoStore store;
+    const InfoSetKey keys[] = {91, -7, 44, 3};
+    InfoNode *nodes[sizeof(keys) / sizeof(keys[0])] = {0};
+    InfoStoreStats before;
+    InfoStoreStats after;
+
+    initialize_store(&store);
+    for (size_t index = 0; index < sizeof(keys) / sizeof(keys[0]);
+         index += 1) {
+        CHECK(cfr_info_store_get_or_create(&store, keys[index], 2,
+                                           &nodes[index]) ==
+              CFR_STATUS_SUCCESS);
+        CHECK(cfr_info_node_add_regret(nodes[index], 0,
+                                       (Utility)index + 0.25) ==
+              CFR_STATUS_SUCCESS);
+    }
+    before = get_stats(&store);
+    CHECK(cfr_info_store_prepare_concurrent(&store) == CFR_STATUS_SUCCESS);
+    CHECK(cfr_info_store_prepare_concurrent(&store) == CFR_STATUS_SUCCESS);
+    after = get_stats(&store);
+    CHECK(after.size == before.size);
+    CHECK(after.capacity >= before.capacity);
+    CHECK(after.collision_count == before.collision_count);
+    CHECK(after.growth_count == before.growth_count);
+
+    for (size_t index = 0; index < sizeof(keys) / sizeof(keys[0]);
+         index += 1) {
+        InfoNode *found = NULL;
+
+        CHECK(cfr_info_store_find(&store, keys[index], &found) ==
+              CFR_STATUS_SUCCESS);
+        CHECK(found == nodes[index]);
+        CHECK(found->regret_sums[0] == (Utility)index + 0.25);
+    }
+    {
+        InfoNode *created = NULL;
+
+        CHECK(cfr_info_store_get_or_create(&store, 12345, 3, &created) ==
+              CFR_STATUS_SUCCESS);
+        CHECK(created != NULL && created->action_count == 3);
+        CHECK(cfr_info_store_get_or_create(&store, 12345, 2, &created) ==
+              CFR_STATUS_INVALID_ARGUMENT);
+    }
+    CHECK(cfr_info_store_reserve(&store, 1000) == CFR_STATUS_SUCCESS);
+    after = get_stats(&store);
+    CHECK(after.size == before.size + 1);
+    CHECK(after.size <= after.capacity - after.capacity / 4);
+    CHECK(after.growth_count == before.growth_count + 1);
+    destroy_store(&store);
+    CHECK(store.concurrent_state == NULL);
+}
+
 enum {
     CONCURRENT_STORE_WRITER_COUNT = 2,
     CONCURRENT_STORE_NODES_PER_WRITER = 160
@@ -580,7 +633,7 @@ static void *run_concurrent_store_writer(void *raw_writer) {
 
 static void *run_concurrent_store_monitor(void *raw_monitor) {
     ConcurrentStoreMonitor *monitor = raw_monitor;
-    size_t requested_capacity = 32;
+    size_t requested_capacity = 1024;
 
     wait_for_concurrent_store_start(monitor->ready_count, monitor->start);
     monitor->status = CFR_STATUS_SUCCESS;
@@ -625,6 +678,7 @@ static void test_concurrent_store_operations(void) {
     size_t writer_created = 0;
 
     initialize_store(&store);
+    CHECK(cfr_info_store_prepare_concurrent(&store) == CFR_STATUS_SUCCESS);
     atomic_init(&ready_count, 0);
     atomic_init(&finished_count, 0);
     atomic_init(&start, false);
@@ -718,6 +772,71 @@ static void check_failed_creation(InfoStore *store,
     CHECK(test_allocator_live_allocations() == live_before);
 }
 
+static void test_concurrent_prepare_allocation_failures(void) {
+    bool reached_success = false;
+
+    for (size_t failure_index = 0; failure_index < 16; failure_index += 1) {
+        InfoStore store;
+        InfoNode *created = NULL;
+        InfoNode *found = sentinel_node();
+
+        initialize_store(&store);
+        CHECK(cfr_info_store_get_or_create(&store, 31, 2, &created) ==
+              CFR_STATUS_SUCCESS);
+        const InfoStoreStats before = get_stats(&store);
+        const size_t live_before = test_allocator_live_allocations();
+
+        test_allocator_fail_after(failure_index);
+        const Status status = cfr_info_store_prepare_concurrent(&store);
+        test_allocator_disable_failures();
+        if (status == CFR_STATUS_SUCCESS) {
+            reached_success = true;
+        } else {
+            CHECK(status == CFR_STATUS_OUT_OF_MEMORY);
+            CHECK(store.concurrent_state == NULL);
+            const InfoStoreStats after = get_stats(&store);
+
+            check_same_structural_stats(&before, &after);
+            CHECK(test_allocator_live_allocations() == live_before);
+        }
+        CHECK(cfr_info_store_find(&store, 31, &found) == CFR_STATUS_SUCCESS);
+        CHECK(found == created);
+        destroy_store(&store);
+        CHECK(test_allocator_live_allocations() == 0);
+        if (reached_success)
+            break;
+    }
+    CHECK(reached_success);
+}
+
+static void test_concurrent_reserve_allocation_failures(void) {
+    InfoStore store;
+    bool reached_success = false;
+
+    initialize_store(&store);
+    CHECK(cfr_info_store_prepare_concurrent(&store) == CFR_STATUS_SUCCESS);
+    for (size_t failure_index = 0; failure_index < 16; failure_index += 1) {
+        const InfoStoreStats before = get_stats(&store);
+        const size_t live_before = test_allocator_live_allocations();
+
+        test_allocator_fail_after(failure_index);
+        const Status status = cfr_info_store_reserve(&store, 1000);
+        test_allocator_disable_failures();
+        if (status == CFR_STATUS_SUCCESS) {
+            reached_success = true;
+            break;
+        }
+        CHECK(status == CFR_STATUS_OUT_OF_MEMORY);
+        const InfoStoreStats after = get_stats(&store);
+
+        check_same_structural_stats(&before, &after);
+        CHECK(test_allocator_live_allocations() == live_before);
+    }
+    CHECK(reached_success);
+    destroy_store(&store);
+    CHECK(test_allocator_live_allocations() == 0);
+}
+
 static void test_allocation_failures(void) {
     InfoStore store = {0};
     InfoStoreStats before;
@@ -780,6 +899,25 @@ static void test_allocation_failures(void) {
     destroy_store(&store);
     CHECK(test_allocator_live_allocations() == 0);
 
+    test_concurrent_prepare_allocation_failures();
+    initialize_store(&store);
+    CHECK(cfr_info_store_prepare_concurrent(&store) == CFR_STATUS_SUCCESS);
+    before = get_stats(&store);
+    live_before = test_allocator_live_allocations();
+    node = sentinel_node();
+    test_allocator_fail_after(0);
+    CHECK(cfr_info_store_get_or_create(&store, 32, 3, &node) ==
+          CFR_STATUS_OUT_OF_MEMORY);
+    CHECK(node == sentinel_node());
+    test_allocator_disable_failures();
+    after = get_stats(&store);
+    check_same_structural_stats(&before, &after);
+    CHECK(test_allocator_live_allocations() == live_before);
+    destroy_store(&store);
+    CHECK(test_allocator_live_allocations() == 0);
+
+    test_concurrent_reserve_allocation_failures();
+
     initialize_store(&store);
     CHECK(cfr_info_store_get_or_create(&store, 41, 2, &node) ==
           CFR_STATUS_SUCCESS);
@@ -819,6 +957,7 @@ int test_info_store(void) {
     test_high_bit_hash_quality();
     test_order_independence();
     test_sorted_visit();
+    test_prepare_concurrent_preserves_store();
     test_concurrent_store_operations();
 #ifdef CFR_TEST_WRAP_ALLOCATOR
     test_allocation_failures();

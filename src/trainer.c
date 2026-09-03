@@ -2,6 +2,7 @@
 
 #include "cfr/trainer.h"
 #include "cfr/traversal.h"
+#include "info_store_internal.h"
 #include "mccfr_internal.h"
 #include "mccfr_sequential_internal.h"
 #include "traversal_internal.h"
@@ -120,6 +121,22 @@ static Status trainer_run(Trainer *trainer, size_t amount,
     if (amount == 0)
         return CFR_STATUS_SUCCESS;
 
+    const bool traversal_uses_concurrent_mccfr =
+        concurrent_mccfr ||
+        (trainer->variant == CFR_TRAINER_VARIANT_MCCFR_EXTERNAL &&
+         cfr_info_store_is_concurrent(trainer->store));
+
+    if (traversal_uses_concurrent_mccfr) {
+        const Status prepare_status =
+            cfr_info_store_prepare_concurrent(trainer->store);
+
+        if (prepare_status != CFR_STATUS_SUCCESS) {
+            if (trainer->stats.errors != SIZE_MAX)
+                trainer->stats.errors += 1;
+            return prepare_status;
+        }
+    }
+
     const Status validation_status =
         cfr_game_validate_state(trainer->game, trainer->state);
     if (validation_status != CFR_STATUS_SUCCESS) {
@@ -137,7 +154,7 @@ static Status trainer_run(Trainer *trainer, size_t amount,
     CfrFullTraversalWorkspace *full_workspace = NULL;
     if (trainer->variant == CFR_TRAINER_VARIANT_MCCFR_EXTERNAL) {
         const Status status =
-            concurrent_mccfr
+            traversal_uses_concurrent_mccfr
                 ? cfr_mccfr_workspace_init(
                       &mccfr_workspace.concurrent,
                       trainer->game->max_legal_actions)
@@ -150,7 +167,7 @@ static Status trainer_run(Trainer *trainer, size_t amount,
                 trainer->stats.errors += 1;
             return status;
         }
-        if (concurrent_mccfr)
+        if (traversal_uses_concurrent_mccfr)
             mccfr_workspace_pointer = &mccfr_workspace.concurrent;
         else
             sequential_workspace_pointer = &mccfr_workspace.sequential;
@@ -176,7 +193,7 @@ static Status trainer_run(Trainer *trainer, size_t amount,
             const Status status = run_player_traversal(
                 trainer, (Player)player_index, iteration,
                 mccfr_workspace_pointer, sequential_workspace_pointer,
-                concurrent_mccfr, full_workspace);
+                traversal_uses_concurrent_mccfr, full_workspace);
 
             if (status != CFR_STATUS_SUCCESS) {
                 result = status;
@@ -192,7 +209,7 @@ static Status trainer_run(Trainer *trainer, size_t amount,
 cleanup:
     cfr_full_traversal_workspace_destroy(full_workspace);
     if (trainer->variant == CFR_TRAINER_VARIANT_MCCFR_EXTERNAL) {
-        if (concurrent_mccfr)
+        if (traversal_uses_concurrent_mccfr)
             cfr_mccfr_workspace_destroy(&mccfr_workspace.concurrent);
         else
             cfr_mccfr_sequential_workspace_destroy(
