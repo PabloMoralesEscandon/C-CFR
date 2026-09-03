@@ -394,10 +394,11 @@ one coordinated boundary.
 
 The shared table uses concurrent reader access and takes an exclusive lock only
 when publishing a new information set or growing the table. Learning arrays use
-one lock per information set. A traversal collects deltas without holding store
-locks, then locks only the nodes in its commit in a stable order. This keeps
-unrelated traversals independent while preserving all-or-nothing commits and
-avoiding lock-order deadlocks. A per-worker node cache removes shared table
+one lock per information set. A traversal retains its first strategy snapshot
+for each information set, collects deltas without holding store locks, then
+locks only the nodes in its commit in a stable order. This keeps unrelated
+traversals independent while preserving coherent decisions, all-or-nothing
+commits, and lock-order safety. A per-worker node cache removes shared table
 lookups after warm-up.
 
 External sampling draws one chance outcome and one action at every opponent

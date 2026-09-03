@@ -43,8 +43,8 @@ void cfr_mccfr_workspace_destroy(MccfrWorkspace *workspace) {
     free(workspace->frames);
     free(workspace->delta_table);
     free(workspace->delta_entries);
-    free(workspace->sample_table);
-    free(workspace->sample_entries);
+    free(workspace->snapshot_table);
+    free(workspace->snapshots);
     free(workspace->arena);
     *workspace = (MccfrWorkspace){0};
 }
@@ -65,18 +65,18 @@ Status cfr_mccfr_workspace_init(MccfrWorkspace *workspace,
         malloc(MCCFR_INITIAL_TABLE_CAPACITY * sizeof(*temporary.delta_table));
     temporary.delta_entries = malloc(
         MCCFR_INITIAL_ENTRY_CAPACITY * sizeof(*temporary.delta_entries));
-    temporary.sample_table =
-        malloc(MCCFR_INITIAL_TABLE_CAPACITY * sizeof(*temporary.sample_table));
-    temporary.sample_entries = malloc(
-        MCCFR_INITIAL_ENTRY_CAPACITY * sizeof(*temporary.sample_entries));
+    temporary.snapshot_table = malloc(MCCFR_INITIAL_TABLE_CAPACITY *
+                                      sizeof(*temporary.snapshot_table));
+    temporary.snapshots = malloc(MCCFR_INITIAL_ENTRY_CAPACITY *
+                                 sizeof(*temporary.snapshots));
     temporary.arena_capacity =
         2 * MCCFR_INITIAL_ENTRY_CAPACITY * max_legal_actions;
     temporary.arena =
         malloc(temporary.arena_capacity * sizeof(*temporary.arena));
 
     if (temporary.frames == NULL || temporary.delta_table == NULL ||
-        temporary.delta_entries == NULL || temporary.sample_table == NULL ||
-        temporary.sample_entries == NULL || temporary.arena == NULL) {
+        temporary.delta_entries == NULL || temporary.snapshot_table == NULL ||
+        temporary.snapshots == NULL || temporary.arena == NULL) {
         cfr_mccfr_workspace_destroy(&temporary);
         return CFR_STATUS_OUT_OF_MEMORY;
     }
@@ -84,13 +84,13 @@ Status cfr_mccfr_workspace_init(MccfrWorkspace *workspace,
     temporary.frame_capacity = MCCFR_INITIAL_FRAME_CAPACITY;
     temporary.delta_table_capacity = MCCFR_INITIAL_TABLE_CAPACITY;
     temporary.delta_entry_capacity = MCCFR_INITIAL_ENTRY_CAPACITY;
-    temporary.sample_table_capacity = MCCFR_INITIAL_TABLE_CAPACITY;
-    temporary.sample_entry_capacity = MCCFR_INITIAL_ENTRY_CAPACITY;
+    temporary.snapshot_table_capacity = MCCFR_INITIAL_TABLE_CAPACITY;
+    temporary.snapshot_capacity = MCCFR_INITIAL_ENTRY_CAPACITY;
     cfr_traversal_initialize_index_table(
         temporary.delta_table, temporary.delta_table_capacity,
         MCCFR_CELL_EMPTY);
     cfr_traversal_initialize_index_table(
-        temporary.sample_table, temporary.sample_table_capacity,
+        temporary.snapshot_table, temporary.snapshot_table_capacity,
         MCCFR_CELL_EMPTY);
     *workspace = temporary;
     return CFR_STATUS_SUCCESS;
@@ -102,14 +102,14 @@ static void workspace_reset(MccfrWorkspace *workspace, const MccfrRng *rng,
         workspace->delta_table[workspace->delta_entries[index].table_cell] =
             MCCFR_CELL_EMPTY;
     }
-    for (size_t index = 0; index < workspace->sample_entry_count; index += 1) {
-        workspace->sample_table[workspace->sample_entries[index].table_cell] =
+    for (size_t index = 0; index < workspace->snapshot_count; index += 1) {
+        workspace->snapshot_table[workspace->snapshots[index].table_cell] =
             MCCFR_CELL_EMPTY;
     }
     workspace->delta_table_used = 0;
     workspace->delta_entry_count = 0;
-    workspace->sample_table_used = 0;
-    workspace->sample_entry_count = 0;
+    workspace->snapshot_table_used = 0;
+    workspace->snapshot_count = 0;
     workspace->arena_used = 0;
     workspace->visits = 0;
     workspace->rng = *rng;
@@ -217,28 +217,28 @@ static Status grow_delta_table(MccfrWorkspace *workspace) {
     return CFR_STATUS_SUCCESS;
 }
 
-static Status grow_sample_table(MccfrWorkspace *workspace) {
+static Status grow_snapshot_table(MccfrWorkspace *workspace) {
     size_t *grown;
     size_t capacity;
-    Status status = allocate_grown_table(workspace->sample_table_capacity,
+    Status status = allocate_grown_table(workspace->snapshot_table_capacity,
                                          &grown, &capacity);
 
     if (status != CFR_STATUS_SUCCESS)
         return status;
     const size_t mask = capacity - 1;
-    for (size_t index = 0; index < workspace->sample_entry_count; index += 1) {
+    for (size_t index = 0; index < workspace->snapshot_count; index += 1) {
         size_t cell = cfr_traversal_hash_node(
-                          workspace->sample_entries[index].node) &
+                          workspace->snapshots[index].node) &
                       mask;
 
         while (grown[cell] != MCCFR_CELL_EMPTY)
             cell = (cell + 1) & mask;
         grown[cell] = index;
-        workspace->sample_entries[index].table_cell = cell;
+        workspace->snapshots[index].table_cell = cell;
     }
-    free(workspace->sample_table);
-    workspace->sample_table = grown;
-    workspace->sample_table_capacity = capacity;
+    free(workspace->snapshot_table);
+    workspace->snapshot_table = grown;
+    workspace->snapshot_table_capacity = capacity;
     return CFR_STATUS_SUCCESS;
 }
 
@@ -255,16 +255,16 @@ static Status ensure_delta_entries(MccfrWorkspace *workspace) {
     return status;
 }
 
-static Status ensure_sample_entries(MccfrWorkspace *workspace) {
-    if (workspace->sample_entry_count < workspace->sample_entry_capacity)
+static Status ensure_snapshots(MccfrWorkspace *workspace) {
+    if (workspace->snapshot_count < workspace->snapshot_capacity)
         return CFR_STATUS_SUCCESS;
     void *grown;
     const Status status = cfr_traversal_grow_array(
-        workspace->sample_entries, sizeof(*workspace->sample_entries),
-        &workspace->sample_entry_capacity, &grown);
+        workspace->snapshots, sizeof(*workspace->snapshots),
+        &workspace->snapshot_capacity, &grown);
 
     if (status == CFR_STATUS_SUCCESS)
-        workspace->sample_entries = grown;
+        workspace->snapshots = grown;
     return status;
 }
 
@@ -418,70 +418,102 @@ static Status sample_index(const Probability *probabilities, size_t count,
     return CFR_STATUS_SUCCESS;
 }
 
-static Status get_sampled_action(MccfrWorkspace *workspace,
-                                 const InfoNode *node,
-                                 const Action *actions,
-                                 const Probability *strategy,
-                                 size_t action_count, size_t *index_out) {
+/*
+ * Returns one stable strategy snapshot for an information set throughout a
+ * traversal. Another worker can commit to the shared node between two hidden
+ * histories, so reading the node again would otherwise combine one cached
+ * opponent action with a different distribution. Target-player visits also
+ * reuse the snapshot so their regret deltas describe one coherent traversal.
+ */
+static Status get_strategy_snapshot(MccfrWorkspace *workspace,
+                                    const InfoNode *node,
+                                    const Action *actions,
+                                    Probability *strategy,
+                                    size_t action_count,
+                                    size_t *snapshot_out) {
     size_t mask;
     size_t cell;
     Status status;
 
-    mask = workspace->sample_table_capacity - 1;
+    mask = workspace->snapshot_table_capacity - 1;
     cell = cfr_traversal_hash_node(node) & mask;
-    while (workspace->sample_table[cell] != MCCFR_CELL_EMPTY) {
-        const size_t candidate = workspace->sample_table[cell];
+    while (workspace->snapshot_table[cell] != MCCFR_CELL_EMPTY) {
+        const size_t candidate = workspace->snapshot_table[cell];
+        const MccfrStrategySnapshot *snapshot =
+            &workspace->snapshots[candidate];
 
-        if (workspace->sample_entries[candidate].node == node) {
-            if (workspace->sample_entries[candidate].action_count !=
-                action_count) {
+        if (snapshot->node == node) {
+            if (snapshot->action_count != action_count) {
                 return CFR_STATUS_INVALID_ARGUMENT;
             }
             for (size_t action = 0; action < action_count; action += 1) {
-                if (workspace->sample_entries[candidate].actions[action] !=
-                    actions[action]) {
+                if (snapshot->actions[action] != actions[action]) {
                     return CFR_STATUS_INVALID_ARGUMENT;
                 }
+                strategy[action] = snapshot->probabilities[action];
             }
-            *index_out = workspace->sample_entries[candidate].action_index;
-            return *index_out < action_count ? CFR_STATUS_SUCCESS
-                                             : CFR_STATUS_INVALID_ARGUMENT;
+            *snapshot_out = candidate;
+            return CFR_STATUS_SUCCESS;
         }
         cell = (cell + 1) & mask;
     }
 
-    if (workspace->sample_table_used + 1 >
-        workspace->sample_table_capacity -
-            workspace->sample_table_capacity / 4) {
-        status = grow_sample_table(workspace);
+    if (workspace->snapshot_table_used + 1 >
+        workspace->snapshot_table_capacity -
+            workspace->snapshot_table_capacity / 4) {
+        status = grow_snapshot_table(workspace);
         if (status != CFR_STATUS_SUCCESS)
             return status;
-        mask = workspace->sample_table_capacity - 1;
+        mask = workspace->snapshot_table_capacity - 1;
         cell = cfr_traversal_hash_node(node) & mask;
-        while (workspace->sample_table[cell] != MCCFR_CELL_EMPTY)
+        while (workspace->snapshot_table[cell] != MCCFR_CELL_EMPTY)
             cell = (cell + 1) & mask;
     }
 
-    status = ensure_sample_entries(workspace);
+    status = ensure_snapshots(workspace);
     if (status != CFR_STATUS_SUCCESS)
         return status;
-    size_t sampled;
-    status = sample_index(strategy, action_count, &workspace->rng, &sampled);
+    status = cfr_info_node_current_strategy(node, strategy, action_count);
     if (status != CFR_STATUS_SUCCESS)
         return status;
 
-    const size_t entry = workspace->sample_entry_count;
-    workspace->sample_entries[entry] =
-        (MccfrSampleEntry){.node = node,
-                           .action_index = sampled,
-                           .action_count = action_count,
-                           .table_cell = cell};
-    for (size_t action = 0; action < action_count; action += 1)
-        workspace->sample_entries[entry].actions[action] = actions[action];
-    workspace->sample_entry_count += 1;
-    workspace->sample_table[cell] = entry;
-    workspace->sample_table_used += 1;
-    *index_out = sampled;
+    const size_t entry = workspace->snapshot_count;
+    workspace->snapshots[entry] =
+        (MccfrStrategySnapshot){.node = node,
+                                .sampled_action = SIZE_MAX,
+                                .action_count = action_count,
+                                .table_cell = cell};
+    for (size_t action = 0; action < action_count; action += 1) {
+        workspace->snapshots[entry].actions[action] = actions[action];
+        workspace->snapshots[entry].probabilities[action] = strategy[action];
+    }
+    workspace->snapshot_count += 1;
+    workspace->snapshot_table[cell] = entry;
+    workspace->snapshot_table_used += 1;
+    *snapshot_out = entry;
+    return CFR_STATUS_SUCCESS;
+}
+
+static Status get_sampled_action(MccfrWorkspace *workspace,
+                                 size_t snapshot_index,
+                                 size_t *index_out) {
+    if (snapshot_index >= workspace->snapshot_count || index_out == NULL)
+        return CFR_STATUS_INVALID_ARGUMENT;
+    MccfrStrategySnapshot *snapshot =
+        &workspace->snapshots[snapshot_index];
+
+    if (snapshot->sampled_action == SIZE_MAX) {
+        Status status = sample_index(snapshot->probabilities,
+                                     snapshot->action_count,
+                                     &workspace->rng,
+                                     &snapshot->sampled_action);
+
+        if (status != CFR_STATUS_SUCCESS)
+            return status;
+    }
+    if (snapshot->sampled_action >= snapshot->action_count)
+        return CFR_STATUS_INVALID_ARGUMENT;
+    *index_out = snapshot->sampled_action;
     return CFR_STATUS_SUCCESS;
 }
 
@@ -705,12 +737,11 @@ static Status traverse_opponent_node(
     const CfrTraversalAdapter *adapter, GameState *state, InfoStore *store,
     Player target_player, size_t depth, Probability own_reach,
     MccfrWorkspace *workspace, InfoNode *node, size_t action_count,
-    Utility *utility_out) {
+    size_t snapshot_index, Utility *utility_out) {
     MccfrFrame *frame = &workspace->frames[depth];
     size_t sampled_action;
-    Status status = get_sampled_action(
-        workspace, node, frame->actions, frame->probabilities, action_count,
-        &sampled_action);
+    Status status =
+        get_sampled_action(workspace, snapshot_index, &sampled_action);
 
     if (status != CFR_STATUS_SUCCESS)
         return status;
@@ -842,8 +873,10 @@ static Status traverse_branch(const CfrTraversalAdapter *adapter,
                                           &node);
     if (status != CFR_STATUS_SUCCESS)
         return status;
-    status = cfr_info_node_current_strategy(node, frame->probabilities,
-                                            action_count);
+    size_t snapshot_index;
+    status = get_strategy_snapshot(workspace, node, frame->actions,
+                                   frame->probabilities, action_count,
+                                   &snapshot_index);
     if (status != CFR_STATUS_SUCCESS)
         return status;
 
@@ -854,7 +887,7 @@ static Status traverse_branch(const CfrTraversalAdapter *adapter,
     }
     return traverse_opponent_node(adapter, state, store, target_player, depth,
                                   own_reach, workspace, node, action_count,
-                                  utility_out);
+                                  snapshot_index, utility_out);
 }
 
 Status cfr_mccfr_external_traverse(const Game *game, GameState *state,
@@ -926,8 +959,8 @@ Status cfr_mccfr_external_traverse_in_workspace(
         return status;
     if (workspace == NULL || workspace->frames == NULL ||
         workspace->delta_table == NULL || workspace->delta_entries == NULL ||
-        workspace->sample_table == NULL ||
-        workspace->sample_entries == NULL || workspace->arena == NULL) {
+        workspace->snapshot_table == NULL || workspace->snapshots == NULL ||
+        workspace->arena == NULL) {
         return CFR_STATUS_INVALID_ARGUMENT;
     }
     return traverse_in_workspace(&adapter, state, store, target_player, rng,

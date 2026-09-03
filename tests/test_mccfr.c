@@ -411,6 +411,96 @@ static void test_opponent_sample_is_shared_by_information_set(void) {
     destroy_store(&store);
 }
 
+typedef struct {
+    const GameOperations *base_operations;
+    InfoStore *store;
+    bool *mutated;
+} StrategySnapshotMutation;
+
+static Status mutate_strategy_before_second_hidden_history(
+    const void *context, const GameState *state, Actor *result) {
+    const StrategySnapshotMutation *mutation = context;
+    const TraversalGameState *traversal_state =
+        (const TraversalGameState *)state;
+
+    if (traversal_state->phase ==
+            TRAVERSAL_PHASE_SHARED_RIGHT_PLAYER_1 &&
+        !*mutation->mutated) {
+        InfoNode *node = NULL;
+        const Utility regret_delta[2] = {-2.0, 2.0};
+        const double strategy_delta[2] = {0.0, 0.0};
+        Status status = cfr_info_store_find(mutation->store, 501, &node);
+
+        if (status != CFR_STATUS_SUCCESS)
+            return status;
+        status = cfr_info_node_apply_deltas(
+            node, regret_delta, strategy_delta, 2);
+        if (status != CFR_STATUS_SUCCESS)
+            return status;
+        *mutation->mutated = true;
+    }
+    return mutation->base_operations->current_actor(NULL, state, result);
+}
+
+/*
+ * Simulate another worker replacing an opponent strategy between the two
+ * hidden histories that share key 501. The traversal sampled action zero from
+ * [1, 0]. It must keep both that action and its strategy snapshot after the
+ * shared node changes to [0, 1]. Mixing the cached action with the later
+ * distribution used to return CFR_STATUS_NUMERIC_ERROR.
+ */
+static void test_strategy_snapshot_survives_shared_node_update(void) {
+    const Game *base_game = traversal_game_descriptor();
+    GameOperations operations = *base_game->operations;
+    Game game = *base_game;
+    TraversalGameState state;
+    TraversalGameState root;
+    InfoStore store;
+    InfoNode *opponent_node = NULL;
+    MccfrRng rng;
+    Utility utility = 93.0;
+    TraversalStats stats = {.visited_nodes = 94};
+    const uint64_t seed = UINT64_C(1234567);
+    const Utility initial_regret[2] = {1.0, -1.0};
+    const double initial_strategy[2] = {0.0, 0.0};
+    bool mutated = false;
+    StrategySnapshotMutation mutation = {
+        .base_operations = base_game->operations,
+        .store = &store,
+        .mutated = &mutated,
+    };
+
+    operations.current_actor = mutate_strategy_before_second_hidden_history;
+    game.operations = &operations;
+    game.context = &mutation;
+    CHECK(traversal_game_state_init_shared(&state, false) ==
+          CFR_STATUS_SUCCESS);
+    root = state;
+    initialize_store(&store);
+    CHECK(cfr_info_store_get_or_create(&store, 501, 2, &opponent_node) ==
+          CFR_STATUS_SUCCESS);
+    CHECK(opponent_node != NULL);
+    CHECK(cfr_info_node_apply_deltas(
+              opponent_node, initial_regret, initial_strategy, 2) ==
+          CFR_STATUS_SUCCESS);
+    CHECK(cfr_mccfr_rng_seed(&rng, seed) == CFR_STATUS_SUCCESS);
+
+    CHECK(cfr_mccfr_external_traverse_with_stats(
+              &game, traversal_game_state_as_public(&state), &store,
+              CFR_PLAYER_0, &rng, &utility, &stats) == CFR_STATUS_SUCCESS);
+    CHECK(mutated);
+    CHECK(near(utility, -2.0));
+    CHECK(stats.visited_nodes == 5);
+    CHECK(state.phase == root.phase);
+    CHECK(state.history_count == root.history_count);
+    CHECK(rng.state == seed + UINT64_C(0x9e3779b97f4a7c15));
+    CHECK(near(opponent_node->regret_sums[0], -1.0));
+    CHECK(near(opponent_node->regret_sums[1], 1.0));
+    CHECK(near(opponent_node->strategy_sums[0], 2.0));
+    CHECK(near(opponent_node->strategy_sums[1], 0.0));
+    destroy_store(&store);
+}
+
 static void test_error_preserves_rng_outputs_and_learning(void) {
     const Game *game = traversal_game_descriptor();
     TraversalGameState state;
@@ -1259,6 +1349,7 @@ int test_mccfr(void) {
     test_tiny_sample_reach_does_not_abort();
     test_chance_is_sampled_and_target_actions_are_expanded();
     test_opponent_sample_is_shared_by_information_set();
+    test_strategy_snapshot_survives_shared_node_update();
     test_error_preserves_rng_outputs_and_learning();
     test_hidden_histories_require_identical_action_mapping();
     test_seeded_trainers_are_reproducible();

@@ -18,11 +18,12 @@ typedef struct {
 
 typedef struct {
     const InfoNode *node;
-    size_t action_index;
+    size_t sampled_action;
     size_t action_count;
     size_t table_cell;
     Action actions[CFR_TRAVERSAL_MAX_ACTIONS];
-} MccfrSampleEntry;
+    Probability probabilities[CFR_TRAVERSAL_MAX_ACTIONS];
+} MccfrStrategySnapshot;
 
 #define CFR_MCCFR_NODE_CACHE_BITS 9
 #define CFR_MCCFR_NODE_CACHE_CAPACITY \
@@ -44,12 +45,12 @@ typedef struct {
     size_t delta_entry_count;
     size_t delta_entry_capacity;
 
-    size_t *sample_table;
-    size_t sample_table_capacity;
-    size_t sample_table_used;
-    MccfrSampleEntry *sample_entries;
-    size_t sample_entry_count;
-    size_t sample_entry_capacity;
+    size_t *snapshot_table;
+    size_t snapshot_table_capacity;
+    size_t snapshot_table_used;
+    MccfrStrategySnapshot *snapshots;
+    size_t snapshot_count;
+    size_t snapshot_capacity;
 
     double *arena;
     size_t arena_used;

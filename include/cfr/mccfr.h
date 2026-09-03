@@ -62,10 +62,11 @@ Status cfr_mccfr_rng_seed(MccfrRng *rng, uint64_t seed);
  * Each thread must supply its own mutable state, random stream, outputs, and
  * any mutable game context. The game operations must be safe to call
  * concurrently. Store initialization and destruction must not overlap a
- * traversal. Each successful traversal commits its deltas atomically; a
- * strategy used during traversal is a consistent per-information-set snapshot
- * and can observe an earlier concurrent commit at one information set than at
- * another.
+ * traversal. Each traversal retains the first strategy snapshot it reads for
+ * every information set, including its sampled opponent action, so later
+ * visits cannot mix that decision with a concurrent update. Each successful
+ * traversal commits its deltas atomically and can observe an earlier concurrent
+ * commit at one information set than at another.
  */
 Status cfr_mccfr_external_traverse(const Game *game, GameState *state,
                                    InfoStore *store, Player target_player,
