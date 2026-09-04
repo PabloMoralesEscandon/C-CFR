@@ -29,7 +29,7 @@ typedef struct {
 
 typedef struct {
     InfoSetKey key;
-    InfoNode *node;
+    uintptr_t tagged_node;
 } MccfrNodeCacheEntry;
 
 typedef struct {

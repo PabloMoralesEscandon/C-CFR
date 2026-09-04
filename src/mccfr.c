@@ -13,6 +13,10 @@
 #define MCCFR_INITIAL_FRAME_CAPACITY ((size_t)32)
 #define MCCFR_INITIAL_TABLE_CAPACITY ((size_t)64)
 #define MCCFR_INITIAL_ENTRY_CAPACITY ((size_t)16)
+#define MCCFR_NODE_CACHE_ACTION_MASK ((uintptr_t)7)
+
+_Static_assert(_Alignof(InfoNode) > MCCFR_NODE_CACHE_ACTION_MASK,
+               "InfoNode alignment must leave three tag bits");
 
 static Status traverse_branch(const CfrTraversalAdapter *adapter,
                               GameState *state, InfoStore *store,
@@ -133,13 +137,21 @@ static Status workspace_get_or_create_node(MccfrWorkspace *workspace,
     size_t cell = (size_t)(((uint64_t)key *
                             UINT64_C(11400714819323198485)) >>
                            (64 - CFR_MCCFR_NODE_CACHE_BITS));
+    const uintptr_t tagged_node = workspace->node_cache[cell].tagged_node;
 
-    if (workspace->node_cache[cell].node != NULL &&
+    if (tagged_node != 0 &&
         workspace->node_cache[cell].key == key) {
-        InfoNode *node = workspace->node_cache[cell].node;
+        InfoNode *node = (InfoNode *)(tagged_node &
+                                      ~MCCFR_NODE_CACHE_ACTION_MASK);
+        const size_t cached_action_count =
+            (size_t)(tagged_node & MCCFR_NODE_CACHE_ACTION_MASK);
 
-        if (node->action_count != action_count)
+        if ((cached_action_count != 0 &&
+             cached_action_count != action_count) ||
+            (cached_action_count == 0 &&
+             node->action_count != action_count)) {
             return CFR_STATUS_INVALID_ARGUMENT;
+        }
         *node_out = node;
         return CFR_STATUS_SUCCESS;
     }
@@ -150,8 +162,14 @@ static Status workspace_get_or_create_node(MccfrWorkspace *workspace,
 
     if (status != CFR_STATUS_SUCCESS)
         return status;
+    const uintptr_t action_tag =
+        action_count <= MCCFR_NODE_CACHE_ACTION_MASK
+            ? (uintptr_t)action_count
+            : 0;
     workspace->node_cache[cell] =
-        (MccfrNodeCacheEntry){.key = key, .node = node};
+        (MccfrNodeCacheEntry){.key = key,
+                              .tagged_node =
+                                  (uintptr_t)node | action_tag};
     *node_out = node;
     return CFR_STATUS_SUCCESS;
 }
