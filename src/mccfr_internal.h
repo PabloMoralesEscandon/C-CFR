@@ -23,7 +23,7 @@ typedef struct {
     size_t delta_index;
 } MccfrStrategySnapshot;
 
-#define CFR_MCCFR_NODE_CACHE_BITS 9
+#define CFR_MCCFR_NODE_CACHE_BITS 13
 #define CFR_MCCFR_NODE_CACHE_CAPACITY \
     ((size_t)1 << CFR_MCCFR_NODE_CACHE_BITS)
 
