@@ -15,6 +15,10 @@ Status cfr_info_node_check_deltas_locked(
     const InfoNode *node, const Utility *delta_regret,
     const double *delta_strategy_sum, size_t action_count);
 
+Status cfr_info_node_prepare_values_locked(
+    const InfoNode *node, Utility *regret_values,
+    double *strategy_sum_values, size_t action_count);
+
 Status cfr_info_node_current_strategy_sequential(
     const InfoNode *node, Probability *strategy_array,
     size_t strategy_capacity);
@@ -45,6 +49,10 @@ Status cfr_info_node_init_owned(void *storage, size_t storage_size,
 void cfr_info_node_apply_validated_deltas(
     InfoNode *node, const Utility *delta_regret,
     const double *delta_strategy_sum, size_t action_count);
+
+void cfr_info_node_publish_validated_values(
+    InfoNode *node, const Utility *regret_values,
+    const double *strategy_sum_values, size_t action_count);
 
 void cfr_info_node_apply_validated_deltas_sequential(
     InfoNode *node, const Utility *delta_regret,

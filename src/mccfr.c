@@ -614,12 +614,12 @@ static void sort_delta_entries(MccfrWorkspace *workspace) {
                workspace->delta_entry_count * sizeof(*source));
 }
 
-static Status workspace_check_locked_deltas(const MccfrWorkspace *workspace) {
+static Status workspace_prepare_locked_values(MccfrWorkspace *workspace) {
     for (size_t index = 0; index < workspace->delta_entry_count; index += 1) {
-        const MccfrDeltaEntry *entry = &workspace->delta_entries[index];
-        const Utility *regret = workspace->arena + entry->arena_offset;
-        const double *strategy = regret + entry->action_count;
-        const Status status = cfr_info_node_check_deltas_locked(
+        MccfrDeltaEntry *entry = &workspace->delta_entries[index];
+        Utility *regret = workspace->arena + entry->arena_offset;
+        double *strategy = regret + entry->action_count;
+        const Status status = cfr_info_node_prepare_values_locked(
             entry->node, regret, strategy, entry->action_count);
 
         if (status != CFR_STATUS_SUCCESS)
@@ -628,12 +628,12 @@ static Status workspace_check_locked_deltas(const MccfrWorkspace *workspace) {
     return CFR_STATUS_SUCCESS;
 }
 
-static void workspace_apply_locked_deltas(MccfrWorkspace *workspace) {
+static void workspace_publish_locked_values(MccfrWorkspace *workspace) {
     for (size_t index = 0; index < workspace->delta_entry_count; index += 1) {
         MccfrDeltaEntry *entry = &workspace->delta_entries[index];
         Utility *regret = workspace->arena + entry->arena_offset;
         double *strategy = regret + entry->action_count;
-        cfr_info_node_apply_validated_deltas(
+        cfr_info_node_publish_validated_values(
             entry->node, regret, strategy, entry->action_count);
     }
 }
@@ -658,9 +658,9 @@ static Status workspace_commit_deltas(MccfrWorkspace *workspace) {
         cfr_spin_wait(&spin_count);
     }
 
-    status = workspace_check_locked_deltas(workspace);
+    status = workspace_prepare_locked_values(workspace);
     if (status == CFR_STATUS_SUCCESS)
-        workspace_apply_locked_deltas(workspace);
+        workspace_publish_locked_values(workspace);
 
     while (locked_count > 0) {
         locked_count -= 1;

@@ -353,6 +353,31 @@ Status cfr_info_node_check_deltas_locked(
     return CFR_STATUS_SUCCESS;
 }
 
+Status cfr_info_node_prepare_values_locked(
+    const InfoNode *node, Utility *regret_values,
+    double *strategy_sum_values, size_t action_count) {
+    for (size_t i = 0; i < action_count; i++) {
+        const Utility delta_regret = regret_values[i];
+        const double delta_strategy_sum = strategy_sum_values[i];
+
+        if (!isfinite(delta_regret) || !isfinite(delta_strategy_sum) ||
+            delta_strategy_sum < 0) {
+            return CFR_STATUS_NUMERIC_ERROR;
+        }
+        const Utility regret_candidate =
+            node->regret_sums[i] + delta_regret;
+        if (!isfinite(regret_candidate))
+            return CFR_STATUS_NUMERIC_ERROR;
+        const double strategy_candidate =
+            node->strategy_sums[i] + delta_strategy_sum;
+        if (!isfinite(strategy_candidate) || strategy_candidate < 0)
+            return CFR_STATUS_NUMERIC_ERROR;
+        regret_values[i] = regret_candidate;
+        strategy_sum_values[i] = strategy_candidate;
+    }
+    return CFR_STATUS_SUCCESS;
+}
+
 Status cfr_info_node_check_deltas_sequential(
     const InfoNode *node, const Utility *delta_regret,
     const double *delta_strategy_sum, size_t action_count) {
@@ -413,6 +438,17 @@ void cfr_info_node_apply_validated_deltas(
         atomic_store_double(&node->regret_sums[i],
                             node->regret_sums[i] + delta_regret[i]);
         node->strategy_sums[i] += delta_strategy_sum[i];
+    }
+    info_node_end_update(node);
+}
+
+void cfr_info_node_publish_validated_values(
+    InfoNode *node, const Utility *regret_values,
+    const double *strategy_sum_values, size_t action_count) {
+    info_node_begin_update(node);
+    for (size_t i = 0; i < action_count; i++) {
+        atomic_store_double(&node->regret_sums[i], regret_values[i]);
+        node->strategy_sums[i] = strategy_sum_values[i];
     }
     info_node_end_update(node);
 }
