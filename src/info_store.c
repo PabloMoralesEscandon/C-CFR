@@ -18,7 +18,8 @@ enum {
     CONCURRENT_SHARD_BITS = CFR_INFO_STORE_CONCURRENT_SHARD_BITS,
     CONCURRENT_SHARD_COUNT = 1 << CONCURRENT_SHARD_BITS,
     CONCURRENT_INITIAL_SHARD_CAPACITY = 8,
-    CONCURRENT_CACHE_LINE_SIZE = 64
+    CONCURRENT_CACHE_LINE_SIZE = 64,
+    CONCURRENT_NODE_TAG_MASK = 7
 };
 
 _Static_assert(CONCURRENT_SHARD_BITS > 0 && CONCURRENT_SHARD_BITS < 16,
@@ -37,8 +38,11 @@ typedef enum {
 } LocateResult;
 
 typedef struct {
-    InfoNode *node;
+    uintptr_t tagged_node;
 } ConcurrentInfoStoreSlot;
+
+_Static_assert(_Alignof(InfoNode) > CONCURRENT_NODE_TAG_MASK,
+               "InfoNode alignment must leave three tag bits");
 
 typedef struct CfrConcurrentInfoStoreTable {
     struct CfrConcurrentInfoStoreTable *retired;
@@ -412,6 +416,14 @@ static uint64_t concurrent_local_hash(uint64_t hash) {
            (hash >> (64 - CONCURRENT_SHARD_BITS));
 }
 
+static uintptr_t concurrent_tag_node(InfoNode *node, uint64_t hash) {
+    return (uintptr_t)node | (uintptr_t)(hash & CONCURRENT_NODE_TAG_MASK);
+}
+
+static InfoNode *concurrent_untag_node(uintptr_t tagged_node) {
+    return (InfoNode *)(tagged_node & ~(uintptr_t)CONCURRENT_NODE_TAG_MASK);
+}
+
 static size_t concurrent_initial_index(uint64_t hash, size_t capacity) {
     const unsigned int shift = (unsigned int)__builtin_clzll(
         (unsigned long long)(capacity - 1));
@@ -434,7 +446,7 @@ static ConcurrentInfoStoreTable *concurrent_table_create(size_t capacity) {
     table->retired = NULL;
     table->capacity = capacity;
     for (size_t index = 0; index < capacity; index += 1)
-        table->slots[index].node = NULL;
+        table->slots[index].tagged_node = 0;
     return table;
 }
 
@@ -458,14 +470,16 @@ static LocateResult concurrent_locate(const ConcurrentInfoStoreTable *table,
 
     for (size_t offset = 0; offset < table->capacity; offset += 1) {
         const size_t index = (first + offset) & mask;
-        InfoNode *node =
-            __atomic_load_n(&table->slots[index].node, __ATOMIC_ACQUIRE);
+        const uintptr_t tagged_node = __atomic_load_n(
+            &table->slots[index].tagged_node, __ATOMIC_ACQUIRE);
 
-        if (node == NULL) {
+        if (tagged_node == 0) {
             *index_out = index;
             return LOCATE_EMPTY_SLOT_FOUND;
         }
-        if (node->key == key) {
+        if ((tagged_node & CONCURRENT_NODE_TAG_MASK) ==
+                (hash & CONCURRENT_NODE_TAG_MASK) &&
+            concurrent_untag_node(tagged_node)->key == key) {
             *index_out = index;
             return LOCATE_ENTRY_FOUND;
         }
@@ -484,7 +498,7 @@ static Status concurrent_table_insert_existing(
 
     if (result != LOCATE_EMPTY_SLOT_FOUND)
         return CFR_STATUS_INVALID_ARGUMENT;
-    table->slots[index].node = node;
+    table->slots[index].tagged_node = concurrent_tag_node(node, hash);
     return CFR_STATUS_SUCCESS;
 }
 
@@ -501,11 +515,12 @@ static Status concurrent_table_rehash(
     if (new_table == NULL)
         return CFR_STATUS_OUT_OF_MEMORY;
     for (size_t index = 0; index < old_table->capacity; index += 1) {
-        InfoNode *node = __atomic_load_n(&old_table->slots[index].node,
-                                         __ATOMIC_RELAXED);
+        const uintptr_t tagged_node = __atomic_load_n(
+            &old_table->slots[index].tagged_node, __ATOMIC_RELAXED);
 
-        if (node == NULL)
+        if (tagged_node == 0)
             continue;
+        InfoNode *node = concurrent_untag_node(tagged_node);
         const Status status = concurrent_table_insert_existing(new_table, node);
 
         if (status != CFR_STATUS_SUCCESS) {
@@ -789,8 +804,10 @@ static Status concurrent_find_node(const ConcurrentInfoStore *state,
         concurrent_locate(table, hash, key, NULL, &index);
 
     if (result == LOCATE_ENTRY_FOUND) {
-        *node_out = __atomic_load_n(&table->slots[index].node,
-                                    __ATOMIC_ACQUIRE);
+        const uintptr_t tagged_node = __atomic_load_n(
+            &table->slots[index].tagged_node, __ATOMIC_ACQUIRE);
+
+        *node_out = concurrent_untag_node(tagged_node);
         return CFR_STATUS_SUCCESS;
     }
     if (result == LOCATE_EMPTY_SLOT_FOUND || result == LOCATE_STORE_FULL) {
@@ -812,8 +829,9 @@ static Status concurrent_get_or_create(ConcurrentInfoStore *state,
     LocateResult result = concurrent_locate(table, hash, key, NULL, &index);
 
     if (result == LOCATE_ENTRY_FOUND) {
-        InfoNode *node = __atomic_load_n(&table->slots[index].node,
-                                         __ATOMIC_ACQUIRE);
+        const uintptr_t tagged_node = __atomic_load_n(
+            &table->slots[index].tagged_node, __ATOMIC_ACQUIRE);
+        InfoNode *node = concurrent_untag_node(tagged_node);
 
         if (node->action_count != action_count)
             return CFR_STATUS_INVALID_ARGUMENT;
@@ -834,7 +852,8 @@ static Status concurrent_get_or_create(ConcurrentInfoStore *state,
         return CFR_STATUS_INVALID_ARGUMENT;
     }
     if (result == LOCATE_ENTRY_FOUND) {
-        InfoNode *node = table->slots[index].node;
+        InfoNode *node = concurrent_untag_node(
+            table->slots[index].tagged_node);
         const bool count_matches = node->action_count == action_count;
 
         concurrent_shard_unlock(shard);
@@ -878,7 +897,8 @@ static Status concurrent_get_or_create(ConcurrentInfoStore *state,
             return CFR_STATUS_INVALID_ARGUMENT;
         }
     }
-    __atomic_store_n(&table->slots[index].node, node, __ATOMIC_RELEASE);
+    __atomic_store_n(&table->slots[index].tagged_node,
+                     concurrent_tag_node(node, hash), __ATOMIC_RELEASE);
     shard->write.fields.size += 1;
     *node_out = node;
     concurrent_shard_unlock(shard);
@@ -1036,10 +1056,11 @@ static Status concurrent_snapshot_sorted(ConcurrentInfoStore *state,
             goto unlock;
         }
         for (size_t index = 0; index < table->capacity; index += 1) {
-            const InfoNode *node = table->slots[index].node;
+            const uintptr_t tagged_node = table->slots[index].tagged_node;
 
-            if (node == NULL)
+            if (tagged_node == 0)
                 continue;
+            const InfoNode *node = concurrent_untag_node(tagged_node);
             if (count == expected_count) {
                 status = CFR_STATUS_INVALID_ARGUMENT;
                 goto unlock;
