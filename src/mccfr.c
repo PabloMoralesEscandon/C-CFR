@@ -662,6 +662,9 @@ static Status workspace_commit_deltas(MccfrWorkspace *workspace) {
     sort_delta_entries(workspace);
     size_t locked_count = 0;
     size_t spin_count = 0;
+    size_t retry_window = 16;
+    uint64_t retry_jitter =
+        (uint64_t)(uintptr_t)workspace ^ workspace->rng.state;
     while (locked_count < workspace->delta_entry_count) {
         if (cfr_info_node_try_lock(
                 workspace->delta_entries[locked_count].node)) {
@@ -673,6 +676,15 @@ static Status workspace_commit_deltas(MccfrWorkspace *workspace) {
             cfr_info_node_unlock(
                 workspace->delta_entries[locked_count].node);
         }
+        /* Stagger retries without holding locks or advancing the game RNG. */
+        retry_jitter = retry_jitter * UINT64_C(6364136223846793005) +
+                       UINT64_C(1442695040888963407);
+        const size_t pause_count =
+            (size_t)(retry_jitter >> 32) & (retry_window - 1);
+        for (size_t pause = 0; pause < pause_count; pause += 1)
+            cfr_cpu_relax();
+        if (retry_window < 512)
+            retry_window *= 2;
         cfr_spin_wait(&spin_count);
     }
 
