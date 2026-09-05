@@ -160,6 +160,35 @@ Status cfr_trainer_run(Trainer *trainer, size_t amount);
 Status cfr_trainer_run_concurrent(Trainer *trainer, size_t amount);
 
 /*
+ * Observes a completed batch on the thread that runs the trainer.
+ *
+ * completed counts iterations in this run call, not the cumulative trainer
+ * statistics. context belongs to the caller and can be null. The callback
+ * must not modify trainer or its borrowed game, state, and store, and must not
+ * start another run on this trainer. Read-only store operations retain their
+ * concurrency requirements. No traversal locks are held during the callback.
+ */
+typedef Status (*TrainerProgressCallback)(const Trainer *trainer,
+                                          size_t completed, void *context);
+
+/*
+ * Runs training with an observation callback and one retained workspace.
+ *
+ * The callback runs after each interval completed iterations and after the
+ * final iteration, without a duplicate call at an exact interval boundary.
+ * interval must be positive and callback must not be null, even when amount
+ * is zero. A zero amount succeeds without calling the callback.
+ *
+ * concurrent_mccfr selects the cfr_trainer_run_concurrent contract; otherwise
+ * the cfr_trainer_run contract applies. A callback error stops training and
+ * returns that status. Earlier learning and statistics remain committed, the
+ * state stays at the root, and no failed traversal is added to the counters.
+ */
+Status cfr_trainer_run_with_callback(
+    Trainer *trainer, size_t amount, size_t interval, bool concurrent_mccfr,
+    TrainerProgressCallback callback, void *context);
+
+/*
  * Copies trainer statistics to stats_out.
  *
  * trainer and stats_out must not be null. The function does not modify trainer.

@@ -106,7 +106,8 @@ static Status run_player_traversal(Trainer *trainer, Player player,
 }
 
 static Status trainer_run(Trainer *trainer, size_t amount,
-                          bool concurrent_mccfr) {
+                          bool concurrent_mccfr, size_t progress_interval,
+                          TrainerProgressCallback progress, void *context) {
     if (trainer == NULL || trainer->game == NULL || trainer->state == NULL ||
         trainer->store == NULL || !strategic_player_count_is_valid(
                                       trainer->game->strategic_player_count) ||
@@ -183,6 +184,8 @@ static Status trainer_run(Trainer *trainer, size_t amount,
     }
 
     Status result = CFR_STATUS_SUCCESS;
+    size_t next_progress =
+        amount < progress_interval ? amount : progress_interval;
     for (size_t i = 0; i < amount; i++) {
         size_t iteration = trainer->training_iterations;
         if (iteration != SIZE_MAX)
@@ -204,6 +207,15 @@ static Status trainer_run(Trainer *trainer, size_t amount,
             trainer->stats.iterations += 1;
         if (trainer->training_iterations != SIZE_MAX)
             trainer->training_iterations += 1;
+        if (progress != NULL && i + 1 == next_progress) {
+            result = progress(trainer, i + 1, context);
+            if (result != CFR_STATUS_SUCCESS)
+                goto cleanup;
+            const size_t remaining = amount - next_progress;
+            next_progress += remaining < progress_interval
+                                 ? remaining
+                                 : progress_interval;
+        }
     }
 
 cleanup:
@@ -219,11 +231,20 @@ cleanup:
 }
 
 Status cfr_trainer_run(Trainer *trainer, size_t amount) {
-    return trainer_run(trainer, amount, false);
+    return trainer_run(trainer, amount, false, 0, NULL, NULL);
 }
 
 Status cfr_trainer_run_concurrent(Trainer *trainer, size_t amount) {
-    return trainer_run(trainer, amount, true);
+    return trainer_run(trainer, amount, true, 0, NULL, NULL);
+}
+
+Status cfr_trainer_run_with_callback(
+    Trainer *trainer, size_t amount, size_t interval, bool concurrent_mccfr,
+    TrainerProgressCallback callback, void *context) {
+    if (interval == 0 || callback == NULL)
+        return CFR_STATUS_INVALID_ARGUMENT;
+    return trainer_run(trainer, amount, concurrent_mccfr, interval, callback,
+                       context);
 }
 
 Status cfr_trainer_get_stats(const Trainer *trainer, TrainerStats *stats_out) {

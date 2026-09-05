@@ -1288,6 +1288,110 @@ static void test_checkpoint_restores_random_stream(void) {
     CHECK(fclose(restored_file) == 0);
 }
 
+typedef struct {
+    size_t calls;
+    size_t completed[8];
+    size_t initial_iterations;
+    size_t fail_on_call;
+} TrainerProgressTrace;
+
+static Status observe_trainer_progress(const Trainer *trainer,
+                                       size_t completed, void *context) {
+    TrainerProgressTrace *trace = context;
+
+    CHECK(trace != NULL && trainer != NULL);
+    if (trace == NULL || trainer == NULL)
+        return CFR_STATUS_INVALID_ARGUMENT;
+    CHECK(trace->calls < 8);
+    if (trace->calls >= 8)
+        return CFR_STATUS_INVALID_ARGUMENT;
+    trace->completed[trace->calls++] = completed;
+    CHECK(trainer->stats.iterations == trace->initial_iterations + completed);
+    CHECK(cfr_game_validate_state(trainer->game, trainer->state) ==
+          CFR_STATUS_SUCCESS);
+    return trace->fail_on_call == trace->calls ? CFR_STATUS_IO_ERROR
+                                              : CFR_STATUS_SUCCESS;
+}
+
+static void test_trainer_progress_preserves_training(void) {
+    const Game *game = cfr_kuhn_poker_descriptor();
+
+    for (size_t configuration = 0; configuration < 4; configuration += 1) {
+        const bool concurrent = configuration == 3;
+        KuhnPokerState states[3];
+        InfoStore stores[3];
+        Trainer trainers[3];
+        FILE *files[3] = {0};
+        TrainerProgressTrace trace = {0};
+        TrainerProgressTrace stopped = {.fail_on_call = 2};
+        TrainerProgressTrace empty = {.initial_iterations = 9};
+
+        for (size_t index = 0; index < 3; index += 1) {
+            CHECK(cfr_kuhn_poker_state_init(&states[index]) == CFR_STATUS_SUCCESS);
+            initialize_store(&stores[index]);
+            GameState *state = cfr_kuhn_poker_state_as_game_state(&states[index]);
+            Status status;
+            if (configuration == 0)
+                status = cfr_trainer_init(&trainers[index], game, state,
+                                          &stores[index]);
+            else if (configuration == 1)
+                status = cfr_trainer_init_plus(&trainers[index], game, state,
+                                               &stores[index]);
+            else
+                status = cfr_trainer_init_mccfr(&trainers[index], game, state,
+                                                &stores[index], 812);
+            CHECK(status == CFR_STATUS_SUCCESS);
+        }
+        CHECK((concurrent ? cfr_trainer_run_concurrent(&trainers[0], 9)
+                          : cfr_trainer_run(&trainers[0], 9)) ==
+              CFR_STATUS_SUCCESS);
+        CHECK(cfr_trainer_run_with_callback(
+                  &trainers[1], 9, 4, concurrent, observe_trainer_progress,
+                  &trace) == CFR_STATUS_SUCCESS);
+        CHECK(trace.calls == 3);
+        CHECK(trace.completed[0] == 4 && trace.completed[1] == 8 &&
+              trace.completed[2] == 9);
+        CHECK(cfr_trainer_run_with_callback(
+                  &trainers[2], 9, 4, concurrent, observe_trainer_progress,
+                  &stopped) == CFR_STATUS_IO_ERROR);
+        CHECK(stopped.calls == 2);
+        CHECK(trainers[2].stats.iterations == 8);
+        CHECK(trainers[2].stats.traversals == 16);
+        CHECK(trainers[2].stats.errors == 0);
+        CHECK((concurrent ? cfr_trainer_run_concurrent(&trainers[2], 1)
+                          : cfr_trainer_run(&trainers[2], 1)) ==
+              CFR_STATUS_SUCCESS);
+        CHECK(cfr_trainer_run_with_callback(
+                  &trainers[1], 0, 4, concurrent, observe_trainer_progress,
+                  &empty) == CFR_STATUS_SUCCESS);
+        CHECK(cfr_trainer_run_with_callback(
+                  &trainers[1], 1, 0, concurrent, observe_trainer_progress,
+                  &empty) == CFR_STATUS_INVALID_ARGUMENT);
+        CHECK(cfr_trainer_run_with_callback(
+                  &trainers[1], 1, 4, concurrent, NULL,
+                  &empty) == CFR_STATUS_INVALID_ARGUMENT);
+        CHECK(empty.calls == 0);
+        for (size_t index = 0; index < 3; index += 1) {
+            files[index] = tmpfile();
+            CHECK(files[index] != NULL);
+            if (files[index] != NULL) {
+                CHECK(cfr_checkpoint_write(files[index], &trainers[index]) ==
+                      CFR_STATUS_SUCCESS);
+                CHECK(fflush(files[index]) == 0);
+            }
+        }
+        if (files[0] != NULL && files[1] != NULL && files[2] != NULL) {
+            CHECK(files_equal(files[0], files[1]));
+            CHECK(files_equal(files[0], files[2]));
+        }
+        for (size_t index = 0; index < 3; index += 1) {
+            if (files[index] != NULL)
+                CHECK(fclose(files[index]) == 0);
+            destroy_store(&stores[index]);
+        }
+    }
+}
+
 #ifdef CFR_TEST_WRAP_ALLOCATOR
 static void test_trainer_reuses_workspace_across_traversals(void) {
     static const InfoSetKey keys[] = {0,  1,  2,  9,  10, 11,
@@ -1319,6 +1423,16 @@ static void test_trainer_reuses_workspace_across_traversals(void) {
     CHECK(test_allocator_live_allocations() == live_before);
     CHECK(trainer.stats.iterations == 2);
     CHECK(trainer.stats.traversals == 4);
+
+    TrainerProgressTrace trace = {.initial_iterations = 2};
+    test_allocator_fail_after(6);
+    CHECK(cfr_trainer_run_with_callback(
+              &trainer, 2, 1, false, observe_trainer_progress, &trace) ==
+          CFR_STATUS_SUCCESS);
+    test_allocator_disable_failures();
+    CHECK(test_allocator_live_allocations() == live_before);
+    CHECK(trace.calls == 2 && trace.completed[1] == 2);
+    CHECK(trainer.stats.iterations == 4 && trainer.stats.traversals == 8);
 
     destroy_store(&store);
     CHECK(test_allocator_live_allocations() == 0);
@@ -1385,6 +1499,7 @@ int test_mccfr(void) {
     test_checkpoint_is_loadable_during_parallel_training();
     test_leduc_converges_across_seeds();
     test_checkpoint_restores_random_stream();
+    test_trainer_progress_preserves_training();
 #ifdef CFR_TEST_WRAP_ALLOCATOR
     test_trainer_reuses_workspace_across_traversals();
     test_allocation_failures_are_transactional();
