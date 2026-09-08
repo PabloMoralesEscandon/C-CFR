@@ -24,6 +24,15 @@ typedef struct {
     Action actions[CFR_TRAVERSAL_MAX_ACTIONS];
 } MccfrSequentialSampleEntry;
 
+#define CFR_MCCFR_SEQUENTIAL_NODE_CACHE_BITS 13
+#define CFR_MCCFR_SEQUENTIAL_NODE_CACHE_CAPACITY \
+    ((size_t)1 << CFR_MCCFR_SEQUENTIAL_NODE_CACHE_BITS)
+
+typedef struct {
+    InfoSetKey key;
+    uintptr_t tagged_node;
+} MccfrSequentialNodeCacheEntry;
+
 typedef struct {
     MccfrSequentialFrame *frames;
     size_t frame_capacity;
@@ -48,6 +57,11 @@ typedef struct {
 
     size_t visits;
     MccfrRng rng;
+
+    /* Cached nodes remain owned by the store throughout the training call. */
+    InfoStore *cached_store;
+    MccfrSequentialNodeCacheEntry
+        node_cache[CFR_MCCFR_SEQUENTIAL_NODE_CACHE_CAPACITY];
 } MccfrSequentialWorkspace;
 
 Status cfr_mccfr_sequential_workspace_init(MccfrSequentialWorkspace *workspace,

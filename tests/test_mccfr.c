@@ -622,6 +622,115 @@ static void test_sequential_trainer_uses_a_prepared_store(void) {
     destroy_store(&store);
 }
 
+typedef struct {
+    size_t action_count;
+    bool inconsistent_count;
+} SharedActionCount;
+
+static Status shared_count_legal_actions(
+    const void *context, const GameState *state, Action *actions,
+    size_t capacity, size_t *required_count) {
+    const SharedActionCount *configuration = context;
+    const TraversalGameState *shared = (const TraversalGameState *)state;
+
+    if (shared->phase != TRAVERSAL_PHASE_SHARED_LEFT_PLAYER_1 &&
+        shared->phase != TRAVERSAL_PHASE_SHARED_RIGHT_PLAYER_1) {
+        return traversal_game_descriptor()->operations->legal_actions(
+            NULL, state, actions, capacity, required_count);
+    }
+    const size_t count =
+        configuration->action_count -
+        (configuration->inconsistent_count &&
+         shared->phase == TRAVERSAL_PHASE_SHARED_RIGHT_PLAYER_1);
+    *required_count = count;
+    if (capacity < count)
+        return CFR_STATUS_BUFFER_TOO_SMALL;
+    for (size_t action = 0; action < count; action += 1)
+        actions[action] = (Action)action;
+    return CFR_STATUS_SUCCESS;
+}
+
+static Status shared_count_apply_action(const void *context, GameState *state,
+                                         Action action) {
+    const TraversalGameState *shared = (const TraversalGameState *)state;
+
+    (void)context;
+    if (shared->phase == TRAVERSAL_PHASE_SHARED_LEFT_PLAYER_1 ||
+        shared->phase == TRAVERSAL_PHASE_SHARED_RIGHT_PLAYER_1) {
+        action = action % 2 == 0 ? TRAVERSAL_ACTION_FIRST
+                                : TRAVERSAL_ACTION_SECOND;
+    }
+    return traversal_game_descriptor()->operations->apply_action(NULL, state,
+                                                                  action);
+}
+
+static void test_sequential_cached_action_counts(void) {
+    static const size_t counts[] = {2, 8, CFR_TRAVERSAL_MAX_ACTIONS};
+    GameOperations operations = *traversal_game_descriptor()->operations;
+    operations.legal_actions = shared_count_legal_actions;
+    operations.apply_action = shared_count_apply_action;
+    Game game = *traversal_game_descriptor();
+    game.operations = &operations;
+    game.max_legal_actions = CFR_TRAVERSAL_MAX_ACTIONS;
+
+    for (size_t count_index = 0; count_index < 3; count_index += 1) {
+        SharedActionCount configuration = {.action_count = counts[count_index]};
+        game.context = &configuration;
+        TraversalGameState states[2];
+        InfoStore stores[2];
+        Trainer trainers[2];
+
+        for (size_t index = 0; index < 2; index += 1) {
+            CHECK(traversal_game_state_init_shared(&states[index], false) ==
+                  CFR_STATUS_SUCCESS);
+            initialize_store(&stores[index]);
+            CHECK(cfr_trainer_init_mccfr(
+                      &trainers[index], &game,
+                      traversal_game_state_as_public(&states[index]),
+                      &stores[index], 993) == CFR_STATUS_SUCCESS);
+        }
+        /* One call retains cached nodes. Separate calls rebuild the cache. */
+        CHECK(cfr_trainer_run(&trainers[0], 20) == CFR_STATUS_SUCCESS);
+        for (size_t iteration = 0; iteration < 20; iteration += 1)
+            CHECK(cfr_trainer_run(&trainers[1], 1) == CFR_STATUS_SUCCESS);
+        CHECK(trainers[0].mccfr_rng.state == trainers[1].mccfr_rng.state);
+        CHECK(trainers[0].stats.visited_nodes == trainers[1].stats.visited_nodes);
+        for (InfoSetKey key = 500; key <= 501; key += 1) {
+            InfoNode *left = find_node(&stores[0], key);
+            InfoNode *right = find_node(&stores[1], key);
+            CHECK(left->action_count == right->action_count);
+            CHECK(memcmp(left->regret_sums, right->regret_sums,
+                         left->action_count * sizeof(*left->regret_sums)) == 0);
+            CHECK(memcmp(left->strategy_sums, right->strategy_sums,
+                         left->action_count * sizeof(*left->strategy_sums)) == 0);
+        }
+        destroy_store(&stores[0]);
+        destroy_store(&stores[1]);
+
+        configuration.inconsistent_count = true;
+        CHECK(traversal_game_state_init_shared(&states[0], false) ==
+              CFR_STATUS_SUCCESS);
+        initialize_store(&stores[0]);
+        CHECK(cfr_trainer_init_mccfr(
+                  &trainers[0], &game,
+                  traversal_game_state_as_public(&states[0]), &stores[0],
+                  994) == CFR_STATUS_SUCCESS);
+        CHECK(cfr_trainer_run(&trainers[0], 1) == CFR_STATUS_INVALID_ARGUMENT);
+        CHECK(trainers[0].mccfr_rng.state == 994);
+        CHECK(trainers[0].stats.iterations == 0);
+        CHECK(trainers[0].stats.traversals == 0);
+        CHECK(states[0].phase == TRAVERSAL_PHASE_SHARED_ROOT_PLAYER_0);
+        CHECK(states[0].history_count == 0);
+        InfoNode *node = find_node(&stores[0], 501);
+        CHECK(node->action_count == configuration.action_count);
+        for (size_t action = 0; action < node->action_count; action += 1) {
+            CHECK(node->regret_sums[action] == 0.0);
+            CHECK(node->strategy_sums[action] == 0.0);
+        }
+        destroy_store(&stores[0]);
+    }
+}
+
 #define MCCFR_TEST_MAX_SLOTS 64
 #define MCCFR_TEST_MAX_KEYS 32
 
@@ -1491,6 +1600,7 @@ int test_mccfr(void) {
     test_hidden_histories_require_identical_action_mapping();
     test_seeded_trainers_are_reproducible();
     test_sequential_trainer_uses_a_prepared_store();
+    test_sequential_cached_action_counts();
     test_sampled_player_average_matches_exact_cfr();
     test_single_strategic_player_accumulates_average();
     test_kuhn_converges();

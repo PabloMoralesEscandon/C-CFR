@@ -554,23 +554,28 @@ static LocateResult locate(const InfoStore *info_store, size_t *collision_count,
     if (info_store == NULL || info_store->entries == NULL ||
         info_store->capacity == 0 || index_out == NULL)
         return LOCATE_INVALID_ARGUMENT;
-    size_t index = initial_index(key, info_store->capacity);
-    for (size_t i = 0; i < info_store->capacity; i++) {
-        size_t current_index = (index + i) & (info_store->capacity - 1);
-        const InfoStoreEntry *slot = &info_store->entries[current_index];
+    const size_t capacity = info_store->capacity;
+    const size_t mask = capacity - 1;
+    const InfoStoreEntry *entries = info_store->entries;
+    const size_t index = initial_index(key, capacity);
+    for (size_t i = 0; i < capacity; i++) {
+        const size_t current_index = (index + i) & mask;
+        const InfoStoreEntry *slot = &entries[current_index];
         if (slot->node == NULL) {
+            if (collision_count != NULL && i != 0)
+                *collision_count = saturating_add_size(*collision_count, i);
             *index_out = current_index;
             return LOCATE_EMPTY_SLOT_FOUND;
         }
         if (slot->key == key) {
+            if (collision_count != NULL && i != 0)
+                *collision_count = saturating_add_size(*collision_count, i);
             *index_out = current_index;
             return LOCATE_ENTRY_FOUND;
         }
-        if (collision_count != NULL) {
-            if (*collision_count < SIZE_MAX)
-                *collision_count += 1;
-        }
     }
+    if (collision_count != NULL)
+        *collision_count = saturating_add_size(*collision_count, capacity);
     return LOCATE_STORE_FULL;
 }
 

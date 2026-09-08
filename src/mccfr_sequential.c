@@ -12,6 +12,10 @@
 #define MCCFR_INITIAL_FRAME_CAPACITY ((size_t)32)
 #define MCCFR_INITIAL_TABLE_CAPACITY ((size_t)64)
 #define MCCFR_INITIAL_ENTRY_CAPACITY ((size_t)16)
+#define MCCFR_NODE_CACHE_ACTION_MASK ((uintptr_t)7)
+
+_Static_assert(_Alignof(InfoNode) > MCCFR_NODE_CACHE_ACTION_MASK,
+               "InfoNode alignment must leave three tag bits");
 
 static Status traverse_branch(const CfrTraversalAdapter *adapter,
                               GameState *state, InfoStore *store,
@@ -92,7 +96,7 @@ Status cfr_mccfr_sequential_workspace_init(MccfrSequentialWorkspace *workspace,
 }
 
 static void workspace_reset(MccfrSequentialWorkspace *workspace,
-                            const MccfrRng *rng) {
+                            const MccfrRng *rng, InfoStore *store) {
     for (size_t index = 0; index < workspace->delta_entry_count; index += 1) {
         workspace->delta_table[workspace->delta_entries[index].table_cell] =
             MCCFR_CELL_EMPTY;
@@ -108,6 +112,52 @@ static void workspace_reset(MccfrSequentialWorkspace *workspace,
     workspace->arena_used = 0;
     workspace->visits = 0;
     workspace->rng = *rng;
+    if (workspace->cached_store != store) {
+        for (size_t index = 0;
+             index < CFR_MCCFR_SEQUENTIAL_NODE_CACHE_CAPACITY; index += 1) {
+            workspace->node_cache[index] =
+                (MccfrSequentialNodeCacheEntry){0};
+        }
+        workspace->cached_store = store;
+    }
+}
+
+static Status workspace_get_or_create_node(
+    MccfrSequentialWorkspace *workspace, InfoStore *store, InfoSetKey key,
+    size_t action_count, InfoNode **node_out) {
+    const size_t cell =
+        (size_t)(((uint64_t)key * UINT64_C(11400714819323198485)) >>
+                 (64 - CFR_MCCFR_SEQUENTIAL_NODE_CACHE_BITS));
+    const uintptr_t tagged_node = workspace->node_cache[cell].tagged_node;
+
+    if (tagged_node != 0 && workspace->node_cache[cell].key == key) {
+        InfoNode *node =
+            (InfoNode *)(tagged_node & ~MCCFR_NODE_CACHE_ACTION_MASK);
+        const size_t cached_action_count =
+            (size_t)(tagged_node & MCCFR_NODE_CACHE_ACTION_MASK);
+
+        if ((cached_action_count != 0 &&
+             cached_action_count != action_count) ||
+            (cached_action_count == 0 && node->action_count != action_count)) {
+            return CFR_STATUS_INVALID_ARGUMENT;
+        }
+        *node_out = node;
+        return CFR_STATUS_SUCCESS;
+    }
+
+    InfoNode *node;
+    const Status status = cfr_info_store_get_or_create_sequential(
+        store, key, action_count, &node);
+
+    if (status != CFR_STATUS_SUCCESS)
+        return status;
+    const uintptr_t action_tag = action_count <= MCCFR_NODE_CACHE_ACTION_MASK
+                                     ? (uintptr_t)action_count
+                                     : 0;
+    workspace->node_cache[cell] = (MccfrSequentialNodeCacheEntry){
+        .key = key, .tagged_node = (uintptr_t)node | action_tag};
+    *node_out = node;
+    return CFR_STATUS_SUCCESS;
 }
 
 static Status ensure_frame(MccfrSequentialWorkspace *workspace, size_t depth) {
@@ -420,11 +470,10 @@ static Status get_sampled_action(MccfrSequentialWorkspace *workspace,
         return status;
 
     const size_t entry = workspace->sample_entry_count;
-    workspace->sample_entries[entry] =
-        (MccfrSequentialSampleEntry){.node = node,
-                                     .action_index = sampled,
-                                     .action_count = action_count,
-                                     .table_cell = cell};
+    workspace->sample_entries[entry].node = node;
+    workspace->sample_entries[entry].action_index = sampled;
+    workspace->sample_entries[entry].action_count = action_count;
+    workspace->sample_entries[entry].table_cell = cell;
     for (size_t action = 0; action < action_count; action += 1)
         workspace->sample_entries[entry].actions[action] = actions[action];
     workspace->sample_entry_count += 1;
@@ -738,8 +787,8 @@ static Status traverse_branch(const CfrTraversalAdapter *adapter,
     if (status != CFR_STATUS_SUCCESS)
         return status;
     InfoNode *node;
-    status = cfr_info_store_get_or_create_sequential(store, key, action_count,
-                                                     &node);
+    status = workspace_get_or_create_node(workspace, store, key, action_count,
+                                          &node);
     if (status != CFR_STATUS_SUCCESS)
         return status;
     status = cfr_info_node_current_strategy_sequential(
@@ -803,7 +852,7 @@ static Status traverse_in_workspace(const CfrTraversalAdapter *adapter,
                                     Utility *utility_out,
                                     TraversalStats *stats_out,
                                     MccfrSequentialWorkspace *workspace) {
-    workspace_reset(workspace, rng);
+    workspace_reset(workspace, rng, store);
     Utility temporary_utility;
     Status status = traverse_branch(adapter, state, store, target_player, 0,
                                     1.0, workspace, &temporary_utility);

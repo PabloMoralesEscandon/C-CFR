@@ -219,17 +219,19 @@ static Status current_strategy_locked(const InfoNode *node,
     double sum = 0.0;
     for (size_t i = 0; i < node->action_count; i++) {
         if (node->regret_sums[i] > 0.0) {
-            sum += node->regret_sums[i] / maximum;
-        }
-    }
-    if (!isfinite(sum) || sum <= 0.0)
-        return CFR_STATUS_NUMERIC_ERROR;
-
-    for (size_t i = 0; i < node->action_count; i++) {
-        if (node->regret_sums[i] > 0.0) {
-            strategy_array[i] = (node->regret_sums[i] / maximum) / sum;
+            const double scaled_regret = node->regret_sums[i] / maximum;
+            sum += scaled_regret;
+            strategy_array[i] = scaled_regret;
         } else
             strategy_array[i] = 0.0;
+    }
+
+    /* Each addend is in [0, 1], and at least one is 1. The finite action
+     * count therefore bounds sum, so no numeric error can occur after the
+     * validated regrets have been copied to the output array. */
+    for (size_t i = 0; i < node->action_count; i++) {
+        if (strategy_array[i] > 0.0)
+            strategy_array[i] /= sum;
     }
 
     return CFR_STATUS_SUCCESS;
