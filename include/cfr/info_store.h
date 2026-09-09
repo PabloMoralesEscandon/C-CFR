@@ -10,6 +10,12 @@ CFR_EXTERN_C_BEGIN
 
 typedef struct CfrInfoStoreEntry InfoStoreEntry;
 
+/* Called before a new node becomes visible. Modify only its learning arrays.
+ * Do not retain the node or access the destination store from this callback.
+ * Calls for different nodes can run concurrently. An error cancels insertion;
+ * a later attempt can call the initializer again. */
+typedef Status (*InfoStoreNodeInitializer)(InfoNode *node, void *context);
+
 /*
  * Maps information-set keys to learning nodes.
  *
@@ -48,6 +54,8 @@ typedef struct {
     unsigned char writer_gate;
     /* Private sharded concurrent state. The caller must not access it. */
     void *concurrent_state;
+    InfoStoreNodeInitializer initializer;
+    void *initializer_context;
 } InfoStore;
 
 /* Contains a snapshot of the store statistics. */
@@ -87,6 +95,13 @@ typedef Status (*InfoStoreConstVisitor)(const InfoNode *node, void *context);
  * preserves info_store.
  */
 Status cfr_info_store_init(InfoStore *info_store);
+
+/* Set or clear the initializer with exclusive access to an initialized store.
+ * Existing nodes are preserved. The context is borrowed until this hook is
+ * cleared or the store is destroyed. Checkpoints do not serialize the hook. */
+Status cfr_info_store_set_initializer(InfoStore *info_store,
+                                      InfoStoreNodeInitializer initializer,
+                                      void *context);
 
 /*
  * Prepares a sharded access path for concurrent readers and writers.

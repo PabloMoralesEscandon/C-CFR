@@ -79,6 +79,8 @@ typedef struct {
     size_t reserve_growth_count;
     void *shard_allocation;
     ConcurrentInfoStoreShard *shards;
+    InfoStoreNodeInitializer initializer;
+    void *initializer_context;
 } ConcurrentInfoStore;
 
 _Static_assert(sizeof(ConcurrentShardReadState) ==
@@ -697,6 +699,8 @@ Status cfr_info_store_prepare_concurrent(InfoStore *info_store) {
     state->reserve_growth_count = 0;
     state->shard_allocation = NULL;
     state->shards = NULL;
+    state->initializer = info_store->initializer;
+    state->initializer_context = info_store->initializer_context;
     const size_t shard_bytes =
         sizeof(*state->shards) * CONCURRENT_SHARD_COUNT;
     state->shard_allocation =
@@ -872,6 +876,8 @@ static Status concurrent_get_or_create(ConcurrentInfoStore *state,
     InfoNode *node = NULL;
     Status status = concurrent_arena_allocate_node(
         shard, key, action_count, &node);
+    if (status == CFR_STATUS_SUCCESS && state->initializer != NULL)
+        status = state->initializer(node, state->initializer_context);
     if (status != CFR_STATUS_SUCCESS) {
         concurrent_arena_rollback(shard, mark);
         concurrent_shard_unlock(shard);
@@ -1119,6 +1125,25 @@ Status cfr_info_store_init(InfoStore *info_store) {
     info_store->synchronization = 0;
     info_store->writer_gate = 0;
     info_store->concurrent_state = NULL;
+    info_store->initializer = NULL;
+    info_store->initializer_context = NULL;
+    return CFR_STATUS_SUCCESS;
+}
+
+Status cfr_info_store_set_initializer(InfoStore *info_store,
+                                      InfoStoreNodeInitializer initializer,
+                                      void *context) {
+    if (info_store == NULL)
+        return CFR_STATUS_INVALID_ARGUMENT;
+    ConcurrentInfoStore *state = concurrent_state_load(info_store);
+    if (state == NULL && (info_store->entries == NULL || info_store->capacity == 0))
+        return CFR_STATUS_INVALID_ARGUMENT;
+    info_store->initializer = initializer;
+    info_store->initializer_context = initializer == NULL ? NULL : context;
+    if (state != NULL) {
+        state->initializer = initializer;
+        state->initializer_context = info_store->initializer_context;
+    }
     return CFR_STATUS_SUCCESS;
 }
 
@@ -1198,6 +1223,8 @@ Status cfr_info_store_destroy(InfoStore *info_store) {
     info_store->synchronization = 0;
     info_store->writer_gate = 0;
     info_store->concurrent_state = NULL;
+    info_store->initializer = NULL;
+    info_store->initializer_context = NULL;
     return CFR_STATUS_SUCCESS;
 }
 
@@ -1301,6 +1328,8 @@ Status cfr_info_store_get_or_create(InfoStore *info_store, InfoSetKey key,
     const ArenaMark mark = arena_mark(info_store);
     InfoNode *temp = NULL;
     Status status = arena_allocate_node(info_store, key, action_count, &temp);
+    if (status == CFR_STATUS_SUCCESS && info_store->initializer != NULL)
+        status = info_store->initializer(temp, info_store->initializer_context);
 
     if (status != CFR_STATUS_SUCCESS) {
         arena_rollback(info_store, mark);
@@ -1352,6 +1381,8 @@ Status cfr_info_store_get_or_create_sequential(
     const ArenaMark mark = arena_mark(info_store);
     InfoNode *temp = NULL;
     Status init = arena_allocate_node(info_store, key, action_count, &temp);
+    if (init == CFR_STATUS_SUCCESS && info_store->initializer != NULL)
+        init = info_store->initializer(temp, info_store->initializer_context);
     if (init != CFR_STATUS_SUCCESS) {
         arena_rollback(info_store, mark);
         return init;

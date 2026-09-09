@@ -7,6 +7,7 @@
 #include <string.h>
 
 #include "cfr/info_store.h"
+#include "../src/info_store_internal.h"
 #include "support/test_allocator.h"
 #include "test_suite.h"
 
@@ -944,10 +945,90 @@ static void test_allocation_failures(void) {
 }
 #endif
 
+typedef struct {
+    InfoStore *store;
+    atomic_size_t calls;
+    bool fail;
+    Status status;
+} InitializerTest;
+
+static Status test_node_initializer(InfoNode *node, void *raw) {
+    InitializerTest *test = raw;
+    atomic_fetch_add(&test->calls, 1);
+    const double seed[2] = {3, 1};
+    Status status = cfr_info_node_apply_deltas(node, seed, seed, 2);
+    return test->fail ? CFR_STATUS_IO_ERROR : status;
+}
+
+static void *test_initializer_worker(void *raw) {
+    InitializerTest *test = raw;
+    test->status = CFR_STATUS_SUCCESS;
+    for (int key = 100; key < 300; ++key) {
+        InfoNode *node;
+        Status status = cfr_info_store_get_or_create(test->store, key, 2, &node);
+        Probability policy[2];
+        if (status == CFR_STATUS_SUCCESS)
+            status = cfr_info_node_average_strategy(node, policy, 2);
+        if (status != CFR_STATUS_SUCCESS || policy[0] != .75 || policy[1] != .25) {
+            test->status = CFR_STATUS_IO_ERROR;
+            break;
+        }
+    }
+    return NULL;
+}
+
+static void test_initializers(void) {
+    for (int mode = 0; mode < 3; ++mode) {
+        InfoStore store = {0};
+        initialize_store(&store);
+        InitializerTest context = {.store = &store};
+        CHECK(cfr_info_store_set_initializer(&store, test_node_initializer, &context) == CFR_STATUS_SUCCESS);
+        if (mode == 2)
+            CHECK(cfr_info_store_prepare_concurrent(&store) == CFR_STATUS_SUCCESS);
+        InfoNode *node;
+        Status (*insert)(InfoStore *, InfoSetKey, size_t, InfoNode **) = mode == 1
+            ? cfr_info_store_get_or_create_sequential : cfr_info_store_get_or_create;
+        CHECK(insert(&store, 7, 2, &node) == CFR_STATUS_SUCCESS);
+        CHECK(node->strategy_sums[0] == 3 && node->regret_sums[1] == 1);
+        CHECK(insert(&store, 7, 2, &node) == CFR_STATUS_SUCCESS);
+        CHECK(atomic_load(&context.calls) == 1);
+        context.fail = true;
+        node = sentinel_node();
+        CHECK(insert(&store, 8, 2, &node) == CFR_STATUS_IO_ERROR);
+        CHECK(node == sentinel_node());
+        CHECK(get_stats(&store).size == 1);
+        CHECK(cfr_info_store_find(&store, 8, &node) == CFR_STATUS_NOT_FOUND);
+        context.fail = false;
+        CHECK(insert(&store, 8, 2, &node) == CFR_STATUS_SUCCESS);
+        CHECK(node->strategy_sums[0] == 3 && node->regret_sums[1] == 1);
+        CHECK(cfr_info_store_set_initializer(&store, NULL, NULL) == CFR_STATUS_SUCCESS);
+        CHECK(insert(&store, 9, 2, &node) == CFR_STATUS_SUCCESS);
+        CHECK(node->strategy_sums[0] == 0 && node->regret_sums[1] == 0);
+        if (mode == 2) {
+            CHECK(cfr_info_store_set_initializer(&store, test_node_initializer, &context) == CFR_STATUS_SUCCESS);
+            const size_t before = atomic_load(&context.calls);
+            pthread_t threads[14];
+            InitializerTest workers[14];
+            for (size_t i = 0; i < 14; ++i) {
+                workers[i] = (InitializerTest){.store = &store};
+                CHECK(pthread_create(&threads[i], NULL, test_initializer_worker, &workers[i]) == 0);
+            }
+            for (size_t i = 0; i < 14; ++i) {
+                CHECK(pthread_join(threads[i], NULL) == 0);
+                CHECK(workers[i].status == CFR_STATUS_SUCCESS);
+            }
+            CHECK(atomic_load(&context.calls) == before + 200);
+        }
+        destroy_store(&store);
+        CHECK(store.initializer == NULL && store.initializer_context == NULL);
+    }
+}
+
 int test_info_store(void) {
     failures = 0;
 
     test_initialization_and_empty_store();
+    test_initializers();
     test_insert_find_and_reuse();
     test_known_collisions();
     test_extreme_signed_keys();
