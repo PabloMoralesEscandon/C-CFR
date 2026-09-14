@@ -15,8 +15,16 @@
 
 CFR_EXTERN_C_BEGIN
 
-/* Identifies one of the two players in the zero-sum game. */
-typedef CFR_ENUM_INT(CfrPlayer) { CFR_PLAYER_0, CFR_PLAYER_1 } Player;
+/* Maximum number of decision-making players supported by training. */
+#define CFR_MAX_PLAYERS 4
+
+/* Identifies a player. Existing player identifiers retain their values. */
+typedef CFR_ENUM_INT(CfrPlayer) {
+    CFR_PLAYER_0,
+    CFR_PLAYER_1,
+    CFR_PLAYER_2,
+    CFR_PLAYER_3
+} Player;
 
 /* Identifies the entity that selects the next action. */
 typedef CFR_ENUM_INT(CfrActorKind) {

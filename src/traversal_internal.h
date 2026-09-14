@@ -17,6 +17,17 @@ typedef struct {
 
 typedef struct CfrFullTraversalWorkspace CfrFullTraversalWorkspace;
 
+static inline bool cfr_strategic_player_count_is_valid(size_t count) {
+    return count >= 1 && count <= CFR_MAX_PLAYERS;
+}
+
+/* One-player adapters can retain player one as a utility-only perspective. */
+static inline bool cfr_traversal_player_is_valid(size_t count, Player player) {
+    const size_t perspectives = count < 2 ? 2 : count;
+    return cfr_strategic_player_count_is_valid(count) &&
+           (unsigned int)player < perspectives;
+}
+
 bool cfr_traversal_operations_supported(const GameOperations *operations);
 
 Status cfr_traversal_collect_chance_outcomes(

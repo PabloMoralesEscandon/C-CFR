@@ -7,15 +7,11 @@
 #include "mccfr_sequential_internal.h"
 #include "traversal_internal.h"
 
-static bool strategic_player_count_is_valid(size_t count) {
-    return count == 1 || count == 2;
-}
-
 static Status trainer_init(Trainer *trainer, const Game *game, GameState *state,
                            InfoStore *store, TrainerVariant variant,
                            uint64_t seed) {
     if (trainer == NULL || game == NULL || state == NULL || store == NULL ||
-        !strategic_player_count_is_valid(game->strategic_player_count))
+        !cfr_strategic_player_count_is_valid(game->strategic_player_count))
         return CFR_STATUS_INVALID_ARGUMENT;
     trainer->game = game;
     trainer->state = state;
@@ -109,7 +105,7 @@ static Status trainer_run(Trainer *trainer, size_t amount,
                           bool concurrent_mccfr, size_t progress_interval,
                           TrainerProgressCallback progress, void *context) {
     if (trainer == NULL || trainer->game == NULL || trainer->state == NULL ||
-        trainer->store == NULL || !strategic_player_count_is_valid(
+        trainer->store == NULL || !cfr_strategic_player_count_is_valid(
                                       trainer->game->strategic_player_count) ||
         (trainer->variant != CFR_TRAINER_VARIANT_CFR &&
          trainer->variant != CFR_TRAINER_VARIANT_CFR_PLUS &&

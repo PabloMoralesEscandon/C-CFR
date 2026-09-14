@@ -26,16 +26,17 @@ Status cfr_mccfr_rng_seed(MccfrRng *rng, uint64_t seed);
 /*
  * Runs one external-sampling MCCFR traversal for target_player.
  *
- * Chance and the other player's decisions are sampled. Every action of the
+ * Chance and every other player's decisions are sampled. Every action of the
  * target player is traversed. Opponent decisions are sampled from the strategy
  * stored for their information-set key; a sample is cached by information set
  * for the duration of the traversal. Consequently, two states that the
  * opponent cannot distinguish cannot receive different sampled decisions as a
  * consequence of hidden state.
  *
- * The traversal updates regrets for target_player and average strategies for
- * the sampled player. Sampling supplies the external reach that weights a
- * counterfactual regret, so regret deltas carry no importance weight. A
+ * With two strategic players, the traversal updates regrets for target_player
+ * and average strategies for the sampled player. Sampling supplies the external
+ * reach that weights a counterfactual regret, so regret deltas carry no
+ * importance weight. A
  * sampled player's information set is reached with exactly the probability
  * that the player and chance reach it, so its strategy delta is the unweighted
  * current strategy. Each information set therefore accumulates the full CFR
@@ -50,7 +51,20 @@ Status cfr_mccfr_rng_seed(MccfrRng *rng, uint64_t seed);
  * CFR strategy sums because only chance separates the traversal from the
  * information set and chance does not depend on the strategy.
  *
- * game->strategic_player_count must be one or two.
+ * Games with three or four strategic players use a separate sampled trajectory
+ * to update target_player's average strategy. This trajectory samples player
+ * actions uniformly and chance actions from their fixed probabilities. At each
+ * target information set, the strategy weight is target own reach divided by
+ * the sampling reach of all player actions. Under perfect recall, the expected
+ * update is proportional to the full CFR strategy sums. Zero-policy actions
+ * remain eligible in this trajectory. Importance weights can increase variance.
+ * Both passes use the same strategy snapshots and commit their deltas together.
+ * Visited-node statistics include both passes. utility_out comes from the
+ * regret pass. Each complete iteration must traverse every strategic player.
+ *
+ * game->strategic_player_count must be between one and CFR_MAX_PLAYERS.
+ * Multiplayer training does not provide the equilibrium guarantee of
+ * two-player zero-sum CFR. Shared team utilities do not merge player policies.
  *
  * Regret and strategy deltas are committed only after a successful traversal.
  * New zero-valued nodes can remain after an error, matching cfr_traverse.

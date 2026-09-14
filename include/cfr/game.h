@@ -118,8 +118,9 @@ struct CfrGameOperations {
      * Gets the current player's information-set key.
      *
      * The current actor must be a player. States that the player cannot
-     * distinguish must produce the same stable key. A different actor or an
-     * invalid state produces CFR_STATUS_INVALID_ARGUMENT.
+     * distinguish must produce the same stable key. Different players must
+     * use different keys, including players on the same team. A different actor
+     * or an invalid state produces CFR_STATUS_INVALID_ARGUMENT.
      */
     Status (*information_set_key)(const void *context, const GameState *state,
                                   InfoSetKey *result);
@@ -176,7 +177,8 @@ struct CfrGame {
      *
      * A two-participant game can have only one strategic player: the other
      * participant can exist solely as a utility perspective while chance
-     * models its transitions. The trainer requires a value of one or two.
+     * models its transitions. Training supports one through CFR_MAX_PLAYERS
+     * strategic players. Player identifiers must be consecutive from zero.
      */
     size_t strategic_player_count;
     /* Upper bound on the number of legal actions in any state. */
