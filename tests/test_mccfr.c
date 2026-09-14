@@ -321,6 +321,117 @@ static void test_tiny_sample_reach_does_not_abort(void) {
     destroy_store(&store);
 }
 
+static Status shared_chain_current_actor(const void *context,
+                                         const GameState *state,
+                                         Actor *result) {
+    const Status status = reach_chain_current_actor(context, state, result);
+
+    if (status == CFR_STATUS_SUCCESS && reach_chain_const(state)->depth == 0)
+        result->player = CFR_PLAYER_0;
+    return status;
+}
+
+static Status shared_chain_legal_actions(
+    const void *context, const GameState *state, Action *actions,
+    size_t capacity, size_t *required_count) {
+    const MccfrReachChainState *chain = reach_chain_const(state);
+
+    (void)context;
+    if (chain == NULL || actions == NULL || required_count == NULL ||
+        chain->depth >= MCCFR_REACH_CHAIN_DEPTH) {
+        return CFR_STATUS_INVALID_ARGUMENT;
+    }
+    *required_count = chain->depth == 0 ? 2 : 1;
+    if (capacity < *required_count)
+        return CFR_STATUS_BUFFER_TOO_SMALL;
+    for (size_t action = 0; action < *required_count; action += 1)
+        actions[action] = (Action)action;
+    return CFR_STATUS_SUCCESS;
+}
+
+static InfoSetKey shared_chain_key(size_t depth) {
+    /* These first three distinct keys collide in the initial snapshot table.
+     * The remaining keys also exercise both signs during growth and reset. */
+    static const InfoSetKey first_keys[] = {0, 233, -377};
+
+    if (depth < sizeof(first_keys) / sizeof(first_keys[0]))
+        return first_keys[depth];
+    const InfoSetKey key = MCCFR_REACH_CHAIN_KEY_BASE + (InfoSetKey)depth;
+    return depth % 2 == 0 ? key : -key;
+}
+
+static Status shared_chain_information_set_key(const void *context,
+                                               const GameState *state,
+                                               InfoSetKey *result) {
+    const Status status =
+        reach_chain_information_set_key(context, state, result);
+
+    if (status == CFR_STATUS_SUCCESS)
+        *result = shared_chain_key(reach_chain_const(state)->depth);
+    return status;
+}
+
+static void test_shared_snapshots_survive_growth_and_reset(void) {
+    enum { ITERATIONS = 4 };
+    const uint64_t seed = UINT64_C(4281);
+    GameOperations operations = MCCFR_REACH_CHAIN_OPERATIONS;
+    Game game = MCCFR_REACH_CHAIN_GAME;
+    MccfrReachChainState states[2] = {0};
+    InfoStore stores[2];
+    Trainer trainers[2];
+
+    operations.current_actor = shared_chain_current_actor;
+    operations.legal_actions = shared_chain_legal_actions;
+    operations.information_set_key = shared_chain_information_set_key;
+    game.operations = &operations;
+    game.max_legal_actions = 2;
+    game.strategy_schema_id = "cfr.test.mccfr-shared-chain/v1";
+    for (size_t index = 0; index < 2; index += 1) {
+        initialize_store(&stores[index]);
+        CHECK(cfr_trainer_init_mccfr(
+                  &trainers[index], &game, (GameState *)&states[index],
+                  &stores[index], seed) == CFR_STATUS_SUCCESS);
+    }
+
+    /* Both root actions reach the same 429-node chain. Its first visit grows
+     * the snapshot table; its second visit must reuse all sampled actions.
+     * One call then retains that workspace across players and iterations. */
+    CHECK(cfr_trainer_run_concurrent(&trainers[0], ITERATIONS) ==
+          CFR_STATUS_SUCCESS);
+    for (size_t iteration = 0; iteration < ITERATIONS; iteration += 1) {
+        CHECK(cfr_trainer_run_concurrent(&trainers[1], 1) ==
+              CFR_STATUS_SUCCESS);
+    }
+    for (size_t index = 0; index < 2; index += 1) {
+        InfoStoreStats store_stats = {0};
+
+        CHECK(states[index].depth == 0);
+        CHECK(trainers[index].stats.iterations == ITERATIONS);
+        CHECK(trainers[index].stats.traversals == 2 * ITERATIONS);
+        CHECK(trainers[index].stats.visited_nodes ==
+              ITERATIONS * (3 * MCCFR_REACH_CHAIN_DEPTH + 2));
+        CHECK(trainers[index].mccfr_rng.state ==
+              seed + (uint64_t)(ITERATIONS * MCCFR_REACH_CHAIN_DEPTH) *
+                         UINT64_C(0x9e3779b97f4a7c15));
+        CHECK(cfr_info_store_get_stats(&stores[index], &store_stats) ==
+              CFR_STATUS_SUCCESS);
+        CHECK(store_stats.size == MCCFR_REACH_CHAIN_DEPTH);
+        for (size_t depth = 0; depth < MCCFR_REACH_CHAIN_DEPTH; depth += 1) {
+            InfoNode *node = find_node(&stores[index], shared_chain_key(depth));
+            const size_t action_count = depth == 0 ? 2 : 1;
+            const double expected_sum =
+                depth == 0 ? ITERATIONS / 2.0 : 2.0 * ITERATIONS;
+
+            CHECK(node->action_count == action_count);
+            for (size_t action = 0; action < action_count; action += 1) {
+                CHECK(node->regret_sums[action] == 0.0);
+                CHECK(node->strategy_sums[action] == expected_sum);
+            }
+        }
+        destroy_store(&stores[index]);
+    }
+}
+
 static void test_chance_is_sampled_and_target_actions_are_expanded(void) {
     const Game *game = chance_game_descriptor();
     ChanceGameState state;
@@ -535,6 +646,60 @@ static void test_error_preserves_rng_outputs_and_learning(void) {
     destroy_store(&store);
 }
 
+static void test_commit_error_preserves_all_nodes_and_releases_locks(void) {
+    const Game *game = traversal_game_descriptor();
+    TraversalGameState state;
+    InfoStore store;
+    InfoNode *nodes[2] = {0};
+    MccfrRng rng;
+    Utility utility = 95.0;
+    TraversalStats stats = {.visited_nodes = 96};
+    const uint64_t seed = UINT64_C(1234567);
+
+    CHECK(traversal_game_state_init_shared(&state, false) ==
+          CFR_STATUS_SUCCESS);
+    initialize_store(&store);
+    CHECK(cfr_info_store_get_or_create(&store, 500, 2, &nodes[0]) ==
+          CFR_STATUS_SUCCESS);
+    CHECK(cfr_info_store_get_or_create(&store, 501, 2, &nodes[1]) ==
+          CFR_STATUS_SUCCESS);
+    CHECK(cfr_mccfr_rng_seed(&rng, seed) == CFR_STATUS_SUCCESS);
+
+    /* Both nodes receive deltas. Make the last node in commit order fail
+     * validation after the first node's candidate has been prepared. */
+    InfoNode *invalid_node =
+        (uintptr_t)nodes[0] > (uintptr_t)nodes[1] ? nodes[0] : nodes[1];
+    invalid_node->strategy_sums[0] = INFINITY;
+    CHECK(cfr_mccfr_external_traverse_with_stats(
+              game, traversal_game_state_as_public(&state), &store,
+              CFR_PLAYER_0, &rng, &utility, &stats) ==
+          CFR_STATUS_NUMERIC_ERROR);
+    CHECK(rng.state == seed);
+    CHECK(utility == 95.0);
+    CHECK(stats.visited_nodes == 96);
+    CHECK(state.phase == TRAVERSAL_PHASE_SHARED_ROOT_PLAYER_0);
+    CHECK(state.history_count == 0);
+    for (size_t index = 0; index < 2; index += 1) {
+        CHECK(nodes[index]->regret_sums[0] == 0.0);
+        CHECK(nodes[index]->regret_sums[1] == 0.0);
+        CHECK(nodes[index]->strategy_sums[0] ==
+              (nodes[index] == invalid_node ? INFINITY : 0.0));
+        CHECK(nodes[index]->strategy_sums[1] == 0.0);
+    }
+
+    /* Retrying after repair must acquire every lock and commit all deltas. */
+    invalid_node->strategy_sums[0] = 0.0;
+    CHECK(cfr_mccfr_external_traverse_with_stats(
+              game, traversal_game_state_as_public(&state), &store,
+              CFR_PLAYER_0, &rng, &utility, &stats) == CFR_STATUS_SUCCESS);
+    CHECK(near(fabs(nodes[0]->regret_sums[0]), 2.0));
+    CHECK(near(nodes[0]->regret_sums[0], -nodes[0]->regret_sums[1]));
+    CHECK(near(nodes[1]->strategy_sums[0], 1.0));
+    CHECK(near(nodes[1]->strategy_sums[1], 1.0));
+    CHECK(rng.state == seed + UINT64_C(0x9e3779b97f4a7c15));
+    destroy_store(&store);
+}
+
 static void test_hidden_histories_require_identical_action_mapping(void) {
     const Game *game = traversal_game_descriptor();
     TraversalGameState state;
@@ -664,7 +829,7 @@ static Status shared_count_apply_action(const void *context, GameState *state,
                                                                   action);
 }
 
-static void test_sequential_cached_action_counts(void) {
+static void test_cached_action_counts(void) {
     static const size_t counts[] = {2, 8, CFR_TRAVERSAL_MAX_ACTIONS};
     GameOperations operations = *traversal_game_descriptor()->operations;
     operations.legal_actions = shared_count_legal_actions;
@@ -673,8 +838,13 @@ static void test_sequential_cached_action_counts(void) {
     game.operations = &operations;
     game.max_legal_actions = CFR_TRAVERSAL_MAX_ACTIONS;
 
-    for (size_t count_index = 0; count_index < 3; count_index += 1) {
-        SharedActionCount configuration = {.action_count = counts[count_index]};
+    for (size_t configuration_index = 0; configuration_index < 6;
+         configuration_index += 1) {
+        SharedActionCount configuration = {
+            .action_count = counts[configuration_index % 3]};
+        Status (*run)(Trainer *, size_t) = configuration_index < 3
+                                              ? cfr_trainer_run
+                                              : cfr_trainer_run_concurrent;
         game.context = &configuration;
         TraversalGameState states[2];
         InfoStore stores[2];
@@ -690,9 +860,9 @@ static void test_sequential_cached_action_counts(void) {
                       &stores[index], 993) == CFR_STATUS_SUCCESS);
         }
         /* One call retains cached nodes. Separate calls rebuild the cache. */
-        CHECK(cfr_trainer_run(&trainers[0], 20) == CFR_STATUS_SUCCESS);
+        CHECK(run(&trainers[0], 20) == CFR_STATUS_SUCCESS);
         for (size_t iteration = 0; iteration < 20; iteration += 1)
-            CHECK(cfr_trainer_run(&trainers[1], 1) == CFR_STATUS_SUCCESS);
+            CHECK(run(&trainers[1], 1) == CFR_STATUS_SUCCESS);
         CHECK(trainers[0].mccfr_rng.state == trainers[1].mccfr_rng.state);
         CHECK(trainers[0].stats.visited_nodes == trainers[1].stats.visited_nodes);
         for (InfoSetKey key = 500; key <= 501; key += 1) {
@@ -715,7 +885,7 @@ static void test_sequential_cached_action_counts(void) {
                   &trainers[0], &game,
                   traversal_game_state_as_public(&states[0]), &stores[0],
                   994) == CFR_STATUS_SUCCESS);
-        CHECK(cfr_trainer_run(&trainers[0], 1) == CFR_STATUS_INVALID_ARGUMENT);
+        CHECK(run(&trainers[0], 1) == CFR_STATUS_INVALID_ARGUMENT);
         CHECK(trainers[0].mccfr_rng.state == 994);
         CHECK(trainers[0].stats.iterations == 0);
         CHECK(trainers[0].stats.traversals == 0);
@@ -1593,14 +1763,16 @@ int test_mccfr(void) {
     test_rng_contract();
     test_sampler_uses_all_rng_bits();
     test_tiny_sample_reach_does_not_abort();
+    test_shared_snapshots_survive_growth_and_reset();
     test_chance_is_sampled_and_target_actions_are_expanded();
     test_opponent_sample_is_shared_by_information_set();
     test_strategy_snapshot_survives_shared_node_update();
     test_error_preserves_rng_outputs_and_learning();
+    test_commit_error_preserves_all_nodes_and_releases_locks();
     test_hidden_histories_require_identical_action_mapping();
     test_seeded_trainers_are_reproducible();
     test_sequential_trainer_uses_a_prepared_store();
-    test_sequential_cached_action_counts();
+    test_cached_action_counts();
     test_sampled_player_average_matches_exact_cfr();
     test_single_strategic_player_accumulates_average();
     test_kuhn_converges();

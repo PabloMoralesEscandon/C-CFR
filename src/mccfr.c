@@ -206,6 +206,15 @@ static Status allocate_grown_table(size_t capacity, size_t **table_out,
     return CFR_STATUS_SUCCESS;
 }
 
+static size_t snapshot_initial_index(InfoSetKey key, size_t capacity) {
+    const unsigned int shift = (unsigned int)__builtin_clzll(
+        (unsigned long long)(capacity - 1));
+    const uint64_t hash =
+        (uint64_t)key * UINT64_C(11400714819323198485);
+
+    return (size_t)(hash >> shift);
+}
+
 static Status grow_snapshot_table(MccfrWorkspace *workspace) {
     size_t *grown;
     size_t capacity;
@@ -216,9 +225,8 @@ static Status grow_snapshot_table(MccfrWorkspace *workspace) {
         return status;
     const size_t mask = capacity - 1;
     for (size_t index = 0; index < workspace->snapshot_count; index += 1) {
-        size_t cell = cfr_traversal_hash_node(
-                          workspace->snapshots[index].node) &
-                      mask;
+        size_t cell = snapshot_initial_index(
+            workspace->snapshots[index].key, capacity);
 
         while (grown[cell] != MCCFR_CELL_EMPTY)
             cell = (cell + 1) & mask;
@@ -453,9 +461,11 @@ static Status sample_index(const Probability *probabilities, size_t count,
  * histories, so reading the node again would otherwise combine one cached
  * opponent action with a different distribution. Target-player visits also
  * reuse the snapshot so their regret deltas describe one coherent traversal.
+ * Look up the key before resolving its shared node, so repeated visits need
+ * only the traversal's private snapshot storage.
  */
 static Status get_strategy_snapshot(MccfrWorkspace *workspace,
-                                    InfoNode *node,
+                                    InfoStore *store, InfoSetKey key,
                                     const Action *actions,
                                     Probability *strategy,
                                     size_t action_count,
@@ -465,13 +475,13 @@ static Status get_strategy_snapshot(MccfrWorkspace *workspace,
     Status status;
 
     mask = workspace->snapshot_table_capacity - 1;
-    cell = cfr_traversal_hash_node(node) & mask;
+    cell = snapshot_initial_index(key, workspace->snapshot_table_capacity);
     while (workspace->snapshot_table[cell] != MCCFR_CELL_EMPTY) {
         const size_t candidate = workspace->snapshot_table[cell];
         const MccfrStrategySnapshot *snapshot =
             &workspace->snapshots[candidate];
 
-        if (snapshot->node == node) {
+        if (snapshot->key == key) {
             const size_t value_offset =
                 candidate * workspace->snapshot_stride;
             if (snapshot->action_count != action_count) {
@@ -492,6 +502,12 @@ static Status get_strategy_snapshot(MccfrWorkspace *workspace,
         cell = (cell + 1) & mask;
     }
 
+    InfoNode *node;
+    status = workspace_get_or_create_node(workspace, store, key, action_count,
+                                          &node);
+    if (status != CFR_STATUS_SUCCESS)
+        return status;
+
     if (workspace->snapshot_table_used + 1 >
         workspace->snapshot_table_capacity -
             workspace->snapshot_table_capacity / 4) {
@@ -499,7 +515,7 @@ static Status get_strategy_snapshot(MccfrWorkspace *workspace,
         if (status != CFR_STATUS_SUCCESS)
             return status;
         mask = workspace->snapshot_table_capacity - 1;
-        cell = cfr_traversal_hash_node(node) & mask;
+        cell = snapshot_initial_index(key, workspace->snapshot_table_capacity);
         while (workspace->snapshot_table[cell] != MCCFR_CELL_EMPTY)
             cell = (cell + 1) & mask;
     }
@@ -515,6 +531,7 @@ static Status get_strategy_snapshot(MccfrWorkspace *workspace,
     const size_t entry = workspace->snapshot_count;
     workspace->snapshots[entry] =
         (MccfrStrategySnapshot){.node = node,
+                                .key = key,
                                 .sampled_action = SIZE_MAX,
                                 .action_count = action_count,
                                 .table_cell = cell,
@@ -970,13 +987,8 @@ static Status traverse_branch(const CfrTraversalAdapter *adapter,
                                                       &key);
     if (status != CFR_STATUS_SUCCESS)
         return status;
-    InfoNode *node;
-    status = workspace_get_or_create_node(workspace, store, key, action_count,
-                                          &node);
-    if (status != CFR_STATUS_SUCCESS)
-        return status;
     size_t snapshot_index;
-    status = get_strategy_snapshot(workspace, node, frame->actions,
+    status = get_strategy_snapshot(workspace, store, key, frame->actions,
                                    frame->probabilities, action_count,
                                    &snapshot_index);
     if (status != CFR_STATUS_SUCCESS)

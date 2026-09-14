@@ -17,6 +17,7 @@ typedef struct {
 
 typedef struct {
     InfoNode *node;
+    InfoSetKey key;
     size_t sampled_action;
     size_t action_count;
     size_t table_cell;
