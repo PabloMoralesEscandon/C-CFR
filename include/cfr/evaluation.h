@@ -10,6 +10,13 @@
 CFR_EXTERN_C_BEGIN
 
 /*
+ * Tree evaluation supports at most two strategic players and utility
+ * perspectives CFR_PLAYER_0 and CFR_PLAYER_1. All tree-evaluation functions
+ * reject games with more strategic players with CFR_STATUS_INVALID_ARGUMENT.
+ * cfr_evaluation_average_strategy only reads a node and has no player limit.
+ */
+
+/*
  * Contains the metrics from a point-in-time evaluation.
  *
  * The structure contains values and owns no dynamic memory. Each value uses the

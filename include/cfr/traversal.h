@@ -26,6 +26,11 @@ typedef struct {
  * these parameters. game must be a valid descriptor. state and store must be
  * initialized and can be modified. utility_out must be a valid pointer.
  *
+ * game->strategic_player_count must be between one and CFR_MAX_PLAYERS.
+ * Player identifiers increase from zero. One-player games can retain player
+ * one as a utility-only perspective. Regrets use the product of all other
+ * players' reaches, including teammates with separate information sets.
+ *
  * game->max_legal_actions must be between one and CFR_TRAVERSAL_MAX_ACTIONS.
  * Every nonterminal state must have between one and game->max_legal_actions
  * legal actions. These conditions also apply to descendant states.
