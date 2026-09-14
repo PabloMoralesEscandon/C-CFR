@@ -688,21 +688,38 @@ static Status workspace_commit_deltas(MccfrWorkspace *workspace) {
             locked_count += 1;
             continue;
         }
+        const InfoNode *conflicted_node =
+            workspace->delta_entries[locked_count].node;
         while (locked_count > 0) {
             locked_count -= 1;
             cfr_info_node_unlock(
                 workspace->delta_entries[locked_count].node);
         }
-        /* Stagger retries without holding locks or advancing the game RNG. */
-        retry_jitter = retry_jitter * UINT64_C(6364136223846793005) +
-                       UINT64_C(1442695040888963407);
-        const size_t pause_count =
-            (size_t)(retry_jitter >> 32) & (retry_window - 1);
-        for (size_t pause = 0; pause < pause_count; pause += 1)
-            cfr_cpu_relax();
-        if (retry_window < 512)
-            retry_window *= 2;
-        cfr_spin_wait(&spin_count);
+        /* Wait only on the conflict, without reacquiring its prefix or
+         * advancing the game RNG. Observing zero only permits another try. */
+        for (;;) {
+            retry_jitter = retry_jitter * UINT64_C(6364136223846793005) +
+                           UINT64_C(1442695040888963407);
+            const size_t pause_count =
+                (size_t)(retry_jitter >> 32) & (retry_window - 1);
+            for (size_t pause = 0; pause < pause_count; pause += 1) {
+                if (!cfr_info_node_is_locked(conflicted_node))
+                    break;
+                cfr_cpu_relax();
+            }
+            if (!cfr_info_node_is_locked(conflicted_node))
+                break;
+            if (retry_window < 512)
+                retry_window *= 2;
+            /* Yield periodically in long waits. cfr_spin_wait itself keeps
+             * yielding on every call after its threshold is reached. */
+            if (spin_count < CFR_SPIN_BEFORE_YIELD) {
+                spin_count += 1;
+            } else {
+                cfr_spin_wait(&spin_count);
+                spin_count = 0;
+            }
+        }
     }
 
     status = workspace_prepare_locked_values(workspace);
