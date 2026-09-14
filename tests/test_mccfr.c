@@ -646,7 +646,8 @@ static void test_error_preserves_rng_outputs_and_learning(void) {
     destroy_store(&store);
 }
 
-static void test_commit_error_preserves_all_nodes_and_releases_locks(void) {
+static void test_commit_error_preserves_all_nodes_and_releases_locks(
+    bool concurrent) {
     const Game *game = traversal_game_descriptor();
     TraversalGameState state;
     InfoStore store;
@@ -659,6 +660,8 @@ static void test_commit_error_preserves_all_nodes_and_releases_locks(void) {
     CHECK(traversal_game_state_init_shared(&state, false) ==
           CFR_STATUS_SUCCESS);
     initialize_store(&store);
+    if (concurrent)
+        CHECK(cfr_info_store_prepare_concurrent(&store) == CFR_STATUS_SUCCESS);
     CHECK(cfr_info_store_get_or_create(&store, 500, 2, &nodes[0]) ==
           CFR_STATUS_SUCCESS);
     CHECK(cfr_info_store_get_or_create(&store, 501, 2, &nodes[1]) ==
@@ -1768,7 +1771,8 @@ int test_mccfr(void) {
     test_opponent_sample_is_shared_by_information_set();
     test_strategy_snapshot_survives_shared_node_update();
     test_error_preserves_rng_outputs_and_learning();
-    test_commit_error_preserves_all_nodes_and_releases_locks();
+    test_commit_error_preserves_all_nodes_and_releases_locks(false);
+    test_commit_error_preserves_all_nodes_and_releases_locks(true);
     test_hidden_histories_require_identical_action_mapping();
     test_seeded_trainers_are_reproducible();
     test_sequential_trainer_uses_a_prepared_store();

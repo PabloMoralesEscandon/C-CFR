@@ -1,12 +1,17 @@
 #include <float.h>
+#include <limits.h>
 #include <math.h>
+#include <pthread.h>
+#include <sched.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "cfr/info_node.h"
+#include "../src/info_node_internal.h"
 #include "support/test_allocator.h"
 #include "test_suite.h"
 
@@ -565,6 +570,131 @@ static void test_average_strategy_errors_and_limits(void) {
     destroy(&node);
 }
 
+enum {
+    SNAPSHOT_ACTION_COUNT = 16,
+    SNAPSHOT_WRITER_COUNT = 2,
+    SNAPSHOT_WRITER_UPDATES = 8192,
+    SNAPSHOT_READER_SAMPLES = 16384
+};
+
+typedef struct {
+    InfoNode *node;
+    const Utility *regret_deltas;
+    const double *strategy_deltas;
+    atomic_size_t *ready_count;
+    atomic_bool *start;
+    Status status;
+} SnapshotWriter;
+
+static void *run_snapshot_writer(void *context) {
+    SnapshotWriter *writer = context;
+
+    atomic_fetch_add_explicit(writer->ready_count, 1, memory_order_release);
+    while (!atomic_load_explicit(writer->start, memory_order_acquire))
+        (void)sched_yield();
+    for (size_t iteration = 0; iteration < SNAPSHOT_WRITER_UPDATES;
+         iteration += 1) {
+        writer->status = cfr_info_node_apply_deltas(
+            writer->node, writer->regret_deltas, writer->strategy_deltas,
+            SNAPSHOT_ACTION_COUNT);
+        if (writer->status != CFR_STATUS_SUCCESS)
+            break;
+    }
+    return NULL;
+}
+
+static void test_concurrent_regret_snapshots_across_version_wrap(void) {
+    InfoNode node = {0};
+    Utility regret_deltas[SNAPSHOT_ACTION_COUNT];
+    const double strategy_deltas[SNAPSHOT_ACTION_COUNT] = {0};
+    Probability snapshot[SNAPSHOT_ACTION_COUNT] = {0};
+    SnapshotWriter writers[SNAPSHOT_WRITER_COUNT];
+    pthread_t threads[SNAPSHOT_WRITER_COUNT];
+    atomic_size_t ready_count;
+    atomic_bool start;
+    size_t created = 0;
+    size_t samples = 0;
+    bool snapshots_are_consistent = true;
+    const double total =
+        SNAPSHOT_ACTION_COUNT * (SNAPSHOT_ACTION_COUNT + 1) / 2.0;
+    const unsigned int initial_version = UINT_MAX - 3U;
+
+    initialize(&node, 71, SNAPSHOT_ACTION_COUNT);
+    for (size_t action = 0; action < SNAPSHOT_ACTION_COUNT; action += 1)
+        regret_deltas[action] = (double)(action + 1);
+    CHECK(cfr_info_node_apply_deltas(
+              &node, regret_deltas, strategy_deltas,
+              SNAPSHOT_ACTION_COUNT) == CFR_STATUS_SUCCESS);
+
+    /* Exclusive ownership permits placing the counter just before wrap.
+     * A completed update must publish an even zero that readers can use. */
+    __atomic_store_n(&node.version, UINT_MAX - 1U, __ATOMIC_RELAXED);
+    CHECK(cfr_info_node_apply_deltas(
+              &node, regret_deltas, strategy_deltas,
+              SNAPSHOT_ACTION_COUNT) == CFR_STATUS_SUCCESS);
+    CHECK(__atomic_load_n(&node.version, __ATOMIC_RELAXED) == 0U);
+    CHECK(cfr_info_node_current_strategy_concurrent(
+              &node, snapshot, SNAPSHOT_ACTION_COUNT) == CFR_STATUS_SUCCESS);
+    for (size_t action = 0; action < SNAPSHOT_ACTION_COUNT; action += 1)
+        CHECK(near(snapshot[action], (double)(action + 1) / total));
+
+    /* Every complete regret vector is proportional to [1, 2, ..., 16].
+     * Partial vectors generally change the normalized strategy. Start near
+     * wrap again, then read without taking the writers' node lock. */
+    __atomic_store_n(&node.version, initial_version, __ATOMIC_RELAXED);
+    atomic_init(&ready_count, 0);
+    atomic_init(&start, false);
+    for (size_t index = 0; index < SNAPSHOT_WRITER_COUNT; index += 1) {
+        writers[index] = (SnapshotWriter){
+            .node = &node,
+            .regret_deltas = regret_deltas,
+            .strategy_deltas = strategy_deltas,
+            .ready_count = &ready_count,
+            .start = &start,
+            .status = CFR_STATUS_SUCCESS,
+        };
+        if (pthread_create(&threads[index], NULL, run_snapshot_writer,
+                           &writers[index]) != 0) {
+            CHECK(false);
+            break;
+        }
+        created += 1;
+    }
+    while (atomic_load_explicit(&ready_count, memory_order_acquire) < created)
+        (void)sched_yield();
+    atomic_store_explicit(&start, true, memory_order_release);
+    for (; samples < SNAPSHOT_READER_SAMPLES; samples += 1) {
+        if (cfr_info_node_current_strategy_concurrent(
+                &node, snapshot, SNAPSHOT_ACTION_COUNT) !=
+            CFR_STATUS_SUCCESS) {
+            snapshots_are_consistent = false;
+            break;
+        }
+        for (size_t action = 0; action < SNAPSHOT_ACTION_COUNT; action += 1) {
+            if (!near(snapshot[action], (double)(action + 1) / total))
+                snapshots_are_consistent = false;
+        }
+        if (!snapshots_are_consistent)
+            break;
+    }
+    for (size_t index = 0; index < created; index += 1) {
+        CHECK(pthread_join(threads[index], NULL) == 0);
+        CHECK(writers[index].status == CFR_STATUS_SUCCESS);
+    }
+    CHECK(created == SNAPSHOT_WRITER_COUNT);
+    CHECK(snapshots_are_consistent);
+    CHECK(samples == SNAPSHOT_READER_SAMPLES);
+    const size_t updates = created * SNAPSHOT_WRITER_UPDATES;
+    CHECK(__atomic_load_n(&node.version, __ATOMIC_RELAXED) ==
+          initial_version + 2U * (unsigned int)updates);
+    for (size_t action = 0; action < SNAPSHOT_ACTION_COUNT; action += 1) {
+        CHECK(node.regret_sums[action] ==
+              (2.0 + (double)updates) * (double)(action + 1));
+        CHECK(node.strategy_sums[action] == 0.0);
+    }
+    destroy(&node);
+}
+
 int test_info_node(void) {
     failures = 0;
 
@@ -584,6 +714,7 @@ int test_info_node(void) {
     test_accumulation_invalid_arguments();
     test_accumulation_numeric_atomicity();
     test_average_strategy_errors_and_limits();
+    test_concurrent_regret_snapshots_across_version_wrap();
 
 #ifdef CFR_TEST_WRAP_ALLOCATOR
     CHECK(test_allocator_live_allocations() == 0);
