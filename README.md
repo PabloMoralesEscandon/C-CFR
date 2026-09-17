@@ -12,7 +12,8 @@ without changing its ABI.
 
 The repository includes complete Kuhn Poker, Leduc Poker, and blackjack
 adapters. Three independent applications train the games, and all adapters are
-available through the same public library API.
+available through the same public library API. To connect a game of your own,
+see [ADDING_A_GAME.md](ADDING_A_GAME.md).
 
 The Leduc adapter uses the standard six-card deck with two copies each of jack,
 queen, and king. Each player antes one chip and receives one private card. A
@@ -712,6 +713,14 @@ Each training report contains:
 
 With `--evaluate`, the final line contains the player's average value, the
 dealer's opposite value, exploitability, and total time.
+
+## Adding a new game
+
+The trainer, MCCFR, the evaluator, and checkpoints work with any game that
+implements the adapter interface in `include/cfr/game.h`.
+[ADDING_A_GAME.md](ADDING_A_GAME.md) explains the callback contract, walks
+through a small complete adapter, and lists the steps to add a game to the
+library, its tests, and the build.
 
 ## License
 
