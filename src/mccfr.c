@@ -120,6 +120,7 @@ static void workspace_reset(MccfrWorkspace *workspace, const MccfrRng *rng,
     workspace->snapshot_count = 0;
     workspace->arena_used = 0;
     workspace->visits = 0;
+    workspace->average_only = false;
     workspace->rng = *rng;
     if (workspace->cached_store != store) {
         for (size_t index = 0; index < CFR_MCCFR_NODE_CACHE_CAPACITY;
@@ -206,6 +207,15 @@ static Status allocate_grown_table(size_t capacity, size_t **table_out,
     return CFR_STATUS_SUCCESS;
 }
 
+static size_t snapshot_initial_index(InfoSetKey key, size_t capacity) {
+    const unsigned int shift = (unsigned int)__builtin_clzll(
+        (unsigned long long)(capacity - 1));
+    const uint64_t hash =
+        (uint64_t)key * UINT64_C(11400714819323198485);
+
+    return (size_t)(hash >> shift);
+}
+
 static Status grow_snapshot_table(MccfrWorkspace *workspace) {
     size_t *grown;
     size_t capacity;
@@ -216,9 +226,8 @@ static Status grow_snapshot_table(MccfrWorkspace *workspace) {
         return status;
     const size_t mask = capacity - 1;
     for (size_t index = 0; index < workspace->snapshot_count; index += 1) {
-        size_t cell = cfr_traversal_hash_node(
-                          workspace->snapshots[index].node) &
-                      mask;
+        size_t cell = snapshot_initial_index(
+            workspace->snapshots[index].key, capacity);
 
         while (grown[cell] != MCCFR_CELL_EMPTY)
             cell = (cell + 1) & mask;
@@ -453,9 +462,11 @@ static Status sample_index(const Probability *probabilities, size_t count,
  * histories, so reading the node again would otherwise combine one cached
  * opponent action with a different distribution. Target-player visits also
  * reuse the snapshot so their regret deltas describe one coherent traversal.
+ * Look up the key before resolving its shared node, so repeated visits need
+ * only the traversal's private snapshot storage.
  */
 static Status get_strategy_snapshot(MccfrWorkspace *workspace,
-                                    InfoNode *node,
+                                    InfoStore *store, InfoSetKey key,
                                     const Action *actions,
                                     Probability *strategy,
                                     size_t action_count,
@@ -465,13 +476,13 @@ static Status get_strategy_snapshot(MccfrWorkspace *workspace,
     Status status;
 
     mask = workspace->snapshot_table_capacity - 1;
-    cell = cfr_traversal_hash_node(node) & mask;
+    cell = snapshot_initial_index(key, workspace->snapshot_table_capacity);
     while (workspace->snapshot_table[cell] != MCCFR_CELL_EMPTY) {
         const size_t candidate = workspace->snapshot_table[cell];
         const MccfrStrategySnapshot *snapshot =
             &workspace->snapshots[candidate];
 
-        if (snapshot->node == node) {
+        if (snapshot->key == key) {
             const size_t value_offset =
                 candidate * workspace->snapshot_stride;
             if (snapshot->action_count != action_count) {
@@ -492,6 +503,12 @@ static Status get_strategy_snapshot(MccfrWorkspace *workspace,
         cell = (cell + 1) & mask;
     }
 
+    InfoNode *node;
+    status = workspace_get_or_create_node(workspace, store, key, action_count,
+                                          &node);
+    if (status != CFR_STATUS_SUCCESS)
+        return status;
+
     if (workspace->snapshot_table_used + 1 >
         workspace->snapshot_table_capacity -
             workspace->snapshot_table_capacity / 4) {
@@ -499,7 +516,7 @@ static Status get_strategy_snapshot(MccfrWorkspace *workspace,
         if (status != CFR_STATUS_SUCCESS)
             return status;
         mask = workspace->snapshot_table_capacity - 1;
-        cell = cfr_traversal_hash_node(node) & mask;
+        cell = snapshot_initial_index(key, workspace->snapshot_table_capacity);
         while (workspace->snapshot_table[cell] != MCCFR_CELL_EMPTY)
             cell = (cell + 1) & mask;
     }
@@ -515,6 +532,7 @@ static Status get_strategy_snapshot(MccfrWorkspace *workspace,
     const size_t entry = workspace->snapshot_count;
     workspace->snapshots[entry] =
         (MccfrStrategySnapshot){.node = node,
+                                .key = key,
                                 .sampled_action = SIZE_MAX,
                                 .action_count = action_count,
                                 .table_cell = cell,
@@ -671,21 +689,38 @@ static Status workspace_commit_deltas(MccfrWorkspace *workspace) {
             locked_count += 1;
             continue;
         }
+        const InfoNode *conflicted_node =
+            workspace->delta_entries[locked_count].node;
         while (locked_count > 0) {
             locked_count -= 1;
             cfr_info_node_unlock(
                 workspace->delta_entries[locked_count].node);
         }
-        /* Stagger retries without holding locks or advancing the game RNG. */
-        retry_jitter = retry_jitter * UINT64_C(6364136223846793005) +
-                       UINT64_C(1442695040888963407);
-        const size_t pause_count =
-            (size_t)(retry_jitter >> 32) & (retry_window - 1);
-        for (size_t pause = 0; pause < pause_count; pause += 1)
-            cfr_cpu_relax();
-        if (retry_window < 512)
-            retry_window *= 2;
-        cfr_spin_wait(&spin_count);
+        /* Wait only on the conflict, without reacquiring its prefix or
+         * advancing the game RNG. Observing zero only permits another try. */
+        for (;;) {
+            retry_jitter = retry_jitter * UINT64_C(6364136223846793005) +
+                           UINT64_C(1442695040888963407);
+            const size_t pause_count =
+                (size_t)(retry_jitter >> 32) & (retry_window - 1);
+            for (size_t pause = 0; pause < pause_count; pause += 1) {
+                if (!cfr_info_node_is_locked(conflicted_node))
+                    break;
+                cfr_cpu_relax();
+            }
+            if (!cfr_info_node_is_locked(conflicted_node))
+                break;
+            if (retry_window < 512)
+                retry_window *= 2;
+            /* Yield periodically in long waits. cfr_spin_wait itself keeps
+             * yielding on every call after its threshold is reached. */
+            if (spin_count < CFR_SPIN_BEFORE_YIELD) {
+                spin_count += 1;
+            } else {
+                cfr_spin_wait(&spin_count);
+                spin_count = 0;
+            }
+        }
     }
 
     status = workspace_prepare_locked_values(workspace);
@@ -756,16 +791,16 @@ static Status record_target_deltas(MccfrWorkspace *workspace,
  * Records an average-strategy contribution for a sampled player's information
  * set.
  *
- * The traversal reaches a history of this information set with exactly the
- * probability that the sampled player and chance reach it, so accumulating the
- * unweighted strategy reproduces the full CFR strategy sums up to one constant
- * per information set. cfr_info_node_average_strategy normalizes that constant
- * away.
+ * Two-player external sampling uses unit weight. The multiplayer average pass
+ * supplies an importance weight. Both estimates reproduce the full CFR
+ * strategy sums up to a constant per information set. Normalization removes
+ * that constant.
  */
 static Status record_sampled_strategy(MccfrWorkspace *workspace,
                                       const MccfrFrame *frame,
                                       size_t action_count,
-                                      size_t snapshot_index) {
+                                      size_t snapshot_index,
+                                      double strategy_weight) {
     size_t entry_index;
     Status status = get_or_create_snapshot_delta(
         workspace, snapshot_index, &entry_index);
@@ -777,15 +812,66 @@ static Status record_sampled_strategy(MccfrWorkspace *workspace,
     double *delta_strategy =
         workspace->arena + entry->arena_offset + action_count;
 
+    if (!isfinite(strategy_weight) || strategy_weight < 0.0)
+        return CFR_STATUS_NUMERIC_ERROR;
     for (size_t action = 0; action < action_count; action += 1) {
         const Probability probability = frame->probabilities[action];
 
         if (!isfinite(probability) || probability < 0.0)
             return CFR_STATUS_NUMERIC_ERROR;
-        delta_strategy[action] += probability;
+        delta_strategy[action] += strategy_weight * probability;
         if (!isfinite(delta_strategy[action]))
             return CFR_STATUS_NUMERIC_ERROR;
     }
+    return CFR_STATUS_SUCCESS;
+}
+
+/*
+ * The separate multiplayer average pass samples every player action uniformly.
+ * strategy_weight is target own reach divided by sampled player reach. Chance
+ * uses its fixed distribution and needs no correction. This gives an expected
+ * delta of chance reach times target own reach times the current strategy.
+ * Under perfect recall, the chance factor is constant per information set and
+ * normalization removes it. Uniform sampling also covers zero-policy branches.
+ */
+static Status traverse_average_node(
+    const CfrTraversalAdapter *adapter, GameState *state, InfoStore *store,
+    Player target_player, Player actor, size_t depth, double strategy_weight,
+    MccfrWorkspace *workspace, size_t action_count, size_t snapshot_index,
+    Utility *utility_out) {
+    MccfrFrame *frame = &workspace->frames[depth];
+    if (actor == target_player) {
+        const Status status = record_sampled_strategy(
+            workspace, frame, action_count, snapshot_index, strategy_weight);
+        if (status != CFR_STATUS_SUCCESS)
+            return status;
+    }
+    const double draw = (double)(rng_next(&workspace->rng) >> 11) * 0x1.0p-53;
+    const size_t action = (size_t)(draw * (double)action_count);
+    double child_weight = strategy_weight;
+    if (actor == target_player)
+        child_weight *= frame->probabilities[action];
+    child_weight *= (double)action_count;
+    if (!isfinite(child_weight))
+        return CFR_STATUS_NUMERIC_ERROR;
+    if (child_weight == 0.0) {
+        *utility_out = 0.0;
+        return CFR_STATUS_SUCCESS;
+    }
+    Status status = adapter->operations->apply_action(
+        adapter->context, state, frame->actions[action]);
+    if (status != CFR_STATUS_SUCCESS)
+        return status;
+    Utility discarded;
+    const Status branch_status = traverse_branch(
+        adapter, state, store, target_player, depth + 1, child_weight,
+        workspace, &discarded);
+    status = adapter->operations->undo_action(adapter->context, state);
+    if (status != CFR_STATUS_SUCCESS)
+        return status;
+    if (branch_status != CFR_STATUS_SUCCESS)
+        return branch_status;
+    *utility_out = 0.0;
     return CFR_STATUS_SUCCESS;
 }
 
@@ -848,8 +934,9 @@ static Status traverse_opponent_node(
         return status;
     if (!(frame->probabilities[sampled_action] > 0.0))
         return CFR_STATUS_NUMERIC_ERROR;
-    status = record_sampled_strategy(workspace, frame, action_count,
-                                     snapshot_index);
+    if (adapter->strategic_player_count <= 2)
+        status = record_sampled_strategy(workspace, frame, action_count,
+                                         snapshot_index, 1.0);
     if (status != CFR_STATUS_SUCCESS)
         return status;
     frame = &workspace->frames[depth];
@@ -948,7 +1035,8 @@ static Status traverse_branch(const CfrTraversalAdapter *adapter,
                                     depth, own_reach, workspace, utility_out);
     }
     if (actor.kind != CFR_ACTOR_PLAYER ||
-        (actor.player != CFR_PLAYER_0 && actor.player != CFR_PLAYER_1)) {
+        !cfr_traversal_player_is_valid(
+            adapter->strategic_player_count, actor.player)) {
         return CFR_STATUS_INVALID_ARGUMENT;
     }
 
@@ -970,18 +1058,18 @@ static Status traverse_branch(const CfrTraversalAdapter *adapter,
                                                       &key);
     if (status != CFR_STATUS_SUCCESS)
         return status;
-    InfoNode *node;
-    status = workspace_get_or_create_node(workspace, store, key, action_count,
-                                          &node);
-    if (status != CFR_STATUS_SUCCESS)
-        return status;
     size_t snapshot_index;
-    status = get_strategy_snapshot(workspace, node, frame->actions,
+    status = get_strategy_snapshot(workspace, store, key, frame->actions,
                                    frame->probabilities, action_count,
                                    &snapshot_index);
     if (status != CFR_STATUS_SUCCESS)
         return status;
 
+    if (workspace->average_only) {
+        return traverse_average_node(
+            adapter, state, store, target_player, actor.player, depth,
+            own_reach, workspace, action_count, snapshot_index, utility_out);
+    }
     if (actor.player == target_player) {
         return traverse_target_node(adapter, state, store, target_player,
                                     depth, own_reach, workspace, action_count,
@@ -1009,8 +1097,9 @@ static Status configure_adapter(
         game->max_legal_actions == 0 ||
         game->max_legal_actions > CFR_TRAVERSAL_MAX_ACTIONS ||
         game->strategic_player_count == 0 ||
-        game->strategic_player_count > 2 ||
-        (target_player != CFR_PLAYER_0 && target_player != CFR_PLAYER_1)) {
+        game->strategic_player_count > CFR_MAX_PLAYERS ||
+        !cfr_traversal_player_is_valid(
+            game->strategic_player_count, target_player)) {
         return CFR_STATUS_INVALID_ARGUMENT;
     }
 
@@ -1039,6 +1128,12 @@ static Status traverse_in_workspace(
     Utility temporary_utility;
     Status status = traverse_branch(adapter, state, store, target_player, 0,
                                     1.0, workspace, &temporary_utility);
+    if (status == CFR_STATUS_SUCCESS && adapter->strategic_player_count > 2) {
+        Utility discarded;
+        workspace->average_only = true;
+        status = traverse_branch(adapter, state, store, target_player, 0,
+                                 1.0, workspace, &discarded);
+    }
     if (status == CFR_STATUS_SUCCESS)
         status = workspace_commit_deltas(workspace);
     if (status == CFR_STATUS_SUCCESS) {

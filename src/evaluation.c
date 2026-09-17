@@ -648,7 +648,7 @@ static Status workspace_build_snapshot(const Game *game, GameState *state,
                                        size_t *root_index_out) {
     if (game == NULL || state == NULL || store == NULL ||
         workspace_out == NULL || root_index_out == NULL ||
-        game->max_legal_actions == 0)
+        game->strategic_player_count > 2 || game->max_legal_actions == 0)
         return CFR_STATUS_INVALID_ARGUMENT;
 
     EvaluationWorkspace temporary = {0};

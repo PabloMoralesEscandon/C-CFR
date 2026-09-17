@@ -11,6 +11,11 @@ bool cfr_info_node_try_lock(const InfoNode *node);
 
 void cfr_info_node_unlock(const InfoNode *node);
 
+/* Advisory only: callers must still acquire the lock before accessing data. */
+static inline bool cfr_info_node_is_locked(const InfoNode *node) {
+    return __atomic_load_n(&node->synchronization, __ATOMIC_RELAXED) != 0;
+}
+
 Status cfr_info_node_check_deltas_locked(
     const InfoNode *node, const Utility *delta_regret,
     const double *delta_strategy_sum, size_t action_count);

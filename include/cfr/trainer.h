@@ -81,8 +81,8 @@ typedef struct {
  * Initializes trainer with three borrowed objects and zeroes the statistics.
  *
  * trainer, game, state, and store must not be null. The caller must provide a
- * valid game, state, and store. The game descriptor must declare one or two
- * strategic players. A null argument or invalid strategic player count
+ * valid game, state, and store. The game descriptor must declare one through
+ * CFR_MAX_PLAYERS strategic players. A null argument or invalid strategic player count
  * produces CFR_STATUS_INVALID_ARGUMENT. An error preserves a non-null trainer.
  */
 Status cfr_trainer_init(Trainer *trainer, const Game *game, GameState *state,
@@ -118,9 +118,8 @@ Status cfr_trainer_init_mccfr(Trainer *trainer, const Game *game,
  *
  * trainer must be initialized. Its three borrowed objects must be valid. An
  * iteration runs one traversal, in order, for each player declared strategic
- * by game->strategic_player_count. The first traversal uses CFR_PLAYER_0. When
- * the count is two, the second uses CFR_PLAYER_1 and observes the learning
- * committed by the first traversal.
+ * by game->strategic_player_count. Player identifiers increase from zero. Each
+ * traversal observes the learning committed by earlier traversals.
  *
  * A trainer initialized with cfr_trainer_init uses classic CFR. A trainer
  * initialized with cfr_trainer_init_plus uses Regret Matching+ and weights the

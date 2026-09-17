@@ -56,6 +56,7 @@ typedef struct {
     size_t arena_capacity;
 
     size_t visits;
+    bool average_only;
     MccfrRng rng;
 
     /* Cached nodes remain owned by the store throughout the training call. */

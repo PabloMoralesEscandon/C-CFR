@@ -39,13 +39,29 @@ void cfr_info_node_unlock(const InfoNode *node) {
 }
 
 static void info_node_begin_update(InfoNode *node) {
-    /* Odd versions make concurrent regret snapshots retry. */
-    __atomic_fetch_add(&node->version, 1U, __ATOMIC_ACQ_REL);
+    /* The node lock excludes other writers. The release fence pairs with the
+     * snapshot reader's fence through any updated regret that it observes,
+     * so its final version check cannot precede this odd marker. */
+    const unsigned int version =
+        __atomic_load_n(&node->version, __ATOMIC_RELAXED);
+
+    __atomic_store_n(&node->version, version + 1U, __ATOMIC_RELAXED);
+#if defined(__GNUC__) && defined(__SANITIZE_THREAD__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wtsan"
+#endif
+    __atomic_thread_fence(__ATOMIC_RELEASE);
+#if defined(__GNUC__) && defined(__SANITIZE_THREAD__)
+#pragma GCC diagnostic pop
+#endif
 }
 
 static void info_node_end_update(InfoNode *node) {
     /* Publish the complete regret update with the next even version. */
-    __atomic_fetch_add(&node->version, 1U, __ATOMIC_RELEASE);
+    const unsigned int version =
+        __atomic_load_n(&node->version, __ATOMIC_RELAXED);
+
+    __atomic_store_n(&node->version, version + 1U, __ATOMIC_RELEASE);
 }
 
 static double atomic_load_double(const double *value) {

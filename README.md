@@ -1,8 +1,10 @@
 # CFR, CFR+, and MCCFR in C17
 
 This project implements CFR, CFR+, and external-sampling Monte Carlo CFR for
-finite extensive-form games. The first version supports two-player zero-sum
-games.
+finite extensive-form games with one through four decision-making players.
+Exact evaluation remains limited to at most two strategic players. Training
+with three or four independent player policies does not provide the equilibrium
+guarantee of two-player zero-sum CFR, including when teammates share utilities.
 
 The public API, library implementation, applications, tests, and benchmarks
 are all C17. POSIX platforms additionally use guarded fast paths for stream
@@ -367,7 +369,7 @@ these weights.
 
 To build a custom loop, pass the iteration number explicitly to
 `cfr_traverse_plus` and `cfr_traverse_plus_with_stats`. The value starts at one
-and must be the same for both players' traversals.
+and must be the same for every player's traversal.
 
 ### External-sampling MCCFR
 
@@ -413,8 +415,8 @@ ordered action mappings for the same sampled information set. Terminal utility
 can inspect the complete state, but policy lookup, sampling, regret storage,
 and average-policy storage use only the information-set node.
 
-A traversal updates regrets for the player it targets and the average strategy
-for the sampled player. Sampling already supplies the reach that weights a
+With two strategic players, a traversal updates regrets for the player it
+targets and the average strategy for the sampled player. Sampling already supplies the reach that weights a
 counterfactual regret, so neither update carries an importance weight. A
 complete iteration therefore traverses once per player, which `cfr_trainer_run`
 does. A game with a single strategic player has no sampled player to carry the
@@ -430,9 +432,23 @@ An adapter remains responsible for the game model's information boundary:
   actions.
 - Information sets must satisfy perfect recall, as required by CFR and MCCFR.
 
-Average-strategy deltas use inverse external-reach weighting, so they are
-unbiased estimates of the full CFR strategy sums. Failed traversals preserve
-the random stream and do not commit regret or strategy deltas.
+With three or four strategic players, the regret pass samples all other
+players, including teammates. A separate averaging trajectory samples every
+player action uniformly and chance from its fixed law. At a target information
+set, the average-strategy delta is the current strategy multiplied by the
+target's own reach divided by the sampling reach of all player actions. This
+also covers histories with zero opponent-policy reach. Under perfect recall,
+the expected delta is proportional to the full CFR strategy sums by a constant
+per information set. Normalization removes that constant. Importance weights
+can increase sampling variance. The two passes use the same strategy snapshots
+and commit together; visited-node statistics include both passes.
+
+Adapters declare `strategic_player_count` and use consecutive player identifiers
+from `CFR_PLAYER_0` through `CFR_PLAYER_3`. Each seat needs its own information-set
+keys even when two seats share a team utility. Existing one-player and two-player
+adapters need no changes. Their sampling paths, public structure layouts, and
+checkpoint formats remain unchanged. New games need their own schema identifier.
+Failed traversals preserve the random stream and commit no learning deltas.
 
 Early sampled runs can have information sets that have not been visited yet.
 The command-line reports evaluate those missing policies as uniform without

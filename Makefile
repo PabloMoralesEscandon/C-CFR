@@ -54,6 +54,7 @@ TEST_SOURCES := \
 	tests/test_checkpoint.c \
 	tests/test_cfr_plus.c \
 	tests/test_mccfr.c \
+	tests/test_multiplayer.c \
 	tests/test_kuhn_poker.c \
 	tests/test_leduc_poker.c \
 	tests/test_evaluation.c \

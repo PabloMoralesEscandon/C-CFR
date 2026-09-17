@@ -17,6 +17,7 @@ typedef struct {
 
 typedef struct {
     InfoNode *node;
+    InfoSetKey key;
     size_t sampled_action;
     size_t action_count;
     size_t table_cell;
@@ -56,6 +57,7 @@ typedef struct {
     size_t arena_capacity;
 
     size_t visits;
+    bool average_only;
     MccfrRng rng;
 
     /* Traversal-local lookup cache; borrowed nodes remain owned by the store. */

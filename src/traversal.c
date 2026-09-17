@@ -43,7 +43,8 @@ typedef struct CfrFullTraversalWorkspace {
 static Status cfr_traverse_chance(const CfrTraversalAdapter *adapter,
                                   GameState *state, InfoStore *store,
                                   Player target_player, size_t depth,
-                                  Probability reach_0, Probability reach_1,
+                                  Probability own_reach,
+                                  Probability external_reach,
                                   Probability reach_chance,
                                   WorkSpace *workspace, Utility *utility_out);
 
@@ -347,7 +348,8 @@ static Status find_or_create_entry(WorkSpace *ws, InfoNode *node,
 static Status cfr_traverse_branch(const CfrTraversalAdapter *adapter,
                                   GameState *state, InfoStore *store,
                                   Player target_player, size_t depth,
-                                  Probability reach_0, Probability reach_1,
+                                  Probability own_reach,
+                                  Probability external_reach,
                                   Probability reach_chance,
                                   WorkSpace *workspace, Utility *utility_out) {
     if (!(workspace->visits == SIZE_MAX))
@@ -381,11 +383,11 @@ static Status cfr_traverse_branch(const CfrTraversalAdapter *adapter,
         return status;
     if (current_actor.kind == CFR_ACTOR_CHANCE)
         return cfr_traverse_chance(adapter, state, store, target_player, depth,
-                                   reach_0, reach_1, reach_chance, workspace,
-                                   utility_out);
+                                   own_reach, external_reach, reach_chance,
+                                   workspace, utility_out);
     if (current_actor.kind != CFR_ACTOR_PLAYER ||
-        (current_actor.player != CFR_PLAYER_0 &&
-         current_actor.player != CFR_PLAYER_1))
+        !cfr_traversal_player_is_valid(
+            adapter->strategic_player_count, current_actor.player))
         return CFR_STATUS_INVALID_ARGUMENT;
 
     status = ensure_frame(workspace, depth);
@@ -429,24 +431,16 @@ static Status cfr_traverse_branch(const CfrTraversalAdapter *adapter,
 
     for (size_t i = 0; i < required_amount; i++) {
         /* Update the current actor's reach. */
-        Probability reach_copy_0 = reach_0;
-        Probability reach_copy_1 = reach_1;
+        Probability child_own_reach = own_reach;
+        Probability child_external_reach = external_reach;
         Probability reach_copy_chance = reach_chance;
-        switch (current_actor.player) {
-        case CFR_PLAYER_0:
-            reach_copy_0 *= frame->probabilities[i];
-            if (!isfinite(reach_copy_0))
-                return CFR_STATUS_NUMERIC_ERROR;
-            break;
-        case CFR_PLAYER_1:
-            reach_copy_1 *= frame->probabilities[i];
-
-            if (!isfinite(reach_copy_1))
-                return CFR_STATUS_NUMERIC_ERROR;
-            break;
-        default:
-            return CFR_STATUS_INVALID_ARGUMENT;
+        if (current_actor.player == target_player) {
+            child_own_reach *= frame->probabilities[i];
+        } else {
+            child_external_reach *= frame->probabilities[i];
         }
+        if (!isfinite(child_own_reach) || !isfinite(child_external_reach))
+            return CFR_STATUS_NUMERIC_ERROR;
 
         /* Apply the action. */
         status = adapter->operations->apply_action(adapter->context, state,
@@ -457,8 +451,8 @@ static Status cfr_traverse_branch(const CfrTraversalAdapter *adapter,
 
         /* Traverse the child branch. */
         Status status_new_branch = cfr_traverse_branch(
-            adapter, state, store, target_player, depth + 1, reach_copy_0,
-            reach_copy_1, reach_copy_chance, workspace, &branch_utility);
+            adapter, state, store, target_player, depth + 1, child_own_reach,
+            child_external_reach, reach_copy_chance, workspace, &branch_utility);
 
         /* Undo the applied action. */
         status = adapter->operations->undo_action(adapter->context, state);
@@ -487,25 +481,9 @@ static Status cfr_traverse_branch(const CfrTraversalAdapter *adapter,
             workspace->arena + workspace->entries[index].offset;
         double *delta_strategy = delta_regret + required_amount;
 
-        /* Select the acting player's and opponent's reaches. */
-        Probability own_reach;
-        Probability rival_reach;
-        switch (current_actor.player) {
-        case CFR_PLAYER_0:
-            own_reach = reach_0;
-            rival_reach = reach_1;
-            break;
-        case CFR_PLAYER_1:
-            own_reach = reach_1;
-            rival_reach = reach_0;
-            break;
-        default:
-            return CFR_STATUS_INVALID_ARGUMENT;
-        }
-
         /* Accumulate the pending deltas. */
         for (size_t i = 0; i < required_amount; i++) {
-            Utility change = rival_reach * reach_chance *
+            Utility change = external_reach * reach_chance *
                              (frame->utilities[i] - node_utility);
             if (!isfinite(change))
                 return CFR_STATUS_NUMERIC_ERROR;
@@ -526,7 +504,8 @@ static Status cfr_traverse_branch(const CfrTraversalAdapter *adapter,
 static Status cfr_traverse_chance(const CfrTraversalAdapter *adapter,
                                   GameState *state, InfoStore *store,
                                   Player target_player, size_t depth,
-                                  Probability reach_0, Probability reach_1,
+                                  Probability own_reach,
+                                  Probability external_reach,
                                   Probability reach_chance,
                                   WorkSpace *workspace, Utility *utility_out) {
     Status status = ensure_frame(workspace, depth);
@@ -559,7 +538,7 @@ static Status cfr_traverse_chance(const CfrTraversalAdapter *adapter,
 
         /* Traverse the child branch with the updated chance reach. */
         Status status_new_branch = cfr_traverse_branch(
-            adapter, state, store, target_player, depth + 1, reach_0, reach_1,
+            adapter, state, store, target_player, depth + 1, own_reach, external_reach,
             child_chance, workspace, &branch_utility);
 
         /* Always undo the applied action. */
@@ -613,7 +592,8 @@ static Status traverse_in_workspace(const Game *game, GameState *state,
     if (game->max_legal_actions == 0 ||
         (game->max_legal_actions > CFR_TRAVERSAL_MAX_ACTIONS))
         return CFR_STATUS_INVALID_ARGUMENT;
-    if (target_player != CFR_PLAYER_0 && target_player != CFR_PLAYER_1)
+    if (!cfr_traversal_player_is_valid(
+            game->strategic_player_count, target_player))
         return CFR_STATUS_INVALID_ARGUMENT;
     Status status = cfr_game_validate_state(game, state);
     if (status != CFR_STATUS_SUCCESS)
@@ -653,7 +633,8 @@ static Status traverse_with_stats(const Game *game, GameState *state,
                                   TraversalStats *stats_out) {
     if (game == NULL || state == NULL || store == NULL || utility_out == NULL ||
         stats_out == NULL ||
-        (target_player != CFR_PLAYER_0 && target_player != CFR_PLAYER_1) ||
+        !cfr_traversal_player_is_valid(
+            game->strategic_player_count, target_player) ||
         game->max_legal_actions == 0 ||
         game->max_legal_actions > CFR_TRAVERSAL_MAX_ACTIONS)
         return CFR_STATUS_INVALID_ARGUMENT;

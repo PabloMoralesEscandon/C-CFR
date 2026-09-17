@@ -429,7 +429,7 @@ static void test_trainer_invalid_arguments_and_zero_iterations(void) {
     CHECK(cfr_trainer_init(&trainer, &invalid_game,
                            chance_game_state_as_public(&state), &store) ==
           CFR_STATUS_INVALID_ARGUMENT);
-    invalid_game.strategic_player_count = 3;
+    invalid_game.strategic_player_count = CFR_MAX_PLAYERS + 1;
     CHECK(cfr_trainer_init(&trainer, &invalid_game,
                            chance_game_state_as_public(&state), &store) ==
           CFR_STATUS_INVALID_ARGUMENT);
